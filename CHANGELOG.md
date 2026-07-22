@@ -16,6 +16,9 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   author (case-insensitive subsequence, chronological order preserved); `↑`/`↓` or `^n`/`^p` move,
   and `esc` clears the filter before backing out. Its search line carries a **real blinking cursor**
   after the query.
+- The history browser is now a **fixed-size box**: the detail header is pinned and never shrinks
+  while filtering, the search input sits in its own rounded box just above the list, and only the
+  commit list scrolls — so the card no longer resizes as matches come and go.
 
 ### Fixed
 

@@ -462,24 +462,13 @@ pub fn draw(f: &mut Frame, area: Rect, theme: &Theme, title: Color, g: &Git) {
     let accent = theme.or("accent", Color::Cyan);
     let border = theme.or("accent", Color::Cyan);
 
-    // The history list is a scrolling viewport: reserve the border, the command
-    // bar, and the search-plus-detail header (up to five rows), and give the rest
-    // of the card height to commit rows. Everything past `viewport` pages.
-    let body_h = area.height.saturating_sub(1) as usize;
-    let viewport = body_h.saturating_sub(8).clamp(6, 40);
-    let (lines, title_tail): (Vec<Line<'static>>, String) = match g.view {
-        View::Menu => (menu_lines(g, ink, text, sub, accent, title), " · git ".into()),
-        View::History => {
-            let tail = if g.commits.is_empty() {
-                " · history ".into()
-            } else if g.filtered.is_empty() {
-                " · history · no matches ".into()
-            } else {
-                format!(" · history · {}/{} ", g.hsel + 1, g.filtered.len())
-            };
-            (history_lines(g, text, sub, accent, title, viewport), tail)
-        }
-    };
+    // The history browser is a fixed-size box with its own internal layout.
+    if matches!(g.view, View::History) {
+        draw_history(f, area, theme, title, g);
+        return;
+    }
+
+    let lines = menu_lines(g, ink, text, sub, accent, title);
 
     // Width: the wider of the content and the command bar, clamped; height: the
     // rows plus the border and a one-row command bar. The bar must be measured
@@ -508,7 +497,7 @@ pub fn draw(f: &mut Frame, area: Rect, theme: &Theme, title: Color, g: &Git) {
             format!(" 󰊢 Git · {} ", g.label),
             Style::default().fg(title).add_modifier(Modifier::BOLD),
         ))
-        .title(Line::from(Span::styled(title_tail, Style::default().fg(sub))).right_aligned());
+        .title(Line::from(Span::styled(" · git ", Style::default().fg(sub))).right_aligned());
     let inner = block.inner(popup);
     f.render_widget(block, popup);
 
@@ -519,17 +508,125 @@ pub fn draw(f: &mut Frame, area: Rect, theme: &Theme, title: Color, g: &Git) {
     .split(inner);
     f.render_widget(Paragraph::new(lines), rows[0]);
     draw_bar(f, g, rows[1], theme);
+}
 
-    // Place the real (blinking) cursor after the query in the history search line
-    // — its first body row — overriding the caret the picker left in its own
-    // search box. The menu view has no input, so it keeps no cursor here.
-    if matches!(g.view, View::History) && !g.commits.is_empty() {
-        let x = rows[0].x
-            + Span::raw(SEARCH_PREFIX).width() as u16
-            + Span::raw(g.query.as_str()).width() as u16;
-        let max_x = rows[0].x + rows[0].width.saturating_sub(1);
-        f.set_cursor_position(Position::new(x.min(max_x), rows[0].y));
+/// The history log browser, drawn as a **fixed-size** card so filtering never
+/// resizes it: a pinned detail header on top, a rounded search box just above the
+/// body, and — the only part that scrolls — the paged commit list, then the bar.
+fn draw_history(f: &mut Frame, area: Rect, theme: &Theme, title: Color, g: &Git) {
+    use ratatui::layout::Constraint::{Length, Min};
+
+    let ink = theme.or("panel_bg", Color::Rgb(16, 18, 20));
+    let text = theme.or("text", Color::Reset);
+    let sub = theme.or("subtext0", Color::Gray);
+    let accent = theme.or("accent", Color::Cyan);
+    let border = theme.or("accent", Color::Cyan);
+
+    // Size from the terminal, not the content, so the box is stable across searches.
+    let w = (HIST_W as u16 + 6).min(area.width.saturating_sub(2));
+    let h = area
+        .height
+        .saturating_sub(4)
+        .clamp(16, 34)
+        .min(area.height.saturating_sub(2));
+    let popup = Rect::new(
+        area.x + (area.width.saturating_sub(w)) / 2,
+        area.y + (area.height.saturating_sub(h)) / 2,
+        w,
+        h,
+    );
+    f.render_widget(Clear, popup);
+
+    let tail = if g.commits.is_empty() {
+        " · history ".to_string()
+    } else if g.filtered.is_empty() {
+        " · history · no matches ".to_string()
+    } else {
+        format!(" · history · {}/{} ", g.hsel + 1, g.filtered.len())
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(border))
+        .style(Style::default().bg(ink))
+        .title(Span::styled(
+            format!(" 󰊢 Git · {} ", g.label),
+            Style::default().fg(title).add_modifier(Modifier::BOLD),
+        ))
+        .title(Line::from(Span::styled(tail, Style::default().fg(sub))).right_aligned());
+    let inner = block.inner(popup);
+    f.render_widget(block, popup);
+
+    // A repo with no commits: nothing to browse.
+    if g.commits.is_empty() {
+        let rows = ratatui::layout::Layout::vertical([Min(1), Length(1)]).split(inner);
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                "  (no commits)",
+                Style::default().fg(sub),
+            ))),
+            rows[0],
+        );
+        draw_bar(f, g, rows[1], theme);
+        return;
     }
+
+    // Header (fixed) · search box (rounded, near the body) · scrolling list · bar.
+    let a = ratatui::layout::Layout::vertical([
+        Length(HIST_HEADER_ROWS),
+        Length(3),
+        Min(1),
+        Length(1),
+    ])
+    .split(inner);
+    let (header_area, search_area, body_area, bar_area) = (a[0], a[1], a[2], a[3]);
+
+    f.render_widget(
+        Paragraph::new(history_header_lines(g, text, sub, title, header_area.width as usize)),
+        header_area,
+    );
+
+    // The search input, its own rounded box.
+    let sbox = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(sub))
+        .style(Style::default().bg(ink));
+    let sinner = sbox.inner(search_area);
+    f.render_widget(sbox, search_area);
+    let mut qline = vec![Span::styled(SEARCH_PREFIX, Style::default().fg(accent))];
+    if g.query.is_empty() {
+        qline.push(Span::styled(
+            "type to filter",
+            Style::default().fg(sub).add_modifier(Modifier::ITALIC),
+        ));
+    } else {
+        qline.push(Span::styled(g.query.clone(), Style::default().fg(text)));
+    }
+    f.render_widget(Paragraph::new(Line::from(qline)), sinner);
+
+    // Only this scrolls: the page of commits holding the selection.
+    let viewport = body_area.height as usize;
+    f.render_widget(
+        Paragraph::new(history_body_lines(
+            g,
+            text,
+            sub,
+            accent,
+            viewport,
+            body_area.width as usize,
+        )),
+        body_area,
+    );
+
+    draw_bar(f, g, bar_area, theme);
+
+    // The real (blinking) cursor, inside the search box after the query.
+    let x = sinner.x
+        + Span::raw(SEARCH_PREFIX).width() as u16
+        + Span::raw(g.query.as_str()).width() as u16;
+    let max_x = sinner.x + sinner.width.saturating_sub(1);
+    f.set_cursor_position(Position::new(x.min(max_x), sinner.y));
 }
 
 fn menu_lines(
@@ -572,17 +669,19 @@ fn menu_lines(
         .collect()
 }
 
-/// Width the history detail wraps and the list clips to. Fixed so the wrap and
-/// the separator rule can be built before the card's final width is known — the
-/// menu sizes to its widest row, but history reads better at a steady width.
+/// Target content width of the fixed history card, driving the card's width and
+/// the subject wrap.
 const HIST_W: usize = 68;
+
+/// The pinned detail header's height: one meta row plus up to two subject rows.
+const HIST_HEADER_ROWS: u16 = 3;
 
 /// The relative-date column in a history list row, padded so subjects line up.
 const DATE_COL: usize = 14;
 
 /// The leading run of the history search line (a leading space, the filter icon,
-/// a space) — shared so `draw` can place the real terminal cursor exactly where
-/// `history_lines` starts the query text.
+/// a space) — shared so `draw_history` can place the real terminal cursor exactly
+/// where the query text starts.
 const SEARCH_PREFIX: &str = " 󰍉 ";
 
 /// Case-insensitive subsequence fuzzy match: every char of `needle` appears in
@@ -610,82 +709,70 @@ fn clip(s: &str, w: usize) -> String {
     out
 }
 
-/// The history log browser: a detail header for the highlighted commit — its
-/// sha, relative date, author, and (wrapped) subject — then a rule, then a
-/// scrolling window of the commit list. The header means a clipped list row is
-/// never the only place a subject appears, so the user always sees what
-/// `↵ show diff` will open; `viewport` bounds how many rows show at once, and
-/// the list pages so the selection is always on screen.
-fn history_lines(
+/// The pinned detail header for the highlighted commit — its sha, relative date,
+/// author, then the (wrapped, two-row-capped) subject. Fixed height, so it never
+/// shrinks while filtering; a clipped list row is never the only place a subject
+/// appears. Falls back to a placeholder when the filter matches nothing.
+fn history_header_lines(
+    g: &Git,
+    text: Color,
+    sub: Color,
+    title: Color,
+    width: usize,
+) -> Vec<Line<'static>> {
+    let Some(c) = g.filtered.get(g.hsel).and_then(|&i| g.commits.get(i)) else {
+        return vec![Line::from(Span::styled(
+            "  no matches",
+            Style::default().fg(sub),
+        ))];
+    };
+    let mut meta = vec![
+        Span::raw(" "),
+        Span::styled(
+            c.sha.clone(),
+            Style::default().fg(title).add_modifier(Modifier::BOLD),
+        ),
+    ];
+    if !c.date.is_empty() {
+        meta.push(Span::styled(format!("  {}", c.date), Style::default().fg(sub)));
+    }
+    if !c.author.is_empty() {
+        meta.push(Span::styled(
+            format!("  ·  {}", c.author),
+            Style::default().fg(sub),
+        ));
+    }
+    let mut lines = vec![Line::from(meta)];
+    for (prefix, line) in crate::markdown::wrap(&c.subject, width.saturating_sub(1), "", "")
+        .into_iter()
+        .take(2)
+    {
+        lines.push(Line::from(Span::styled(
+            format!(" {prefix}{line}"),
+            Style::default().fg(text).add_modifier(Modifier::BOLD),
+        )));
+    }
+    lines
+}
+
+/// The scrolling body: the page of the filtered commit list holding the
+/// selection, each row a marker, sha, date column, and clipped subject. This is
+/// the only part of the card that moves; `viewport` is the body area's height.
+fn history_body_lines(
     g: &Git,
     text: Color,
     sub: Color,
     accent: Color,
-    title: Color,
     viewport: usize,
+    width: usize,
 ) -> Vec<Line<'static>> {
-    if g.commits.is_empty() {
+    if g.filtered.is_empty() {
         return vec![Line::from(Span::styled(
-            "  no commits",
+            "  no matches",
             Style::default().fg(sub),
         ))];
     }
-
-    let mut lines = Vec::new();
-
-    // The fuzzy filter input, always shown: the query (with the real terminal
-    // cursor placed after it by `draw`), or a dim hint when empty so it reads as
-    // "type to filter" rather than a blank row.
-    let mut search = vec![Span::styled(SEARCH_PREFIX, Style::default().fg(accent))];
-    if g.query.is_empty() {
-        search.push(Span::styled(
-            "type to filter",
-            Style::default().fg(sub).add_modifier(Modifier::ITALIC),
-        ));
-    } else {
-        search.push(Span::styled(g.query.clone(), Style::default().fg(text)));
-    }
-    lines.push(Line::from(search));
-
-    // Detail header for the highlighted commit (resolved through the filter).
-    if let Some(c) = g.filtered.get(g.hsel).and_then(|&i| g.commits.get(i)) {
-        let mut meta = vec![
-            Span::raw(" "),
-            Span::styled(
-                c.sha.clone(),
-                Style::default().fg(title).add_modifier(Modifier::BOLD),
-            ),
-        ];
-        if !c.date.is_empty() {
-            meta.push(Span::styled(format!("  {}", c.date), Style::default().fg(sub)));
-        }
-        if !c.author.is_empty() {
-            meta.push(Span::styled(
-                format!("  ·  {}", c.author),
-                Style::default().fg(sub),
-            ));
-        }
-        lines.push(Line::from(meta));
-        // Cap the header subject at two rows so the reserved header height (and so
-        // the viewport arithmetic in `draw`) stays predictable.
-        for (prefix, line) in crate::markdown::wrap(&c.subject, HIST_W, "", "").into_iter().take(2) {
-            lines.push(Line::from(Span::styled(
-                format!(" {prefix}{line}"),
-                Style::default().fg(text).add_modifier(Modifier::BOLD),
-            )));
-        }
-    } else {
-        lines.push(Line::from(Span::styled(
-            "  no matches",
-            Style::default().fg(sub),
-        )));
-    }
-    lines.push(Line::from(Span::styled(
-        "─".repeat(HIST_W),
-        Style::default().fg(sub),
-    )));
-
-    // Page the filtered list so the selection is always visible: the page holding `hsel`.
+    let viewport = viewport.max(1);
     let len = g.filtered.len();
     let start = if len <= viewport {
         0
@@ -693,29 +780,34 @@ fn history_lines(
         (g.hsel / viewport) * viewport
     };
     let end = (start + viewport).min(len);
-    for (rank, &i) in g.filtered.iter().enumerate().take(end).skip(start) {
-        let Some(c) = g.commits.get(i) else { continue };
-        let selected = rank == g.hsel;
-        // marker(2) + sha + space + date column + space, then the subject fills the rest.
-        let room = HIST_W.saturating_sub(4 + c.sha.chars().count() + DATE_COL);
-        let date = clip(&c.date, DATE_COL);
-        lines.push(Line::from(vec![
-            Span::styled(
-                if selected { "▌ " } else { "  " },
-                Style::default().fg(accent),
-            ),
-            Span::styled(
-                format!("{} ", c.sha),
-                Style::default().fg(accent).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(format!("{date:<DATE_COL$} "), Style::default().fg(sub)),
-            Span::styled(
-                clip(&c.subject, room),
-                Style::default().fg(if selected { text } else { sub }),
-            ),
-        ]));
-    }
-    lines
+    g.filtered
+        .iter()
+        .enumerate()
+        .take(end)
+        .skip(start)
+        .filter_map(|(rank, &i)| {
+            let c = g.commits.get(i)?;
+            let selected = rank == g.hsel;
+            // marker(2) + sha + space + date column + space, then the subject fills the rest.
+            let room = width.saturating_sub(5 + c.sha.chars().count() + DATE_COL);
+            let date = clip(&c.date, DATE_COL);
+            Some(Line::from(vec![
+                Span::styled(
+                    if selected { "▌ " } else { "  " },
+                    Style::default().fg(accent),
+                ),
+                Span::styled(
+                    format!("{} ", c.sha),
+                    Style::default().fg(accent).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(format!("{date:<DATE_COL$} "), Style::default().fg(sub)),
+                Span::styled(
+                    clip(&c.subject, room),
+                    Style::default().fg(if selected { text } else { sub }),
+                ),
+            ]))
+        })
+        .collect()
 }
 
 /// The command-bar pills for the current view. Shared by the width calculation in
@@ -1034,6 +1126,41 @@ r|󰑓|pull|git pull
         assert!(screen.contains("60/60"), "{screen}");
         assert!(screen.contains("commit number 59"), "{screen}");
         assert!(!screen.contains("commit number 0 "), "{screen}");
+    }
+
+    #[test]
+    fn history_box_stays_fixed_size_while_filtering() {
+        let commits: Vec<Commit> = (0..40)
+            .map(|i| Commit {
+                sha: format!("s{i:03}"),
+                date: "1h".into(),
+                author: "Ada".into(),
+                subject: format!("thing {i}"),
+            })
+            .collect();
+        let mut g = Git::new();
+        g.open("/repo".into(), "repo".into(), None, commits, false, vec![]);
+        g.on_key(key(KeyCode::Char('h')));
+
+        // The row of the card's bottom border (the lowest `╰`).
+        let card_bottom = |g: &Git| -> usize {
+            let mut term =
+                ratatui::Terminal::new(ratatui::backend::TestBackend::new(90, 30)).unwrap();
+            term.draw(|f| draw(f, f.area(), &Theme::default(), Color::Yellow, g))
+                .unwrap();
+            let buf = term.backend().buffer().clone();
+            (0..30u16)
+                .rev()
+                .find(|&y| (0..90u16).any(|x| buf[(x, y)].symbol() == "╰"))
+                .unwrap() as usize
+        };
+
+        let full = card_bottom(&g);
+        for ch in "thing 3".chars() {
+            g.on_key(key(KeyCode::Char(ch))); // narrow to a handful of matches
+        }
+        assert!(g.filtered.len() < 40, "the filter should have narrowed the list");
+        assert_eq!(full, card_bottom(&g), "the box resized when filtering");
     }
 
     #[test]
