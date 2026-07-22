@@ -7,6 +7,11 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- The **git overlay (⌥g) is now sized to fit its command bar**, so a short menu no longer clips
+  `esc close` to `esc clo`; the card is as wide as the wider of its rows and its footer pills.
+
 ## [0.9.0] - 2026-07-22
 
 ### Added

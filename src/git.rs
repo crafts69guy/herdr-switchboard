@@ -390,15 +390,13 @@ pub fn draw(f: &mut Frame, area: Rect, theme: &Theme, title: Color, g: &Git) {
         View::History => (history_lines(g, ink, text, sub, title), " · history "),
     };
 
-    // Width: the widest line, clamped; height: the rows plus the border and a
-    // one-row command bar.
-    let want_w = lines
-        .iter()
-        .map(|l| l.width())
-        .max()
-        .unwrap_or(24)
-        .clamp(24, 60) as u16
-        + 4;
+    // Width: the wider of the content and the command bar, clamped; height: the
+    // rows plus the border and a one-row command bar. The bar must be measured
+    // too — a narrow menu would otherwise size the card below the pill row and
+    // clip `esc close` to `esc clo`.
+    let pills = bar_pills(g, theme);
+    let content_w = lines.iter().map(|l| l.width() as u16).max().unwrap_or(24);
+    let want_w = content_w.max(bar_width(&pills)).clamp(24, 60) + 4;
     let w = want_w.min(area.width.saturating_sub(2));
     let want_h = lines.len() as u16 + 2 /* border */ + 1 /* bar */;
     let h = want_h.min(area.height.saturating_sub(1)).max(6);
@@ -508,9 +506,10 @@ fn history_lines(
         .collect()
 }
 
-fn draw_bar(f: &mut Frame, g: &Git, area: Rect, theme: &Theme) {
-    let ink = theme.or("panel_bg", Color::Rgb(16, 18, 20));
-    let pills = match g.view {
+/// The command-bar pills for the current view. Shared by the width calculation in
+/// [`draw`] and [`draw_bar`], so the card is always sized to fit what it draws.
+fn bar_pills(g: &Git, theme: &Theme) -> Vec<crate::tui::Pill<'static>> {
+    match g.view {
         View::Menu => vec![
             crate::tui::Pill::new("↵", "run", theme.or("accent", Color::Cyan)),
             crate::tui::Pill::new("↑ ↓", "move", theme.or("blue", Color::Blue)),
@@ -521,7 +520,22 @@ fn draw_bar(f: &mut Frame, g: &Git, area: Rect, theme: &Theme) {
             crate::tui::Pill::new("↑ ↓", "move", theme.or("blue", Color::Blue)),
             crate::tui::Pill::new("esc", "back", theme.or("red", Color::Red)),
         ],
-    };
+    }
+}
+
+/// The rendered width of a pill row: the leading space plus, per pill, its
+/// bracketed key cap, its labelled space, and the trailing gap — mirroring the
+/// layout in [`crate::tui::pill_row`].
+fn bar_width(pills: &[crate::tui::Pill]) -> u16 {
+    1 + pills
+        .iter()
+        .map(|p| (p.key.chars().count() + p.label.chars().count() + 4) as u16)
+        .sum::<u16>()
+}
+
+fn draw_bar(f: &mut Frame, g: &Git, area: Rect, theme: &Theme) {
+    let ink = theme.or("panel_bg", Color::Rgb(16, 18, 20));
+    let pills = bar_pills(g, theme);
     let (spans, _) = crate::tui::pill_row(&pills, ink, area.x);
     f.render_widget(Paragraph::new(Line::from(spans)), area);
 }
@@ -735,6 +749,9 @@ r|󰑓|pull|git pull
         assert!(screen.contains("Git"), "{screen}");
         assert!(screen.contains("review worktree"), "{screen}");
         assert!(screen.contains('╭'), "{screen}");
+        // The card must be wide enough for the whole command bar — a narrow menu
+        // once clipped `esc close` to `esc clo`.
+        assert!(screen.contains("close"), "{screen}");
         let _ = Config::default();
     }
 }
