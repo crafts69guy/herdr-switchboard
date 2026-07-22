@@ -998,6 +998,17 @@ fn run(
                 if app.startup.is_some() {
                     continue;
                 }
+                // The git overlay owns the mouse while open: the wheel scrolls its
+                // history body, and other mouse events are swallowed rather than
+                // leaking to the picker hidden beneath it.
+                if app.git.show {
+                    match m.kind {
+                        MouseEventKind::ScrollDown => app.git.on_wheel(1),
+                        MouseEventKind::ScrollUp => app.git.on_wheel(-1),
+                        _ => {}
+                    }
+                    continue;
+                }
                 let at = Position::new(m.column, m.row);
                 match m.kind {
                     MouseEventKind::ScrollDown => {

@@ -351,6 +351,14 @@ impl Git {
         self.sel = ((self.sel as i32 + d).rem_euclid(n as i32)) as usize;
     }
 
+    /// Wheel over the overlay: scroll the history body by moving the selection
+    /// (which pages the list). A no-op in the menu, which has nothing to scroll.
+    pub fn on_wheel(&mut self, d: i32) {
+        if matches!(self.view, View::History) {
+            self.hstep(d);
+        }
+    }
+
     fn hstep(&mut self, d: i32) {
         let n = self.filtered.len();
         if n == 0 {
@@ -1126,6 +1134,19 @@ r|󰑓|pull|git pull
         assert!(screen.contains("60/60"), "{screen}");
         assert!(screen.contains("commit number 59"), "{screen}");
         assert!(!screen.contains("commit number 0 "), "{screen}");
+    }
+
+    #[test]
+    fn wheel_scrolls_the_history_body_but_not_the_menu() {
+        let mut g = Git::new();
+        open_default(&mut g); // two commits
+        g.on_wheel(1);
+        assert_eq!(g.hsel, 0, "the menu has nothing to scroll");
+        g.on_key(key(KeyCode::Char('h'))); // enter history
+        g.on_wheel(1);
+        assert_eq!(g.hsel, 1, "wheel-down moves the history selection");
+        g.on_wheel(-1);
+        assert_eq!(g.hsel, 0, "wheel-up moves it back");
     }
 
     #[test]

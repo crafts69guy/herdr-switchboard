@@ -18,7 +18,8 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   after the query.
 - The history browser is now a **fixed-size box**: the detail header is pinned and never shrinks
   while filtering, the search input sits in its own rounded box just above the list, and only the
-  commit list scrolls — so the card no longer resizes as matches come and go.
+  commit list scrolls — so the card no longer resizes as matches come and go. The **mouse wheel**
+  scrolls the list, and the overlay now swallows mouse events instead of leaking them to the picker.
 
 ### Fixed
 
