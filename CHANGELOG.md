@@ -15,6 +15,11 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Base-branch detection ran `git rev-parse --verify` through the terminal-inheriting `status` path,
   and `rev-parse` echoes the resolved SHA on success; it now captures the output instead.
 
+### Changed
+
+- Every **git overlay (⌥g) row now carries an icon** — worktree, staged, branch, and lazygit were
+  previously blank — so the menu reads consistently and the labels line up.
+
 ## [0.9.0] - 2026-07-22
 
 ### Added

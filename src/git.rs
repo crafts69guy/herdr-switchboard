@@ -133,22 +133,26 @@ impl Git {
         has_lazygit: bool,
         customs: Vec<Custom>,
     ) {
+        // Nerd Font (nf-md) glyphs, one per row so every label lines up: worktree
+        // is unstaged edits (pencil), staged is the ready index (check), branch is
+        // a diff against the base (source-branch), history the commit list (clock),
+        // conflicts the merge (alert), lazygit the git surface (git logo).
         let mut items = vec![
             Item {
                 key: 'd',
-                icon: "".into(),
+                icon: "󰏫".into(),
                 label: "review worktree".into(),
                 act: Act::Review("worktree"),
             },
             Item {
                 key: 's',
-                icon: "".into(),
+                icon: "󰄬".into(),
                 label: "review staged".into(),
                 act: Act::Review("staged"),
             },
             Item {
                 key: 'b',
-                icon: "".into(),
+                icon: "󰘬".into(),
                 label: match &base {
                     Some(b) => format!("review branch ({b})"),
                     None => "review branch".into(),
@@ -171,7 +175,7 @@ impl Git {
         if has_lazygit {
             items.push(Item {
                 key: 'l',
-                icon: "".into(),
+                icon: "󰊢".into(),
                 label: "lazygit".into(),
                 act: Act::Review("lazygit"),
             });
