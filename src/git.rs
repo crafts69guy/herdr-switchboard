@@ -14,7 +14,7 @@
 //! pure IO-free navigation and the whole surface is unit-testable.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use ratatui::layout::Rect;
+use ratatui::layout::{Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
@@ -519,6 +519,17 @@ pub fn draw(f: &mut Frame, area: Rect, theme: &Theme, title: Color, g: &Git) {
     .split(inner);
     f.render_widget(Paragraph::new(lines), rows[0]);
     draw_bar(f, g, rows[1], theme);
+
+    // Place the real (blinking) cursor after the query in the history search line
+    // — its first body row — overriding the caret the picker left in its own
+    // search box. The menu view has no input, so it keeps no cursor here.
+    if matches!(g.view, View::History) && !g.commits.is_empty() {
+        let x = rows[0].x
+            + Span::raw(SEARCH_PREFIX).width() as u16
+            + Span::raw(g.query.as_str()).width() as u16;
+        let max_x = rows[0].x + rows[0].width.saturating_sub(1);
+        f.set_cursor_position(Position::new(x.min(max_x), rows[0].y));
+    }
 }
 
 fn menu_lines(
@@ -569,6 +580,11 @@ const HIST_W: usize = 68;
 /// The relative-date column in a history list row, padded so subjects line up.
 const DATE_COL: usize = 14;
 
+/// The leading run of the history search line (a leading space, the filter icon,
+/// a space) — shared so `draw` can place the real terminal cursor exactly where
+/// `history_lines` starts the query text.
+const SEARCH_PREFIX: &str = " 󰍉 ";
+
 /// Case-insensitive subsequence fuzzy match: every char of `needle` appears in
 /// `haystack` in order. An empty needle matches everything.
 fn fuzzy_match(needle: &str, haystack: &str) -> bool {
@@ -617,9 +633,10 @@ fn history_lines(
 
     let mut lines = Vec::new();
 
-    // The fuzzy filter input, always shown: the query with a caret, or a dim hint
-    // when empty so it reads as "type to filter" rather than a blank row.
-    let mut search = vec![Span::styled(" 󰍉 ", Style::default().fg(accent))];
+    // The fuzzy filter input, always shown: the query (with the real terminal
+    // cursor placed after it by `draw`), or a dim hint when empty so it reads as
+    // "type to filter" rather than a blank row.
+    let mut search = vec![Span::styled(SEARCH_PREFIX, Style::default().fg(accent))];
     if g.query.is_empty() {
         search.push(Span::styled(
             "type to filter",
@@ -627,7 +644,6 @@ fn history_lines(
         ));
     } else {
         search.push(Span::styled(g.query.clone(), Style::default().fg(text)));
-        search.push(Span::styled("▏", Style::default().fg(accent)));
     }
     lines.push(Line::from(search));
 
@@ -1018,6 +1034,22 @@ r|󰑓|pull|git pull
         assert!(screen.contains("60/60"), "{screen}");
         assert!(screen.contains("commit number 59"), "{screen}");
         assert!(!screen.contains("commit number 0 "), "{screen}");
+    }
+
+    #[test]
+    fn history_places_the_cursor_after_the_query() {
+        let mut g = Git::new();
+        open_default(&mut g);
+        g.on_key(key(KeyCode::Char('h'))); // history
+        g.on_key(key(KeyCode::Char('x'))); // query "x"
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(90, 24)).unwrap();
+        term.draw(|f| draw(f, f.area(), &Theme::default(), Color::Yellow, &g))
+            .unwrap();
+        let pos = term.get_cursor_position().unwrap();
+        // The cursor sits after the icon prefix and the one-char query, on the
+        // first body row — not stranded at the origin.
+        assert!(pos.x > 4, "cursor x={}", pos.x);
+        assert!(pos.y > 0, "cursor y={}", pos.y);
     }
 
     #[test]

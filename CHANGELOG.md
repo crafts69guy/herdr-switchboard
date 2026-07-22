@@ -14,7 +14,8 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `n/total` position counter in the title. Enter still opens the selected commit's diff in `hunk`.
 - The history browser is now **fuzzy-filterable** — type to narrow the list by sha, subject, or
   author (case-insensitive subsequence, chronological order preserved); `↑`/`↓` or `^n`/`^p` move,
-  and `esc` clears the filter before backing out.
+  and `esc` clears the filter before backing out. Its search line carries a **real blinking cursor**
+  after the query.
 
 ### Fixed
 
