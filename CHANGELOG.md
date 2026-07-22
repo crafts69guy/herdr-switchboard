@@ -11,6 +11,9 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - The **git overlay (⌥g) is now sized to fit its command bar**, so a short menu no longer clips
   `esc close` to `esc clo`; the card is as wide as the wider of its rows and its footer pills.
+- Opening the git overlay **no longer prints a stray commit SHA** onto the screen beneath the card.
+  Base-branch detection ran `git rev-parse --verify` through the terminal-inheriting `status` path,
+  and `rev-parse` echoes the resolved SHA on success; it now captures the output instead.
 
 ## [0.9.0] - 2026-07-22
 

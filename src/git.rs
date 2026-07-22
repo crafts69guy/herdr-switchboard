@@ -318,7 +318,12 @@ pub fn detect_base_branch(
     cwd: &str,
     configured: &str,
 ) -> Option<String> {
-    let resolves = |r: &str| runner.ok("git", &["-C", cwd, "rev-parse", "--verify", "--quiet", r]);
+    // `capture`, not `ok`: `ok` runs through `status`, which inherits the
+    // terminal, and `rev-parse --verify` prints the resolved SHA on success —
+    // that 40-char line was landing on the screen under the git overlay. `capture`
+    // pipes stdout (and stderr), so the check stays silent; we only want the exit.
+    let resolves =
+        |r: &str| runner.capture("git", &["-C", cwd, "rev-parse", "--verify", "--quiet", r]).is_some();
     if !configured.is_empty() && resolves(configured) {
         return Some(configured.to_string());
     }
