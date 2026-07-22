@@ -15,6 +15,17 @@ jump to a live agent, switch workspaces, or open a repo/worktree exactly where y
 a new workspace, tab, split, or the current pane. It is a Rust TUI (ratatui + nucleo); no
 fzf required.
 
+> [!WARNING]
+> **This plugin is early, in active development, and experimental.** It is pre-1.0
+> (`0.x`): behaviour, keybindings, configuration keys, and the on-disk state format can
+> change between releases, sometimes without a migration path. Some features depend on
+> herdr's own experimental surfaces (e.g. the Kitty graphics proxy behind
+> `[experimental].kitty_graphics`) and may break as herdr evolves. Expect rough edges,
+> pin a version if you need stability, and please
+> [report issues](https://github.com/crafts69guy/herdr-ghq/issues). The one destructive
+> action (`ctrl-x` remove) asks you to type the repo name to confirm — but back up
+> anything you can't afford to lose.
+
 ![The herdr-ghq switcher: a fuzzy list with live preview and the `?` keybindings popup open](docs/switcher.png)
 
 ## Requirements
