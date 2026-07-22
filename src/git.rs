@@ -36,10 +36,13 @@ pub struct ReviewSpec {
     pub label: String,
 }
 
-/// A commit in the `history` sub-list: a short sha and its subject line.
+/// A commit in the `history` sub-list: a short sha, a relative date and author
+/// (shown in the detail header), and its subject line.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Commit {
     pub sha: String,
+    pub date: String,
+    pub author: String,
     pub subject: String,
 }
 
@@ -337,22 +340,38 @@ pub fn detect_base_branch(
         .map(str::to_string)
 }
 
-/// The recent commits for the history sub-list: `git log --oneline`, each line
-/// split into its short sha and subject. Empty on any failure (not a repo, no
-/// commits) — the sub-list just shows nothing.
+/// The recent commits for the history sub-list. A `--pretty` format with a US
+/// (`\x1f`) field separator carries the short sha, relative date, author, and
+/// subject in one line each — the detail header shows the first three, the list
+/// the sha and subject. Empty on any failure (not a repo, no commits) — the
+/// sub-list just shows nothing.
 pub fn load_commits(runner: &dyn CommandRunner, cwd: &str, n: usize) -> Vec<Commit> {
     let n = n.to_string();
     let out = runner.capture(
         "git",
-        &["-C", cwd, "log", "--oneline", "--no-decorate", "-n", &n],
+        &[
+            "-C",
+            cwd,
+            "log",
+            "--no-decorate",
+            "-n",
+            &n,
+            "--pretty=format:%h%x1f%cr%x1f%an%x1f%s",
+        ],
     );
     out.into_iter()
         .flat_map(|s| s.lines().map(str::to_string).collect::<Vec<_>>())
         .filter_map(|line| {
-            let (sha, subject) = line.split_once(' ')?;
+            let mut fields = line.split('\u{1f}');
+            let sha = fields.next()?.to_string();
+            if sha.is_empty() {
+                return None;
+            }
             Some(Commit {
-                sha: sha.to_string(),
-                subject: subject.to_string(),
+                sha,
+                date: fields.next().unwrap_or_default().to_string(),
+                author: fields.next().unwrap_or_default().to_string(),
+                subject: fields.next().unwrap_or_default().to_string(),
             })
         })
         .collect()
@@ -396,7 +415,7 @@ pub fn draw(f: &mut Frame, area: Rect, theme: &Theme, title: Color, g: &Git) {
 
     let (lines, title_tail) = match g.view {
         View::Menu => (menu_lines(g, ink, text, sub, accent, title), " · git "),
-        View::History => (history_lines(g, ink, text, sub, title), " · history "),
+        View::History => (history_lines(g, text, sub, accent, title), " · history "),
     };
 
     // Width: the wider of the content and the command bar, clamped; height: the
@@ -479,40 +498,83 @@ fn menu_lines(
         .collect()
 }
 
-fn history_lines(
-    g: &Git,
-    _ink: Color,
-    text: Color,
-    sub: Color,
-    accent: Color,
-) -> Vec<Line<'static>> {
+/// Width the history detail wraps and the list clips to. Fixed so the wrap and
+/// the separator rule can be built before the card's final width is known — the
+/// menu sizes to its widest row, but history reads better at a steady width.
+const HIST_W: usize = 52;
+
+/// Truncate to `w` chars with a trailing ellipsis; short strings pass through.
+fn clip(s: &str, w: usize) -> String {
+    if s.chars().count() <= w {
+        return s.to_string();
+    }
+    let mut out: String = s.chars().take(w.saturating_sub(1)).collect();
+    out.push('…');
+    out
+}
+
+/// The history view: a detail header for the highlighted commit — its sha,
+/// relative date, author, and full (wrapped) subject — then a rule, then the
+/// commit list. The header means a clipped list row is never the only place a
+/// subject appears, so the user always sees what `↵ show diff` will open.
+fn history_lines(g: &Git, text: Color, sub: Color, accent: Color, title: Color) -> Vec<Line<'static>> {
     if g.commits.is_empty() {
         return vec![Line::from(Span::styled(
             "  no commits",
             Style::default().fg(sub),
         ))];
     }
-    g.commits
-        .iter()
-        .enumerate()
-        .map(|(i, c)| {
-            let selected = i == g.hsel;
-            Line::from(vec![
-                Span::styled(
-                    if selected { "▌ " } else { "  " },
-                    Style::default().fg(accent),
-                ),
-                Span::styled(
-                    format!("{} ", c.sha),
-                    Style::default().fg(accent).add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    c.subject.clone(),
-                    Style::default().fg(if selected { text } else { sub }),
-                ),
-            ])
-        })
-        .collect()
+
+    let mut lines = Vec::new();
+    if let Some(c) = g.commits.get(g.hsel) {
+        let mut meta = vec![
+            Span::raw(" "),
+            Span::styled(
+                c.sha.clone(),
+                Style::default().fg(title).add_modifier(Modifier::BOLD),
+            ),
+        ];
+        if !c.date.is_empty() {
+            meta.push(Span::styled(format!("  {}", c.date), Style::default().fg(sub)));
+        }
+        if !c.author.is_empty() {
+            meta.push(Span::styled(
+                format!("  ·  {}", c.author),
+                Style::default().fg(sub),
+            ));
+        }
+        lines.push(Line::from(meta));
+        for (prefix, line) in crate::markdown::wrap(&c.subject, HIST_W, "", "") {
+            lines.push(Line::from(Span::styled(
+                format!(" {prefix}{line}"),
+                Style::default().fg(text).add_modifier(Modifier::BOLD),
+            )));
+        }
+        lines.push(Line::from(Span::styled(
+            "─".repeat(HIST_W),
+            Style::default().fg(sub),
+        )));
+    }
+
+    for (i, c) in g.commits.iter().enumerate() {
+        let selected = i == g.hsel;
+        let room = HIST_W.saturating_sub(c.sha.chars().count() + 3);
+        lines.push(Line::from(vec![
+            Span::styled(
+                if selected { "▌ " } else { "  " },
+                Style::default().fg(accent),
+            ),
+            Span::styled(
+                format!("{} ", c.sha),
+                Style::default().fg(accent).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                clip(&c.subject, room),
+                Style::default().fg(if selected { text } else { sub }),
+            ),
+        ]));
+    }
+    lines
 }
 
 /// The command-bar pills for the current view. Shared by the width calculation in
@@ -525,7 +587,7 @@ fn bar_pills(g: &Git, theme: &Theme) -> Vec<crate::tui::Pill<'static>> {
             crate::tui::Pill::new("esc", "close", theme.or("red", Color::Red)),
         ],
         View::History => vec![
-            crate::tui::Pill::new("↵", "show", theme.or("accent", Color::Cyan)),
+            crate::tui::Pill::new("↵", "show diff", theme.or("accent", Color::Cyan)),
             crate::tui::Pill::new("↑ ↓", "move", theme.or("blue", Color::Blue)),
             crate::tui::Pill::new("esc", "back", theme.or("red", Color::Red)),
         ],
@@ -568,10 +630,14 @@ mod tests {
             vec![
                 Commit {
                     sha: "aaa1111".into(),
+                    date: "2 hours ago".into(),
+                    author: "Ada".into(),
                     subject: "first".into(),
                 },
                 Commit {
                     sha: "bbb2222".into(),
+                    date: "3 hours ago".into(),
+                    author: "Ada".into(),
                     subject: "second".into(),
                 },
             ],
@@ -608,10 +674,12 @@ mod tests {
     }
 
     #[test]
-    fn commits_parse_into_sha_and_subject() {
+    fn commits_parse_into_sha_date_author_and_subject() {
+        // The `\x1f`-delimited pretty format, one commit per line.
         let runner = MockRunner::new().on(
-            "log --oneline",
-            "abc1234 fix the thing\ndef5678 add a test\n",
+            "log",
+            "abc1234\u{1f}2 hours ago\u{1f}Ada\u{1f}fix the thing\n\
+             def5678\u{1f}3 days ago\u{1f}Bea\u{1f}add a test\n",
         );
         let commits = load_commits(&runner, "/r", 50);
         assert_eq!(
@@ -619,10 +687,14 @@ mod tests {
             vec![
                 Commit {
                     sha: "abc1234".into(),
+                    date: "2 hours ago".into(),
+                    author: "Ada".into(),
                     subject: "fix the thing".into()
                 },
                 Commit {
                     sha: "def5678".into(),
+                    date: "3 days ago".into(),
+                    author: "Bea".into(),
                     subject: "add a test".into()
                 },
             ]
@@ -762,5 +834,29 @@ r|󰑓|pull|git pull
         // once clipped `esc close` to `esc clo`.
         assert!(screen.contains("close"), "{screen}");
         let _ = Config::default();
+    }
+
+    #[test]
+    fn history_view_shows_a_detail_header_and_show_diff_action() {
+        let mut g = Git::new();
+        open_default(&mut g);
+        g.on_key(key(KeyCode::Char('h'))); // open the history sub-list
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
+        term.draw(|f| draw(f, f.area(), &Theme::default(), Color::Yellow, &g))
+            .unwrap();
+        let buf = term.backend().buffer().clone();
+        let screen: String = (0..24)
+            .map(|y| {
+                (0..80)
+                    .map(|x| buf[(x, y)].symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        // The detail header carries the selected commit's date and author, and the
+        // footer spells out what Enter does.
+        assert!(screen.contains("2 hours ago"), "{screen}");
+        assert!(screen.contains("Ada"), "{screen}");
+        assert!(screen.contains("show diff"), "{screen}");
     }
 }

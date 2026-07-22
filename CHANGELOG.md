@@ -19,6 +19,9 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - Every **git overlay (⌥g) row now carries an icon** — worktree, staged, branch, and lazygit were
   previously blank — so the menu reads consistently and the labels line up.
+- The git overlay's **history view now leads with a detail header** for the highlighted commit — its
+  sha, relative date, author, and full (wrapped) subject — above the commit list, so a clipped list
+  row is never the only place a subject appears. Its footer now reads `↵ show diff`.
 
 ## [0.9.0] - 2026-07-22
 
