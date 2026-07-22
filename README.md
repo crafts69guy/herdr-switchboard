@@ -144,9 +144,13 @@ update and remove actions.
 | review **worktree**   | `hunk diff`                                                          |
 | review **staged**     | `hunk diff --staged`                                                 |
 | review **branch**     | `hunk diff <base>` — base auto-detected, or pinned via `base_branch` |
-| review **history**    | a `git log` list → `hunk show <commit>`                             |
+| review **history**    | a scrolling, fuzzy-filterable `git log` browser → `hunk show <commit>` |
 | **resolve conflicts** | review the unmerged diff in `hunk`, then open `$EDITOR` on the files |
 | **lazygit**           | stage / commit / push (shown only when `lazygit` is installed)       |
+
+**review history** opens a log browser: up to 200 commits with a detail header (sha, date, author,
+subject) for the highlighted one. **Type to fuzzy-filter** by sha, subject, or author; `↑`/`↓` (or
+`^n`/`^p`) move, `enter` opens the commit's diff, and `esc` clears the filter before backing out.
 
 Reviews open in [`hunk`](https://github.com/modem-dev/hunk) (`brew install hunk`), themed from your
 herdr `[theme.custom]`. Add your own rows in `menu.conf` (`key|icon|label|shell command`) beside

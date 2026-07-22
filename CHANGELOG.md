@@ -12,6 +12,9 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - The git overlay's history view is now a **scrolling log browser**: it loads up to 200 commits,
   pages the list so the selection is always on screen (no more overflowing the card), and shows a
   `n/total` position counter in the title. Enter still opens the selected commit's diff in `hunk`.
+- The history browser is now **fuzzy-filterable** — type to narrow the list by sha, subject, or
+  author (case-insensitive subsequence, chronological order preserved); `↑`/`↓` or `^n`/`^p` move,
+  and `esc` clears the filter before backing out.
 
 ### Fixed
 

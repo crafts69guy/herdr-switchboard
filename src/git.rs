@@ -13,7 +13,7 @@
 //! **when the overlay opens**, through the [`CommandRunner`] seam, so `on_key` stays
 //! pure IO-free navigation and the whole surface is unit-testable.
 
-use crossterm::event::{KeyCode, KeyEvent};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -98,6 +98,10 @@ pub struct Git {
     /// Detected base branch for the `branch` review, `None` when none resolves.
     base: Option<String>,
     commits: Vec<Commit>,
+    /// The history fuzzy filter, and the `commits` indices it currently keeps
+    /// (all of them when empty). `hsel` indexes into `filtered`, not `commits`.
+    query: String,
+    filtered: Vec<usize>,
     items: Vec<Item>,
     view: View,
     sel: usize,
@@ -114,6 +118,8 @@ impl Git {
             label: String::new(),
             base: None,
             commits: Vec::new(),
+            query: String::new(),
+            filtered: Vec::new(),
             items: Vec::new(),
             view: View::Menu,
             sel: 0,
@@ -205,8 +211,29 @@ impl Git {
         self.view = View::Menu;
         self.sel = 0;
         self.hsel = 0;
+        self.query.clear();
+        self.refilter();
         self.chosen = None;
         self.show = true;
+    }
+
+    /// Recompute `filtered` from `query`: the `commits` indices whose `sha`,
+    /// subject, or author fuzzily match, in chronological order (no re-ranking, so
+    /// the log still reads newest-first). Keeps `hsel` in range.
+    fn refilter(&mut self) {
+        let q = self.query.clone();
+        self.filtered = self
+            .commits
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| {
+                q.is_empty() || fuzzy_match(&q, &format!("{} {} {}", c.sha, c.subject, c.author))
+            })
+            .map(|(i, _)| i)
+            .collect();
+        if self.hsel >= self.filtered.len() {
+            self.hsel = 0;
+        }
     }
 
     /// Resolve the selected menu row into a [`ReviewSpec`], or open the history list.
@@ -226,6 +253,8 @@ impl Git {
             Act::History => {
                 self.view = View::History;
                 self.hsel = 0;
+                self.query.clear();
+                self.refilter();
                 return false;
             }
         };
@@ -242,7 +271,7 @@ impl Git {
 
     /// Dispatch the selected commit as a `history` review.
     fn activate_commit(&mut self) -> bool {
-        let Some(commit) = self.commits.get(self.hsel) else {
+        let Some(commit) = self.filtered.get(self.hsel).and_then(|&i| self.commits.get(i)) else {
             return false;
         };
         self.chosen = Some(ReviewSpec {
@@ -278,18 +307,38 @@ impl Git {
                 }
                 _ => {}
             },
-            View::History => match k.code {
-                // esc backs out to the menu rather than closing the whole overlay.
-                KeyCode::Esc | KeyCode::Char('q') => self.view = View::Menu,
-                KeyCode::Down | KeyCode::Char('j') => self.hstep(1),
-                KeyCode::Up | KeyCode::Char('k') => self.hstep(-1),
-                KeyCode::Home | KeyCode::Char('g') => self.hsel = 0,
-                KeyCode::End | KeyCode::Char('G') => {
-                    self.hsel = self.commits.len().saturating_sub(1)
+            // The history view is a fuzzy picker: printable keys type into the
+            // filter, so navigation moves to the arrows (and readline `^n`/`^p`).
+            View::History => {
+                let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
+                match k.code {
+                    // esc clears a query first, then backs out to the menu.
+                    KeyCode::Esc => {
+                        if self.query.is_empty() {
+                            self.view = View::Menu;
+                        } else {
+                            self.query.clear();
+                            self.refilter();
+                        }
+                    }
+                    KeyCode::Down => self.hstep(1),
+                    KeyCode::Up => self.hstep(-1),
+                    KeyCode::Char('n') if ctrl => self.hstep(1),
+                    KeyCode::Char('p') if ctrl => self.hstep(-1),
+                    KeyCode::Home => self.hsel = 0,
+                    KeyCode::End => self.hsel = self.filtered.len().saturating_sub(1),
+                    KeyCode::Enter => return self.activate_commit(),
+                    KeyCode::Backspace => {
+                        self.query.pop();
+                        self.refilter();
+                    }
+                    KeyCode::Char(c) if !ctrl && !k.modifiers.contains(KeyModifiers::ALT) => {
+                        self.query.push(c);
+                        self.refilter();
+                    }
+                    _ => {}
                 }
-                KeyCode::Enter => return self.activate_commit(),
-                _ => {}
-            },
+            }
         }
         false
     }
@@ -303,7 +352,7 @@ impl Git {
     }
 
     fn hstep(&mut self, d: i32) {
-        let n = self.commits.len();
+        let n = self.filtered.len();
         if n == 0 {
             return;
         }
@@ -414,17 +463,19 @@ pub fn draw(f: &mut Frame, area: Rect, theme: &Theme, title: Color, g: &Git) {
     let border = theme.or("accent", Color::Cyan);
 
     // The history list is a scrolling viewport: reserve the border, the command
-    // bar, and the four-row detail header, and give the rest of the card height to
-    // commit rows. Everything past `viewport` scrolls a page at a time.
+    // bar, and the search-plus-detail header (up to five rows), and give the rest
+    // of the card height to commit rows. Everything past `viewport` pages.
     let body_h = area.height.saturating_sub(1) as usize;
-    let viewport = body_h.saturating_sub(7).clamp(6, 40);
+    let viewport = body_h.saturating_sub(8).clamp(6, 40);
     let (lines, title_tail): (Vec<Line<'static>>, String) = match g.view {
         View::Menu => (menu_lines(g, ink, text, sub, accent, title), " · git ".into()),
         View::History => {
             let tail = if g.commits.is_empty() {
                 " · history ".into()
+            } else if g.filtered.is_empty() {
+                " · history · no matches ".into()
             } else {
-                format!(" · history · {}/{} ", g.hsel + 1, g.commits.len())
+                format!(" · history · {}/{} ", g.hsel + 1, g.filtered.len())
             };
             (history_lines(g, text, sub, accent, title, viewport), tail)
         }
@@ -518,6 +569,21 @@ const HIST_W: usize = 68;
 /// The relative-date column in a history list row, padded so subjects line up.
 const DATE_COL: usize = 14;
 
+/// Case-insensitive subsequence fuzzy match: every char of `needle` appears in
+/// `haystack` in order. An empty needle matches everything.
+fn fuzzy_match(needle: &str, haystack: &str) -> bool {
+    let mut hay = haystack.chars().flat_map(char::to_lowercase);
+    'needle: for nc in needle.chars().flat_map(char::to_lowercase) {
+        for hc in hay.by_ref() {
+            if hc == nc {
+                continue 'needle;
+            }
+        }
+        return false;
+    }
+    true
+}
+
 /// Truncate to `w` chars with a trailing ellipsis; short strings pass through.
 fn clip(s: &str, w: usize) -> String {
     if s.chars().count() <= w {
@@ -550,7 +616,23 @@ fn history_lines(
     }
 
     let mut lines = Vec::new();
-    if let Some(c) = g.commits.get(g.hsel) {
+
+    // The fuzzy filter input, always shown: the query with a caret, or a dim hint
+    // when empty so it reads as "type to filter" rather than a blank row.
+    let mut search = vec![Span::styled(" 󰍉 ", Style::default().fg(accent))];
+    if g.query.is_empty() {
+        search.push(Span::styled(
+            "type to filter",
+            Style::default().fg(sub).add_modifier(Modifier::ITALIC),
+        ));
+    } else {
+        search.push(Span::styled(g.query.clone(), Style::default().fg(text)));
+        search.push(Span::styled("▏", Style::default().fg(accent)));
+    }
+    lines.push(Line::from(search));
+
+    // Detail header for the highlighted commit (resolved through the filter).
+    if let Some(c) = g.filtered.get(g.hsel).and_then(|&i| g.commits.get(i)) {
         let mut meta = vec![
             Span::raw(" "),
             Span::styled(
@@ -576,22 +658,28 @@ fn history_lines(
                 Style::default().fg(text).add_modifier(Modifier::BOLD),
             )));
         }
+    } else {
         lines.push(Line::from(Span::styled(
-            "─".repeat(HIST_W),
+            "  no matches",
             Style::default().fg(sub),
         )));
     }
+    lines.push(Line::from(Span::styled(
+        "─".repeat(HIST_W),
+        Style::default().fg(sub),
+    )));
 
-    // Page the list so the selection is always visible: the page holding `hsel`.
-    let len = g.commits.len();
+    // Page the filtered list so the selection is always visible: the page holding `hsel`.
+    let len = g.filtered.len();
     let start = if len <= viewport {
         0
     } else {
         (g.hsel / viewport) * viewport
     };
     let end = (start + viewport).min(len);
-    for (i, c) in g.commits.iter().enumerate().take(end).skip(start) {
-        let selected = i == g.hsel;
+    for (rank, &i) in g.filtered.iter().enumerate().take(end).skip(start) {
+        let Some(c) = g.commits.get(i) else { continue };
+        let selected = rank == g.hsel;
         // marker(2) + sha + space + date column + space, then the subject fills the rest.
         let room = HIST_W.saturating_sub(4 + c.sha.chars().count() + DATE_COL);
         let date = clip(&c.date, DATE_COL);
@@ -797,8 +885,8 @@ r|󰑓|pull|git pull
         // h opens history (no dispatch yet)...
         assert!(!g.on_key(key(KeyCode::Char('h'))));
         assert!(g.show, "history must stay in the overlay");
-        // ...move to the second commit and pick it.
-        g.on_key(key(KeyCode::Char('j')));
+        // ...move to the second commit (↓, since letters now type into the filter) and pick it.
+        g.on_key(key(KeyCode::Down));
         assert!(g.on_key(key(KeyCode::Enter)));
         let spec = g.chosen.unwrap();
         assert_eq!(spec.mode, "history");
@@ -930,5 +1018,69 @@ r|󰑓|pull|git pull
         assert!(screen.contains("60/60"), "{screen}");
         assert!(screen.contains("commit number 59"), "{screen}");
         assert!(!screen.contains("commit number 0 "), "{screen}");
+    }
+
+    #[test]
+    fn fuzzy_match_is_a_case_insensitive_subsequence() {
+        assert!(fuzzy_match("", "anything"));
+        assert!(fuzzy_match("abc", "aXbYc"));
+        assert!(fuzzy_match("FIX", "fix the thing"));
+        assert!(!fuzzy_match("abc", "acb")); // order matters
+        assert!(!fuzzy_match("z", "abc"));
+    }
+
+    #[test]
+    fn typing_filters_the_history_and_enter_picks_a_match() {
+        let mut g = Git::new();
+        g.open(
+            "/repo".into(),
+            "repo".into(),
+            None,
+            vec![
+                Commit {
+                    sha: "aaa1111".into(),
+                    date: "1h".into(),
+                    author: "Ada".into(),
+                    subject: "add login".into(),
+                },
+                Commit {
+                    sha: "bbb2222".into(),
+                    date: "2h".into(),
+                    author: "Bea".into(),
+                    subject: "fix logout".into(),
+                },
+                Commit {
+                    sha: "ccc3333".into(),
+                    date: "3h".into(),
+                    author: "Cy".into(),
+                    subject: "refactor cache".into(),
+                },
+            ],
+            false,
+            vec![],
+        );
+        g.on_key(key(KeyCode::Char('h'))); // enter history
+        for ch in "fix".chars() {
+            g.on_key(key(KeyCode::Char(ch)));
+        }
+        // Only the "fix logout" commit is a subsequence match.
+        assert_eq!(g.filtered.len(), 1);
+        assert!(g.on_key(key(KeyCode::Enter)));
+        assert_eq!(g.chosen.unwrap().arg, "bbb2222");
+    }
+
+    #[test]
+    fn esc_clears_the_filter_before_leaving_history() {
+        let mut g = Git::new();
+        open_default(&mut g);
+        g.on_key(key(KeyCode::Char('h')));
+        g.on_key(key(KeyCode::Char('f'))); // filter query "f"
+        assert_eq!(g.query, "f");
+        g.on_key(key(KeyCode::Esc)); // first esc clears the query...
+        assert!(g.query.is_empty());
+        assert!(g.show, "clearing the filter must not close the overlay");
+        g.on_key(key(KeyCode::Esc)); // ...then history → menu...
+        g.on_key(key(KeyCode::Esc)); // ...then menu closes.
+        assert!(!g.show);
     }
 }
