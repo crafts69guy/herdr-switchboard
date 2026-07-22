@@ -424,7 +424,7 @@ pub fn draw(f: &mut Frame, area: Rect, theme: &Theme, title: Color, g: &Git) {
     // clip `esc close` to `esc clo`.
     let pills = bar_pills(g, theme);
     let content_w = lines.iter().map(|l| l.width() as u16).max().unwrap_or(24);
-    let want_w = content_w.max(bar_width(&pills)).clamp(24, 60) + 4;
+    let want_w = content_w.max(bar_width(&pills)).clamp(24, 78) + 4;
     let w = want_w.min(area.width.saturating_sub(2));
     let want_h = lines.len() as u16 + 2 /* border */ + 1 /* bar */;
     let h = want_h.min(area.height.saturating_sub(1)).max(6);
@@ -501,7 +501,10 @@ fn menu_lines(
 /// Width the history detail wraps and the list clips to. Fixed so the wrap and
 /// the separator rule can be built before the card's final width is known — the
 /// menu sizes to its widest row, but history reads better at a steady width.
-const HIST_W: usize = 52;
+const HIST_W: usize = 68;
+
+/// The relative-date column in a history list row, padded so subjects line up.
+const DATE_COL: usize = 14;
 
 /// Truncate to `w` chars with a trailing ellipsis; short strings pass through.
 fn clip(s: &str, w: usize) -> String {
@@ -558,7 +561,9 @@ fn history_lines(g: &Git, text: Color, sub: Color, accent: Color, title: Color) 
 
     for (i, c) in g.commits.iter().enumerate() {
         let selected = i == g.hsel;
-        let room = HIST_W.saturating_sub(c.sha.chars().count() + 3);
+        // marker(2) + sha + space + date column + space, then the subject fills the rest.
+        let room = HIST_W.saturating_sub(4 + c.sha.chars().count() + DATE_COL);
+        let date = clip(&c.date, DATE_COL);
         lines.push(Line::from(vec![
             Span::styled(
                 if selected { "▌ " } else { "  " },
@@ -568,6 +573,7 @@ fn history_lines(g: &Git, text: Color, sub: Color, accent: Color, title: Color) 
                 format!("{} ", c.sha),
                 Style::default().fg(accent).add_modifier(Modifier::BOLD),
             ),
+            Span::styled(format!("{date:<DATE_COL$} "), Style::default().fg(sub)),
             Span::styled(
                 clip(&c.subject, room),
                 Style::default().fg(if selected { text } else { sub }),

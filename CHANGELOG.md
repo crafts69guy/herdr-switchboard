@@ -21,7 +21,10 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   previously blank — so the menu reads consistently and the labels line up.
 - The git overlay's **history view now leads with a detail header** for the highlighted commit — its
   sha, relative date, author, and full (wrapped) subject — above the commit list, so a clipped list
-  row is never the only place a subject appears. Its footer now reads `↵ show diff`.
+  row is never the only place a subject appears. Each list row also gains a **relative-date column**,
+  and its footer now reads `↵ show diff`.
+- The git overlay **card is ~30% wider** (max width 60 → 78 columns), giving the history list room for
+  the sha, date, and subject without cramping.
 
 ## [0.9.0] - 2026-07-22
 
