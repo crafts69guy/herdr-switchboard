@@ -7,6 +7,12 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- The git overlay's history view is now a **scrolling log browser**: it loads up to 200 commits,
+  pages the list so the selection is always on screen (no more overflowing the card), and shows a
+  `n/total` position counter in the title. Enter still opens the selected commit's diff in `hunk`.
+
 ### Fixed
 
 - The **git overlay (⌥g) is now sized to fit its command bar**, so a short menu no longer clips

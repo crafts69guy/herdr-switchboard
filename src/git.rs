@@ -413,9 +413,21 @@ pub fn draw(f: &mut Frame, area: Rect, theme: &Theme, title: Color, g: &Git) {
     let accent = theme.or("accent", Color::Cyan);
     let border = theme.or("accent", Color::Cyan);
 
-    let (lines, title_tail) = match g.view {
-        View::Menu => (menu_lines(g, ink, text, sub, accent, title), " · git "),
-        View::History => (history_lines(g, text, sub, accent, title), " · history "),
+    // The history list is a scrolling viewport: reserve the border, the command
+    // bar, and the four-row detail header, and give the rest of the card height to
+    // commit rows. Everything past `viewport` scrolls a page at a time.
+    let body_h = area.height.saturating_sub(1) as usize;
+    let viewport = body_h.saturating_sub(7).clamp(6, 40);
+    let (lines, title_tail): (Vec<Line<'static>>, String) = match g.view {
+        View::Menu => (menu_lines(g, ink, text, sub, accent, title), " · git ".into()),
+        View::History => {
+            let tail = if g.commits.is_empty() {
+                " · history ".into()
+            } else {
+                format!(" · history · {}/{} ", g.hsel + 1, g.commits.len())
+            };
+            (history_lines(g, text, sub, accent, title, viewport), tail)
+        }
     };
 
     // Width: the wider of the content and the command bar, clamped; height: the
@@ -516,11 +528,20 @@ fn clip(s: &str, w: usize) -> String {
     out
 }
 
-/// The history view: a detail header for the highlighted commit — its sha,
-/// relative date, author, and full (wrapped) subject — then a rule, then the
-/// commit list. The header means a clipped list row is never the only place a
-/// subject appears, so the user always sees what `↵ show diff` will open.
-fn history_lines(g: &Git, text: Color, sub: Color, accent: Color, title: Color) -> Vec<Line<'static>> {
+/// The history log browser: a detail header for the highlighted commit — its
+/// sha, relative date, author, and (wrapped) subject — then a rule, then a
+/// scrolling window of the commit list. The header means a clipped list row is
+/// never the only place a subject appears, so the user always sees what
+/// `↵ show diff` will open; `viewport` bounds how many rows show at once, and
+/// the list pages so the selection is always on screen.
+fn history_lines(
+    g: &Git,
+    text: Color,
+    sub: Color,
+    accent: Color,
+    title: Color,
+    viewport: usize,
+) -> Vec<Line<'static>> {
     if g.commits.is_empty() {
         return vec![Line::from(Span::styled(
             "  no commits",
@@ -547,7 +568,9 @@ fn history_lines(g: &Git, text: Color, sub: Color, accent: Color, title: Color) 
             ));
         }
         lines.push(Line::from(meta));
-        for (prefix, line) in crate::markdown::wrap(&c.subject, HIST_W, "", "") {
+        // Cap the header subject at two rows so the reserved header height (and so
+        // the viewport arithmetic in `draw`) stays predictable.
+        for (prefix, line) in crate::markdown::wrap(&c.subject, HIST_W, "", "").into_iter().take(2) {
             lines.push(Line::from(Span::styled(
                 format!(" {prefix}{line}"),
                 Style::default().fg(text).add_modifier(Modifier::BOLD),
@@ -559,7 +582,15 @@ fn history_lines(g: &Git, text: Color, sub: Color, accent: Color, title: Color) 
         )));
     }
 
-    for (i, c) in g.commits.iter().enumerate() {
+    // Page the list so the selection is always visible: the page holding `hsel`.
+    let len = g.commits.len();
+    let start = if len <= viewport {
+        0
+    } else {
+        (g.hsel / viewport) * viewport
+    };
+    let end = (start + viewport).min(len);
+    for (i, c) in g.commits.iter().enumerate().take(end).skip(start) {
         let selected = i == g.hsel;
         // marker(2) + sha + space + date column + space, then the subject fills the rest.
         let room = HIST_W.saturating_sub(4 + c.sha.chars().count() + DATE_COL);
@@ -864,5 +895,40 @@ r|󰑓|pull|git pull
         assert!(screen.contains("2 hours ago"), "{screen}");
         assert!(screen.contains("Ada"), "{screen}");
         assert!(screen.contains("show diff"), "{screen}");
+    }
+
+    #[test]
+    fn history_browser_scrolls_and_shows_a_position_counter() {
+        // More commits than fit; the list must page rather than overflow.
+        let commits: Vec<Commit> = (0..60)
+            .map(|i| Commit {
+                sha: format!("sha{i:04}"),
+                date: "1 hour ago".into(),
+                author: "Ada".into(),
+                subject: format!("commit number {i}"),
+            })
+            .collect();
+        let mut g = Git::new();
+        g.open("/repo".into(), "repo".into(), None, commits, false, vec![]);
+        g.on_key(key(KeyCode::Char('h'))); // enter the history browser
+        g.on_key(key(KeyCode::End)); // jump to the last commit
+
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(90, 24)).unwrap();
+        term.draw(|f| draw(f, f.area(), &Theme::default(), Color::Yellow, &g))
+            .unwrap();
+        let buf = term.backend().buffer().clone();
+        let screen: String = (0..24)
+            .map(|y| {
+                (0..90)
+                    .map(|x| buf[(x, y)].symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        // The counter reflects the End jump, the last commit's page is on screen,
+        // and an early commit has scrolled off.
+        assert!(screen.contains("60/60"), "{screen}");
+        assert!(screen.contains("commit number 59"), "{screen}");
+        assert!(!screen.contains("commit number 0 "), "{screen}");
     }
 }

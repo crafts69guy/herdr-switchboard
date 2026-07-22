@@ -738,7 +738,7 @@ fn open_git(app: &mut App, force_origin: bool) {
     };
 
     let base = git::detect_base_branch(&runner, &cwd, &app.cfg.get("base_branch", ""));
-    let commits = git::load_commits(&runner, &cwd, 50);
+    let commits = git::load_commits(&runner, &cwd, 200);
     let has_lazygit = runner.ok("sh", &["-c", "command -v lazygit >/dev/null 2>&1"]);
     let customs = read_menu_conf();
     app.git
