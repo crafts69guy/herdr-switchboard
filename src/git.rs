@@ -271,7 +271,11 @@ impl Git {
 
     /// Dispatch the selected commit as a `history` review.
     fn activate_commit(&mut self) -> bool {
-        let Some(commit) = self.filtered.get(self.hsel).and_then(|&i| self.commits.get(i)) else {
+        let Some(commit) = self
+            .filtered
+            .get(self.hsel)
+            .and_then(|&i| self.commits.get(i))
+        else {
             return false;
         };
         self.chosen = Some(ReviewSpec {
@@ -386,8 +390,11 @@ pub fn detect_base_branch(
     // terminal, and `rev-parse --verify` prints the resolved SHA on success —
     // that 40-char line was landing on the screen under the git overlay. `capture`
     // pipes stdout (and stderr), so the check stays silent; we only want the exit.
-    let resolves =
-        |r: &str| runner.capture("git", &["-C", cwd, "rev-parse", "--verify", "--quiet", r]).is_some();
+    let resolves = |r: &str| {
+        runner
+            .capture("git", &["-C", cwd, "rev-parse", "--verify", "--quiet", r])
+            .is_some()
+    };
     if !configured.is_empty() && resolves(configured) {
         return Some(configured.to_string());
     }
@@ -580,17 +587,19 @@ fn draw_history(f: &mut Frame, area: Rect, theme: &Theme, title: Color, g: &Git)
     }
 
     // Header (fixed) · search box (rounded, near the body) · scrolling list · bar.
-    let a = ratatui::layout::Layout::vertical([
-        Length(HIST_HEADER_ROWS),
-        Length(3),
-        Min(1),
-        Length(1),
-    ])
-    .split(inner);
+    let a =
+        ratatui::layout::Layout::vertical([Length(HIST_HEADER_ROWS), Length(3), Min(1), Length(1)])
+            .split(inner);
     let (header_area, search_area, body_area, bar_area) = (a[0], a[1], a[2], a[3]);
 
     f.render_widget(
-        Paragraph::new(history_header_lines(g, text, sub, title, header_area.width as usize)),
+        Paragraph::new(history_header_lines(
+            g,
+            text,
+            sub,
+            title,
+            header_area.width as usize,
+        )),
         header_area,
     );
 
@@ -742,7 +751,10 @@ fn history_header_lines(
         ),
     ];
     if !c.date.is_empty() {
-        meta.push(Span::styled(format!("  {}", c.date), Style::default().fg(sub)));
+        meta.push(Span::styled(
+            format!("  {}", c.date),
+            Style::default().fg(sub),
+        ));
     }
     if !c.author.is_empty() {
         meta.push(Span::styled(
@@ -1180,7 +1192,10 @@ r|󰑓|pull|git pull
         for ch in "thing 3".chars() {
             g.on_key(key(KeyCode::Char(ch))); // narrow to a handful of matches
         }
-        assert!(g.filtered.len() < 40, "the filter should have narrowed the list");
+        assert!(
+            g.filtered.len() < 40,
+            "the filter should have narrowed the list"
+        );
         assert_eq!(full, card_bottom(&g), "the box resized when filtering");
     }
 

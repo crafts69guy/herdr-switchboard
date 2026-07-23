@@ -16,10 +16,10 @@ use crate::data::{self, Config, Entry, Kind, Theme};
 use crate::runner::SystemRunner;
 use crate::source;
 
-/// Match the source GIF's frame delay. This also drives the portable fallback
-/// so either renderer visibly shows three frames during the minimum splash.
+/// Per-frame delay for the ASCII cat animation, chosen so the cat visibly
+/// advances through three frames during the minimum splash window below.
 const FRAME_TIME: Duration = Duration::from_millis(140);
-/// Long enough for the 140ms GIF to visibly advance through three frames. The
+/// Long enough for the 140ms cat to visibly advance through three frames. The
 /// clock begins at the first attempted splash draw, not when the worker spawns,
 /// so terminal setup can never consume the animation before it is visible.
 const MIN_VISIBLE: Duration = Duration::from_millis(420);
@@ -160,7 +160,7 @@ impl State {
     }
 }
 
-pub fn draw(f: &mut Frame, area: Rect, theme: &Theme, title: Color, state: &State, graphics: bool) {
+pub fn draw(f: &mut Frame, area: Rect, theme: &Theme, title: Color, state: &State) {
     let glow = theme.or("green", Color::Green);
     let text = theme.or("text", Color::Reset);
     let sub = theme.or("subtext0", Color::DarkGray);
@@ -168,30 +168,6 @@ pub fn draw(f: &mut Frame, area: Rect, theme: &Theme, title: Color, state: &Stat
     let frame = state.frame();
     let dots = ".".repeat(frame % 4);
     let status = format!("{}{}", state.status, dots);
-    if graphics {
-        let Some(place) = crate::graphics::placement(area) else {
-            return;
-        };
-        let status_y = place.row.saturating_add(place.rows).saturating_add(1);
-        let status_area = Rect::new(
-            area.x,
-            status_y,
-            area.width,
-            2.min(area.bottom().saturating_sub(status_y)),
-        );
-        let lines = vec![
-            Line::styled(
-                status,
-                Style::default().fg(text).add_modifier(Modifier::BOLD),
-            ),
-            Line::styled("Esc or Ctrl-C to cancel", Style::default().fg(sub)),
-        ];
-        f.render_widget(
-            Paragraph::new(lines).alignment(Alignment::Center),
-            status_area,
-        );
-        return;
-    }
     let compact = area.width < 36 || area.height < 12;
     let mut lines = Vec::new();
 

@@ -21,6 +21,16 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   commit list scrolls — so the card no longer resizes as matches come and go. The **mouse wheel**
   scrolls the list, and the overlay now swallows mouse events instead of leaking them to the picker.
 
+### Removed
+
+- The **Kitty/herdr graphics startup splash (the animated GIF cat) is gone** — the switcher now
+  always draws the portable ASCII/pixel-art cat. herdr 0.7.5 changed its socket API to serve one
+  request per connection and close it on reply, which stranded the image on screen (the reused
+  graphics connection drew the splash but hit a broken pipe on the `clear` that removes it). Rather
+  than special-case the proxy, the graphics path, its embedded frames, and the
+  `[experimental].kitty_graphics` dependency were dropped. The ASCII cat renders identically in
+  every terminal, needs no herdr config, and cannot linger over the loaded picker.
+
 ### Fixed
 
 - The **git overlay (⌥g) is now sized to fit its command bar**, so a short menu no longer clips

@@ -5,7 +5,6 @@ mod action;
 mod changelog;
 mod data;
 mod git;
-mod graphics;
 mod history;
 mod hunk;
 mod keymap;
@@ -149,9 +148,6 @@ pub struct App {
     pub zones: HitZones,
     /// Present only while the source commands run before the first picker frame.
     pub startup: Option<startup::State>,
-    /// True for the frame whose cat is rendered by Kitty graphics instead of
-    /// terminal text. Set by the event loop after checking the current pane.
-    pub startup_graphics: bool,
     startup_ready: bool,
     startup_empty: bool,
     startup_failed: bool,
@@ -439,7 +435,6 @@ impl App {
             git: git::Git::new(),
             zones: HitZones::new(),
             startup: None,
-            startup_graphics: false,
             startup_ready: false,
             startup_empty: false,
             startup_failed: false,
@@ -945,7 +940,6 @@ fn run(
     terminal: &mut ratatui::DefaultTerminal,
     app: &mut App,
 ) -> Result<Option<(Option<Entry>, Accept)>> {
-    let mut splash = graphics::Splash::new();
     loop {
         // A fast source set may finish before the terminal's first draw. Absorb
         // it now so the animation has no artificial minimum frame or flash.
@@ -964,30 +958,15 @@ fn run(
                 open_git(app, true);
             }
         }
-        if app.startup.is_none() {
-            // Kitty images live outside the text cell grid. Remove the splash
-            // before drawing picker cells so it can never cover real content.
-            splash.clear();
-        }
         if let Some(startup) = app.startup.as_mut() {
-            // A completed worker stays pending until this first display begins;
-            // terminal initialization therefore cannot consume the splash.
+            // A completed worker stays pending until this first display begins,
+            // so terminal setup can never consume the animation before it shows.
             startup.begin_display();
         }
-        let startup_frame = app.startup.as_ref().map(startup::State::frame).unwrap_or(0);
-        let size = terminal.size()?;
-        let area = Rect::new(0, 0, size.width, size.height);
-        app.startup_graphics = app.startup.is_some() && splash.can_show(area);
         // Draw first: it publishes the preview pane's width, which the request
         // below needs to clip the card to. The first pass draws an empty pane
         // for one frame, which is what the placeholder is for anyway.
         terminal.draw(|f| ui::draw(f, app))?;
-        if app.startup_graphics && !splash.show(area, startup_frame) {
-            // A broken proxy/terminal write is a visual enhancement failure,
-            // not a picker failure. Replace the empty image slot immediately.
-            app.startup_graphics = false;
-            terminal.draw(|f| ui::draw(f, app))?;
-        }
         app.request_preview();
         wait_for_work(app)?;
         if !event::poll(Duration::ZERO)? {
@@ -1146,7 +1125,7 @@ const REVIEW_SPLASH_TICK: Duration = Duration::from_millis(60);
 
 /// `herdr-ghq-switcher review-splash` — the branded pre-roll `bin/review.sh` plays
 /// before it execs hunk, so a slow `hunk diff` on a large repo opens onto the same
-/// Kitty cat the picker starts with instead of a frozen pane.
+/// ASCII cat the picker starts with instead of a frozen pane.
 ///
 /// Unlike the picker splash there is no data worker to wait on, so the cat would
 /// otherwise be pure added latency. Instead it warms the exact diff hunk is about
@@ -1181,7 +1160,6 @@ fn review_splash() -> Result<()> {
     });
 
     let mut state = startup::State::animation("Preparing review");
-    let mut splash = graphics::Splash::new();
     // ratatui::init claims the alt screen + hides the cursor; unlike the picker we
     // never enable the wheel, so there is no MOUSE_ON/OFF pair to restore.
     let mut terminal = ratatui::init();
@@ -1193,15 +1171,9 @@ fn review_splash() -> Result<()> {
         loop {
             let size = terminal.size()?;
             let area = Rect::new(0, 0, size.width, size.height);
-            let graphics_on = splash.can_show(area);
             let frame = state.frame();
             if frame != last_frame {
-                terminal.draw(|f| startup::draw(f, area, &theme, title, &state, graphics_on))?;
-                if graphics_on && !splash.show(area, frame) {
-                    // A broken proxy/terminal write disables graphics; fill the
-                    // empty image slot with the ASCII cat this frame.
-                    terminal.draw(|f| startup::draw(f, area, &theme, title, &state, false))?;
-                }
+                terminal.draw(|f| startup::draw(f, area, &theme, title, &state))?;
                 last_frame = frame;
             }
 
@@ -1240,18 +1212,16 @@ fn review_splash() -> Result<()> {
     // the picker keeps drawing after it; here the very next thing is hunk, and the
     // pause the user would otherwise see is hunk entering its own screen and rendering
     // the diff — after this process is gone, so nothing could animate over it. So
-    // instead of tearing the screen down we clear only the Kitty image (it must not
-    // linger over hunk's cells) and freeze one static "Opening review…" cat frame,
-    // leaving the alternate screen up for hunk to paint straight over. Only raw mode
-    // and the cursor are restored, for the brief cooked-mode window before hunk grabs
-    // them back. hunk is a full-screen alt-screen diff pager, so the frozen frame
+    // instead of tearing the screen down we freeze one static "Opening review…" cat
+    // frame, leaving the alternate screen up for hunk to paint straight over. Only raw
+    // mode and the cursor are restored, for the brief cooked-mode window before hunk
+    // grabs them back. hunk is a full-screen alt-screen diff pager, so the frozen frame
     // shows only until its first paint. A splash error still gets the full restore.
-    splash.clear();
     if result.is_ok() {
         state.status = "Opening review".into();
         if let Ok(size) = terminal.size() {
             let area = Rect::new(0, 0, size.width, size.height);
-            let _ = terminal.draw(|f| startup::draw(f, area, &theme, title, &state, false));
+            let _ = terminal.draw(|f| startup::draw(f, area, &theme, title, &state));
         }
         let _ = crossterm::terminal::disable_raw_mode();
         let _ = crossterm::execute!(io::stdout(), crossterm::cursor::Show);
@@ -1531,17 +1501,6 @@ mod tests {
         let screen = rendered(&mut app, 34, 10);
         assert!(screen.contains("( o.o )"), "{screen}");
         assert!(screen.contains("Indexing repositories"), "{screen}");
-    }
-
-    #[test]
-    fn graphics_startup_reserves_the_cat_area_and_keeps_status_in_text() {
-        let mut app = App::new(Vec::new(), Theme::default(), Config::default(), ".".into());
-        app.startup = Some(startup::State::waiting("Finding running agents"));
-        app.startup_graphics = true;
-        let screen = rendered(&mut app, 80, 24);
-        assert!(!screen.contains("/\\_____/\\"), "{screen}");
-        assert!(screen.contains("Finding running agents"), "{screen}");
-        assert!(screen.contains("Esc or Ctrl-C to cancel"), "{screen}");
     }
 
     #[test]

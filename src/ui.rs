@@ -19,14 +19,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     let surface = app.theme.or("surface1", Color::Indexed(236));
 
     if let Some(startup) = &app.startup {
-        crate::startup::draw(
-            f,
-            f.area(),
-            &app.theme,
-            app.title_color,
-            startup,
-            app.startup_graphics,
-        );
+        crate::startup::draw(f, f.area(), &app.theme, app.title_color, startup);
         return;
     }
 

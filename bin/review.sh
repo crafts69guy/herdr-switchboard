@@ -19,7 +19,7 @@ cwd="${REVIEW_CWD:-.}"
 arg="${REVIEW_ARG:-}"
 custom="${REVIEW_CUSTOM:-}"
 
-# Branded pre-roll before a hunk review: the switcher animates the same Kitty cat
+# Branded pre-roll before a hunk review: the switcher animates the same ASCII cat
 # the picker starts with while it warms the diff's cache, so a slow `hunk diff` on
 # a large repo opens onto the splash instead of a frozen pane. Best effort — it
 # reads REVIEW_MODE/REVIEW_ARG/REVIEW_CWD from the inherited env, and a missing or

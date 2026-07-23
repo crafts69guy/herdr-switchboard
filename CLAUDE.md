@@ -47,10 +47,9 @@ layout, keybindings, or herdr CLI calls need manual exercise in a real herdr ses
 2. `bin/picker.sh` resolves a versioned, checksummed release binary for managed installs and
    falls back to Cargo for offline/linked checkouts. Its Bash typing-cat owns first-run feedback;
    `--prepare` resolves the binary without launching it.
-3. The TUI (`src/`) claims the terminal before loading entries, uses embedded GIF frames through
-   Kitty graphics when supported (with the text cat as fallback) while a worker runs the source
-   commands, then runs the picker event loop and — **after
-   `ratatui::restore()`** —
+3. The TUI (`src/`) claims the terminal before loading entries, animates a terminal-cell ASCII cat
+   (`startup.rs`) while a worker runs the source commands, then runs the picker event loop and —
+   **after `ratatui::restore()`** —
    dispatches the accepted action. Interactive accepts (clone prompt, remove confirmation, `ghq
 get -u` output) deliberately run on the torn-down terminal, not inside the TUI.
 
@@ -69,10 +68,9 @@ must come from `herdr agent list`, `herdr workspace list`, or the captured origi
 - `source.rs` — the `Source` registry (kind / enabled / load) that `load_all` folds; adding a
   source's data is a new impl + one registry line. Preview/dispatch stay per-kind matches (a cycle
   otherwise), guarded by the compiler
-- `startup.rs` — the source-loading worker plus the full/compact typing-cat first frame;
-  progress messages cross a channel and never block the event loop
-- `graphics.rs` — conservative Herdr/terminal capability detection plus the embedded Kitty
-  animation protocol, placement-on-resize, and cleanup; protocol failures fall back to text
+- `startup.rs` — the source-loading worker plus the full/compact ASCII typing-cat animation, drawn
+  entirely with terminal cells (no image protocol); progress messages cross a channel and never
+  block the event loop
 - `runner.rs` — the `CommandRunner` trait (`SystemRunner` in prod, `MockRunner` in tests) every
   herdr/ghq/git call routes through, which is what makes the IO edge testable
 - `data.rs` — `Theme`, `Config`, `Entry`, and the per-source loaders `load_agents` /

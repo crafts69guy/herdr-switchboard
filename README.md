@@ -18,9 +18,8 @@ fzf required.
 > [!WARNING]
 > **This plugin is early, in active development, and experimental.** It is pre-1.0
 > (`0.x`): behaviour, keybindings, configuration keys, and the on-disk state format can
-> change between releases, sometimes without a migration path. Some features depend on
-> herdr's own experimental surfaces (e.g. the Kitty graphics proxy behind
-> `[experimental].kitty_graphics`) and may break as herdr evolves. Expect rough edges,
+> change between releases, sometimes without a migration path. It also tracks herdr's own
+> fast-moving CLI/socket API and may break as herdr evolves. Expect rough edges,
 > pin a version if you need stability, and please
 > [report issues](https://github.com/crafts69guy/herdr-ghq/issues). The one destructive
 > action (`ctrl-x` remove) asks you to type the repo name to confirm — but back up
@@ -206,24 +205,14 @@ popup for the changelog.
 The picker itself is the Rust TUI in `src/`. On a managed install, `bin/picker.sh` selects a
 versioned macOS/Linux release binary for the host architecture and verifies its SHA-256;
 offline or linked checkouts fall back to Cargo. A small typing-cat bootstrap animates during
-that one-time preparation. The Rust TUI then claims the pane immediately and plays the
-[`cat-typing.gif`](assets/images/cat-typing.gif) artwork through Kitty graphics while a worker reads `herdr agent list`,
+that one-time preparation. The Rust TUI then claims the pane immediately and animates a
+theme-coloured, pixel-art ASCII cat while a worker reads `herdr agent list`,
 `herdr workspace list`, `ghq list`, and Git's stable `worktree list --porcelain -z` output.
-Enable Herdr's graphics proxy once in `~/.config/herdr/config.toml`:
 
-```toml
-[experimental]
-kitty_graphics = true
-```
-
-The GIF is the default on a compatible Kitty/Ghostty/WezTerm pane large enough to show it.
-Otherwise — including the one-time Bash bootstrap before a binary exists — the same artwork's
-portable, theme-coloured pixel-art frames are used automatically. The image frames are embedded
-in the release binary and published through Herdr's acknowledged pane-graphics API. If Herdr
-rejects a frame, the switcher immediately redraws the pixel-art fallback rather than reserving an
-empty image slot. The frames have a transparent cutout background, so startup does not need ImageMagick
-or another decoder. The text fallback also uses the terminal's default background instead of
-painting an opaque panel, and the image is removed before picker content is drawn. Once ready the TUI fuzzy-filters with nucleo and
+The cat is drawn entirely with terminal cells — no Kitty graphics, no herdr config, no image
+decoder — so it renders the same in every terminal and small panes fall back to an even more
+compact frame. It uses the terminal's default background instead of painting an opaque panel.
+Once ready the TUI fuzzy-filters with nucleo and
 previews the selection as a card drawn in your herdr theme colours — `bin/preview.sh` supplies
 only the repo/worktree file tree. On accept it maps the key to a herdr CLI verb — `agent focus`,
 `workspace focus`, `workspace create`, `tab create`, `pane split`, `pane send-text` — always targeting the
