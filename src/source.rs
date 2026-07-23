@@ -122,7 +122,7 @@ mod tests {
     use super::*;
     use crate::runner::MockRunner;
 
-    const AGENTS: &str = r#"{"result":{"agents":[{"terminal_id":"t1","agent":"claude","agent_status":"idle","foreground_cwd":"/p"}]}}"#;
+    const AGENTS: &str = r#"{"result":{"agents":[{"pane_id":"w1:p1","terminal_id":"t1","agent":"claude","agent_status":"idle","foreground_cwd":"/p"}]}}"#;
     const WORKSPACES: &str = r#"{"result":{"workspaces":[{"workspace_id":"w1","label":"work","number":1,"pane_count":1}]}}"#;
     const REPOS: &str = "github.com/o/a\ngithub.com/o/b\n";
 

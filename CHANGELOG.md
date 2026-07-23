@@ -33,6 +33,11 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Enter on an agent now actually switches to it, and the agent preview loads again.** herdr keys
+  `agent focus`/`agent get` on the pane id, but the switcher was passing the terminal id, so every
+  agent focus failed silently (`agent_not_found`) — the picker closed and left you on the current
+  agent — and the preview card came up empty. Agents now carry their pane id as the target.
+
 - The **git overlay (⌥g) is now sized to fit its command bar**, so a short menu no longer clips
   `esc close` to `esc clo`; the card is as wide as the wider of its rows and its footer pills.
 - Opening the git overlay **no longer prints a stray commit SHA** onto the screen beneath the card.

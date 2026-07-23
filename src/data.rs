@@ -287,12 +287,15 @@ pub fn load_agents(runner: &dyn CommandRunner, theme: &Theme) -> Vec<Entry> {
         if let Ok(v) = serde_json::from_str::<serde_json::Value>(&json) {
             if let Some(arr) = v["result"]["agents"].as_array() {
                 for a in arr {
-                    let tid = a["terminal_id"].as_str().unwrap_or("").to_string();
-                    if tid.is_empty() {
+                    // herdr keys `agent focus`/`agent get` on the pane id, not the
+                    // terminal id, so that is the entry's target. A row without one
+                    // cannot be focused, so skip it.
+                    let pane = a["pane_id"].as_str().unwrap_or("").to_string();
+                    if pane.is_empty() {
                         continue;
                     }
-                    // herdr can report a pane with a terminal id but no agent label
-                    // (a stale or half-detected entry). Those are not agents.
+                    // herdr can report a pane with no agent label (a stale or
+                    // half-detected entry). Those are not agents.
                     let Some(agent) = a["agent"].as_str().filter(|s| !s.is_empty()) else {
                         continue;
                     };
@@ -305,7 +308,7 @@ pub fn load_agents(runner: &dyn CommandRunner, theme: &Theme) -> Vec<Entry> {
                     let base = basename(&cwd);
                     entries.push(Entry {
                         kind: Kind::Agent,
-                        id: tid,
+                        id: pane,
                         dir: if cwd.is_empty() { None } else { Some(cwd) },
                         label: base.clone(),
                         icon: "●".into(),
@@ -491,9 +494,9 @@ mod tests {
     use crate::runner::MockRunner;
 
     const AGENTS: &str = r#"{"result":{"agents":[
-        {"terminal_id":"term-1","agent":"claude","agent_status":"working","foreground_cwd":"/home/u/proj"},
-        {"terminal_id":"","agent":"ghost","agent_status":"idle"},
-        {"terminal_id":"term-2","agent":"","agent_status":"idle"}
+        {"pane_id":"w1:p1","terminal_id":"term-1","agent":"claude","agent_status":"working","foreground_cwd":"/home/u/proj"},
+        {"pane_id":"","agent":"ghost","agent_status":"idle"},
+        {"pane_id":"w1:p2","terminal_id":"term-2","agent":"","agent_status":"idle"}
     ]}}"#;
     const WORKSPACES: &str = r#"{"result":{"workspaces":[
         {"workspace_id":"ws-1","label":"work","number":2,"pane_count":3,"focused":true}
@@ -514,10 +517,11 @@ mod tests {
     fn load_agents_maps_json_and_drops_idless_and_labelless() {
         let runner = MockRunner::new().on("herdr agent list", AGENTS);
         let e = load_agents(&runner, &Theme::default());
-        // The id-less and label-less rows are dropped; only the real one stays.
+        // The pane-less and label-less rows are dropped; only the real one stays.
         assert_eq!(e.len(), 1);
         assert_eq!(e[0].kind, Kind::Agent);
-        assert_eq!(e[0].id, "term-1");
+        // The target is the pane id — what `herdr agent focus`/`get` accept.
+        assert_eq!(e[0].id, "w1:p1");
         assert_eq!(e[0].dir.as_deref(), Some("/home/u/proj"));
         assert_eq!(e[0].primary, "proj · claude");
         assert_eq!(e[0].secondary, "working");
