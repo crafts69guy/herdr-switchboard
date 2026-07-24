@@ -222,3 +222,19 @@ Rustfmt defaults; `anyhow::Result` with typed errors; no `unwrap()` in productio
 TOML keys are snake_case; plugin action ids are kebab-case. Commits are short and imperative;
 `bin/release.sh` makes the `Release vX.Y.Z` commit, so do not hand-tag subjects like `(v0.4.0)`
 the way pre-0.5.0 commits did. Never commit `target/`.
+
+## Agent skills
+
+### Issue tracker
+
+Local markdown — issues and specs live as files under `.scratch/<feature>/` in this repo
+(gitignored). See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+The five canonical roles (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`,
+`wontfix`), used as-is. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context — `CONTEXT.md` + `docs/adr/` at the repo root. See `docs/agents/domain.md`.

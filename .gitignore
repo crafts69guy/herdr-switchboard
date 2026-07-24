@@ -1,3 +1,9 @@
 .claude/settings.local.json
 .DS_Store
 /target
+/.scratch
+
+# Agent skill installs — machine-local, not part of the plugin
+/.agents
+/.claude
+/skills-lock.json
