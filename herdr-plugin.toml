@@ -1,6 +1,6 @@
 id = "ghq"
 name = "Ghq"
-version = "0.9.0"
+version = "0.10.0"
 min_herdr_version = "0.7.4"
 description = "A unified herdr switcher: fuzzy-jump across running agents, open workspaces, ghq repositories, and linked worktrees in one themed picker — open repos/worktrees in a new workspace/tab/split/pane, plus clone, update, remove, and a separate git menu pane (tuicr review + lazygit)."
 platforms = ["macos", "linux"]

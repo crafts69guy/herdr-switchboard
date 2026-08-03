@@ -1,6 +1,6 @@
 [package]
 name = "herdr-ghq-switcher"
-version = "0.9.0"
+version = "0.10.0"
 edition = "2021"
 description = "Unified herdr switcher TUI: fuzzy-jump across agents, workspaces, ghq repos, and worktrees."
 license = "MIT"
