@@ -15,6 +15,7 @@ mod settings;
 mod source;
 mod startup;
 mod state;
+mod trace;
 mod tui;
 mod ui;
 mod update;
@@ -475,6 +476,9 @@ impl App {
                 picker.select_group_or_all(GroupFilter::parse(&self.cfg.get("default_tab", "all")));
                 self.picker = picker;
                 self.startup_ready = true;
+                if trace::enabled() {
+                    trace::mark_with("sources.ready", &self.picker.entries.len().to_string());
+                }
                 true
             }
         }
@@ -940,6 +944,9 @@ fn run(
     terminal: &mut ratatui::DefaultTerminal,
     app: &mut App,
 ) -> Result<Option<(Option<Entry>, Accept)>> {
+    // Trace-only bookkeeping (see `trace`): both stay untouched when tracing is off.
+    let mut first_list_drawn = false;
+    let mut key_at: Option<Instant> = None;
     loop {
         // A fast source set may finish before the terminal's first draw. Absorb
         // it now so the animation has no artificial minimum frame or flash.
@@ -967,6 +974,17 @@ fn run(
         // below needs to clip the card to. The first pass draws an empty pane
         // for one frame, which is what the placeholder is for anyway.
         terminal.draw(|f| ui::draw(f, app))?;
+        if trace::enabled() {
+            // The keystroke budget is "key in, pixels out": close the span on the
+            // draw that follows the key, not on the handler returning.
+            if let Some(at) = key_at.take() {
+                trace::span("key.to_frame", at);
+            }
+            if !first_list_drawn && app.startup.is_none() && !app.picker.entries.is_empty() {
+                first_list_drawn = true;
+                trace::mark("frame.first_list");
+            }
+        }
         app.request_preview();
         wait_for_work(app)?;
         if !event::poll(Duration::ZERO)? {
@@ -1019,6 +1037,9 @@ fn run(
                         return Ok(None);
                     }
                     continue;
+                }
+                if trace::enabled() {
+                    key_at = Some(Instant::now());
                 }
                 match handle_key(app, k) {
                     Flow::Continue => {}
@@ -1232,6 +1253,9 @@ fn review_splash() -> Result<()> {
 }
 
 fn main() -> Result<()> {
+    // First statement on purpose: it fixes the zero point every other trace mark
+    // is measured from. Inert unless GHQ_TRACE is set.
+    trace::init();
     // One binary, many modes. bin/changelog.sh execs us with --changelog for the
     // standalone changelog pane; the clone flow execs `open`/`config` so the herdr
     // verbs and the flat-config reader live only here, not mirrored in bash. Settings
@@ -1263,8 +1287,10 @@ fn main() -> Result<()> {
     // enables shows up on a later launch. Nothing below waits on it.
     update::spawn_refresh_if_stale(&cfg);
 
+    trace::mark("config+theme.loaded");
     let mut app = App::new_loading(theme, cfg, script_dir.clone());
     let mut terminal = init_terminal();
+    trace::mark("terminal.claimed");
     let outcome = run(&mut terminal, &mut app);
     restore_terminal();
 
