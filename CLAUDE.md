@@ -8,9 +8,10 @@ A [herdr](https://herdr.dev) plugin providing a unified switcher over three sour
 herdr **agents**, open herdr **workspaces**, and **ghq repos** — in one fuzzy picker. It is a
 Rust TUI (ratatui + nucleo), not an fzf wrapper. The switcher and the changelog viewer are
 modes of the same binary; the settings form is a floating overlay **inside** the switcher
-(⌥,), not a separate mode or pane; the git menu (⌥g) is likewise a floating overlay whose
-selection `exec`s a review tool. The clone flow and the review launcher (`bin/review.sh`, which
-runs `hunk`/`lazygit`/`$EDITOR`) are the only bash that reaches a terminal. The plugin needs no fzf.
+(⌥,), not a separate mode or pane. The **git menu is a herdr pane of its own** (`Prefix + g` →
+`bin/git.sh` → `--git`), not an overlay on the switcher, and its selection `exec`s a review tool
+over that pane. The clone flow and the review launcher (`bin/review.sh`, which runs
+`tuicr`/`lazygit`) are the only bash that reaches a terminal. The plugin needs no fzf.
 See `README.md` for user-facing keybindings and configuration.
 
 ## Commands
@@ -39,17 +40,17 @@ layout, keybindings, or herdr CLI calls need manual exercise in a real herdr ses
 **Two layers, joined by environment variables.** Every action starts in bash and may end in Rust:
 
 1. `bin/action.sh` is the single entrypoint for all manifest actions. It maps the action id
-   (via `HERDR_PLUGIN_ACTION_ID`) to a pane id (`picker` / `get` overlays, `changelog` popup) and
-   its placement, captures the **origin pane id and cwd** before the pane steals focus, and
-   passes them forward as
-   `GHQ_ORIGIN_PANE_ID` / `GHQ_ORIGIN_CWD` on `herdr plugin pane open`. The `git` action reuses the
-   `picker` pane with `GHQ_OPEN_GIT=1`, which opens the switcher straight into the git overlay.
+   (via `HERDR_PLUGIN_ACTION_ID`) to a pane id (`picker` / `git` / `get` overlays, `changelog`
+   popup) and its placement, captures the **origin pane id and cwd** before the pane steals focus,
+   and passes them forward as
+   `GHQ_ORIGIN_PANE_ID` / `GHQ_ORIGIN_CWD` on `herdr plugin pane open`. The `git` action opens the
+   dedicated `git` pane; that pane acts on a **cwd**, not a pane id.
 2. `bin/picker.sh` resolves a versioned, checksummed release binary for managed installs and
    falls back to Cargo for offline/linked checkouts. Its Bash typing-cat owns first-run feedback;
    `--prepare` resolves the binary without launching it.
-3. The TUI (`src/`) claims the terminal before loading entries, animates a terminal-cell ASCII cat
-   (`startup.rs`) while a worker runs the source commands, then runs the picker event loop and —
-   **after `ratatui::restore()`** —
+3. The TUI (`src/`) loads the sources **synchronously, before claiming the terminal** (~35ms), so
+   the first frame is the loaded list; an empty result hands the pane to `bin/get.sh` without ever
+   taking the screen. It then runs the picker event loop and — **after `ratatui::restore()`** —
    dispatches the accepted action. Interactive accepts (clone prompt, remove confirmation, `ghq
 get -u` output) deliberately run on the torn-down terminal, not inside the TUI.
 
@@ -68,9 +69,11 @@ must come from `herdr agent list`, `herdr workspace list`, or the captured origi
 - `source.rs` — the `Source` registry (kind / enabled / load) that `load_all` folds; adding a
   source's data is a new impl + one registry line. Preview/dispatch stay per-kind matches (a cycle
   otherwise), guarded by the compiler
-- `startup.rs` — the source-loading worker plus the full/compact ASCII typing-cat animation, drawn
-  entirely with terminal cells (no image protocol); progress messages cross a channel and never
-  block the event loop
+- `splash.rs` — one static ASCII cat frame, drawn entirely with terminal cells. The `--git` mode
+  draws it and `exec`s tuicr over it, because tuicr can take 0.9–1.7s to read a large diff before
+  its own first frame. No animation, no floor, nothing to cancel — all that is left of `startup.rs`
+- `trace.rs` — opt-in perf tracing behind `GHQ_TRACE`, appended to `$GHQ_TRACE_FILE` or
+  `state_dir()/trace.log`. **Never stdout/stderr**: the TUI owns the terminal for its whole life
 - `runner.rs` — the `CommandRunner` trait (`SystemRunner` in prod, `MockRunner` in tests) every
   herdr/ghq/git call routes through, which is what makes the IO edge testable
 - `data.rs` — `Theme`, `Config`, `Entry`, and the per-source loaders `load_agents` /
@@ -87,13 +90,12 @@ must come from `herdr agent list`, `herdr workspace list`, or the captured origi
   agents and workspaces from herdr's JSON with `serde_json` and styles everything from
   `Theme`; shells out to `bin/preview.sh` only for the repo file tree, which arrives as
   ANSI already and passes through `ansi-to-tui`
-- `git.rs` — the `⌥g` git overlay: the review menu (worktree/staged/branch/history/conflicts/
-  lazygit + `menu.conf` customs) drawn like `settings`, plus the IO-free helpers it opens with
-  (`detect_base_branch`, `load_commits`, `parse_menu_conf`). A selection resolves a `ReviewSpec`
-  the picker hands to `action::run_review`, which `exec`s `bin/review.sh`
-- `hunk.rs` — the `hunk-theme` mode: maps herdr `[theme.custom]` → a `~/.config/hunk/config.toml`
-  `[custom_theme]` (chrome only; diff bg stays hunk's `base`). Marker-guarded, so it never
-  overwrites a hand-written hunk config; `bin/review.sh` calls it before launching `hunk`
+- `git.rs` — the **whole `--git` mode**: `main()` (repo from the pane's cwd, menu, event loop,
+  preroll, `exec`), the review menu (worktree/branch/commits/all-files/pull-request/saved-reviews/
+  lazygit + `menu.conf` customs), the generic `View::List` sub-list over `Vec<Row>` shared by the
+  PR and saved-review pickers, and the IO helpers (`detect_base_branch`, `load_rows`,
+  `parse_menu_conf`). `on_key` stays IO-free by returning a `Step`: the caller runs the fetch and
+  hands the rows back through `show_list`
 - `action.rs` — `Accept` enum → herdr CLI verbs, plus `run_review` (`exec`s `bin/review.sh`)
 - `history.rs` — recency state at `$XDG_STATE_HOME/herdr-ghq/recent.tsv`, atomic write, cap 200
 - `settings.rs` — the `Settings` overlay: the `SETTINGS` form, its cycle rings, and `write_setting`,
@@ -115,13 +117,28 @@ order so the list stays stable.
 
 ## Non-obvious constraints
 
-- **The git menu dispatches by `exec`-ing `review.sh` in the overlay pane, not by opening a new
-  herdr pane.** A review takes over the picker's own overlay pane the way the clone flow's
-  `Accept::Clone` `exec`s `get.sh` — so there is **no manifest pane for review**, and `hunk` quits
-  back to the origin when the overlay pane closes. `Git::on_key` returning `true` (a `chosen`
-  `ReviewSpec` set) is turned into `Flow::Accept(Accept::Git)`, which `main` intercepts *before*
-  `action::dispatch` and routes to `run_review`. `hunk`/`show`/`patch` are TUIs — the `hunk-review`
-  SKILL forbids running them non-interactively (they block); only ever launch them in a pane.
+- **The git menu is a pane, and a review `exec`s over that pane.** There is a manifest pane for
+  the *menu* (`[[panes]] id = "git"`), but **none for the review**: `git::main` `exec`s
+  `bin/review.sh` over itself the way the clone flow's `Accept::Clone` `exec`s `get.sh`, so tuicr
+  inherits the pane and quitting it returns to the pane `Prefix + g` was pressed in. The pane's
+  placement must stay **full-frame `overlay`** — tuicr renders into whatever window it is handed,
+  and a popup would hand it a tiny one. The picker knows nothing about git: there is no `⌥g`, no
+  `Accept::Git`, no `App::git`. Two entry points would drift apart, and only one of them can be
+  the fast one. `tuicr` is a TUI — never run it non-interactively (it blocks); only ever in a pane.
+- **The picker loads its sources synchronously, before `init_terminal`.** There is no worker, no
+  channel, no minimum-visible floor: `load_all` costs ~35ms, and the 420ms floor the old animation
+  imposed *was* the first-list latency. An empty result must be detected here too, before the
+  terminal is claimed, so the handoff to `bin/get.sh` never takes the screen and gives it back.
+  Do not reintroduce a floor "so the cat is visible" — the cat is what was removed.
+- **A list fetch runs outside `Git::on_key`.** `on_key` returns a `Step`; `Step::Load(kind)` asks
+  the caller to run `load_rows` and hand the result to `show_list`. That is what keeps the entire
+  key surface IO-free and unit-testable through `MockRunner`, and it is why `gh pr list` talking to
+  GitHub leaves the menu on screen rather than freezing a half-drawn list.
+- **Nothing writes to tuicr's config.** The theme is a whole file that
+  [hue-theme](https://github.com/crafts69guy/hue-theme) owns
+  (`~/.config/tuicr/themes/hue-<mood>.toml`, 41 keys, none optional). tuicr **exits 2** on a theme
+  it cannot fully resolve, and `--theme` on a mismatched name takes the whole review path down —
+  so `bin/review.sh` never passes `--theme` and `ensure_tuicr` only checks the binary exists.
 - **The bash layer delegates open + config to the Rust binary; it no longer mirrors them.** The
   clone flow (`bin/get.sh`) opens a repo with `herdr-ghq-switcher open --target … --path … --origin …
   --label …` and reads settings with `herdr-ghq-switcher config get <key> [default]`, so the herdr

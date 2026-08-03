@@ -43,7 +43,6 @@ pub enum Accept {
     Tab,
     Split,
     Pane,
-    Git,
     Update,
     Remove,
     Clone,
@@ -104,9 +103,9 @@ pub fn dispatch(
                 Accept::Update | Accept::Remove => {
                     Err(anyhow!("update/remove is not supported for worktrees"))
                 }
-                // Git review is intercepted in `main` and `exec`s `review.sh`; a
-                // clone/update-plugin `exec`s its own script. None reach here.
-                Accept::Git | Accept::Clone | Accept::UpdatePlugin => unreachable!(),
+                // A clone / update-plugin `exec`s its own script before this
+                // match, so neither reaches here.
+                Accept::Clone | Accept::UpdatePlugin => unreachable!(),
             }
         }
     }
@@ -213,10 +212,10 @@ fn focus_agent(runner: &dyn CommandRunner, id: &str) -> Result<()> {
     herdr(runner, &["agent", "focus", id])
 }
 
-/// Hand the whole terminal to `bin/review.sh` with the git overlay's resolved
-/// choice as environment, replacing this process in the overlay pane the way the
-/// clone flow `exec`s `get.sh`. `review.sh` maps `REVIEW_MODE` to the tool
-/// (`hunk` review, `lazygit` staging, `$EDITOR` conflicts, or a custom command).
+/// Hand the whole terminal to `bin/review.sh` with the git menu's resolved choice
+/// as environment, replacing this process in the git pane the way the clone flow
+/// `exec`s `get.sh`. `review.sh` maps `REVIEW_MODE` to the tool (`tuicr` review,
+/// `lazygit` staging, or a custom `menu.conf` command).
 pub fn run_review(spec: &ReviewSpec, script_dir: &str) -> Result<()> {
     let err = Command::new("bash")
         .arg(format!("{script_dir}/review.sh"))

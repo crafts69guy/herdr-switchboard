@@ -94,20 +94,10 @@ pub fn registry() -> Vec<Box<dyn Source>> {
 
 /// Load every enabled source, in registry order.
 pub fn load_all(cfg: &Config, ctx: &LoadCtx) -> Vec<Entry> {
-    load_all_reporting(cfg, ctx, |_| {})
-}
-
-/// Load every enabled source while reporting which query is about to run. The
-/// startup screen uses this to say useful things without coupling its renderer
-/// to the source implementations; config reloads use [`load_all`] and stay quiet.
-pub fn load_all_reporting(cfg: &Config, ctx: &LoadCtx, mut report: impl FnMut(Kind)) -> Vec<Entry> {
     registry()
         .iter()
         .filter(|s| s.enabled(cfg))
-        .flat_map(|s| {
-            report(s.kind());
-            s.load(ctx)
-        })
+        .flat_map(|s| s.load(ctx))
         .collect()
 }
 
@@ -184,17 +174,5 @@ mod tests {
             kinds(),
             vec![Kind::Agent, Kind::Workspace, Kind::Repo, Kind::Worktree]
         );
-    }
-
-    #[test]
-    fn reporting_names_only_enabled_sources_in_load_order() {
-        let cfg = Config::from_pairs(&[("include_workspaces", "false")]);
-        let runner = MockRunner::new()
-            .on("herdr agent list", AGENTS)
-            .on("ghq list", REPOS);
-        let theme = Theme::default();
-        let mut reported = Vec::new();
-        load_all_reporting(&cfg, &ctx(&runner, &theme), |kind| reported.push(kind));
-        assert_eq!(reported, vec![Kind::Agent, Kind::Repo, Kind::Worktree]);
     }
 }

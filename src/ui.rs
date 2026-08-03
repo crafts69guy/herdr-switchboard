@@ -18,11 +18,6 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     let overlay = app.theme.or("overlay0", Color::DarkGray);
     let surface = app.theme.or("surface1", Color::Indexed(236));
 
-    if let Some(startup) = &app.startup {
-        crate::startup::draw(f, f.area(), &app.theme, app.title_color, startup);
-        return;
-    }
-
     let root = Layout::vertical([
         Constraint::Length(3),
         Constraint::Min(5),
@@ -85,9 +80,6 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     }
     if app.settings.show {
         crate::settings::draw(f, f.area(), &app.theme, app.title_color, &app.settings);
-    }
-    if app.git.show {
-        crate::git::draw(f, f.area(), &app.theme, app.title_color, &app.git);
     }
     if app.show_help {
         draw_help(f, app, f.area());
@@ -394,9 +386,9 @@ fn draw_footer(f: &mut Frame, app: &mut App, area: Rect) {
     let ink = t.or("panel_bg", Color::Rgb(16, 18, 20));
     // The bar's order, colour, and short label are fixed; the key cap is read
     // from the keymap for the *current mode*, so a remap or an Insert↔Normal
-    // switch re-labels every pill (e.g. `git` shows `^g` in Insert, `␣g` in
+    // switch re-labels every pill (e.g. `update` shows `^r` in Insert, `␣u` in
     // Normal). An action with no binding in this mode drops out of the bar.
-    let items: [(Action, &str, Color); 11] = [
+    let items: [(Action, &str, Color); 10] = [
         (
             Action::Accept(Accept::Default),
             "open",
@@ -422,7 +414,6 @@ fn draw_footer(f: &mut Frame, app: &mut App, area: Rect) {
             "workspace",
             t.or("mauve", Color::Magenta),
         ),
-        (Action::GitMenu, "git", t.or("peach", Color::Yellow)),
         (
             Action::Accept(Accept::Update),
             "update",
@@ -603,7 +594,6 @@ fn draw_help(f: &mut Frame, app: &App, area: Rect) {
         &mut right,
         vec![
             opt(Action::Accept(Accept::Workspace), mauve, "To workspace"),
-            opt(Action::GitMenu, peach, "Git actions"),
             opt(Action::Accept(Accept::Update), teal, "Update repo"),
             opt(Action::Accept(Accept::Remove), red, "Remove"),
         ],

@@ -12,10 +12,9 @@ ACTION_ID="${HERDR_PLUGIN_ACTION_ID:-}"
 # the Enter target the picker should force.
 entrypoint=""
 force_target=""
-open_git=""
 case "$ACTION_ID" in
   menu) entrypoint="picker" ;;
-  git) entrypoint="picker"; open_git="1" ;;
+  git) entrypoint="git" ;;
   open-workspace) entrypoint="picker"; force_target="workspace" ;;
   open-tab) entrypoint="picker"; force_target="tab" ;;
   open-split) entrypoint="picker"; force_target="split" ;;
@@ -48,10 +47,6 @@ fi
 if [[ -n "$force_target" ]]; then
   command+=(--env "GHQ_FORCE_TARGET=$force_target")
 fi
-if [[ -n "$open_git" ]]; then
-  command+=(--env "GHQ_OPEN_GIT=1")
-fi
-
 if ! "${command[@]}"; then
   die "Ghq could not open the $entrypoint pane. Check plugin logs." "herdr failed to open the ghq $entrypoint pane"
 fi

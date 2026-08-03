@@ -37,6 +37,7 @@ assert_rooted_pane_command() {
 }
 
 assert_rooted_pane_command picker.sh
+assert_rooted_pane_command git.sh
 assert_rooted_pane_command get.sh
 assert_rooted_pane_command changelog.sh
 assert_rooted_pane_command update-plugin.sh
@@ -47,9 +48,10 @@ for action in menu git get changelog update-plugin open-workspace open-tab open-
   grep -Fq "id = \"$action\"" "$MANIFEST" || fail "action '$action' is not declared"
 done
 
-# The git action opens the picker straight into the git overlay via GHQ_OPEN_GIT.
-grep -Fq 'GHQ_OPEN_GIT' "$ROOT/bin/action.sh" ||
-  fail "bin/action.sh must pass GHQ_OPEN_GIT for the git action"
+# The git action opens its own pane, not the picker: the menu must not pay for
+# loading agents, workspaces, and repos on the way to a review.
+grep -Eq '^  git\) entrypoint="git" ;;$' "$ROOT/bin/action.sh" ||
+  fail "the git action must open the dedicated git pane"
 
 # The pane script must resolve from an unrelated working directory.
 foreign_cwd="$(mktemp -d)"

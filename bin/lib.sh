@@ -241,14 +241,17 @@ ensure_built() (
   printf '%s\n' "$bin"
 )
 
-# Guard the review viewer, then refresh its themed chrome. hunk is the read-only
-# review TUI bin/review.sh launches; it is a separate (Node) dependency, so fail
-# with a clear install hint rather than a bare "command not found". The theme
-# regeneration is best-effort — hunk falls back to its own theme.
-ensure_hunk() {
-  command -v hunk >/dev/null 2>&1 ||
-    die "hunk is required for review — brew install hunk (or npm i -g hunkdiff)." "hunk not found on PATH"
-  "$(ensure_built)" hunk-theme >/dev/null 2>&1 || true
+# Guard the review viewer. tuicr is the review TUI bin/review.sh launches; it is a
+# separate dependency, so fail with a clear install hint rather than a bare
+# "command not found".
+#
+# This writes nothing to tuicr's config: the theme is generated and installed by
+# hue-theme, which owns a whole `~/.config/tuicr/themes/hue-*.toml` file of its own.
+# tuicr exits 2 on a theme it cannot fully resolve, so a half-written one here would
+# break every review, not just its colours.
+ensure_tuicr() {
+  command -v tuicr >/dev/null 2>&1 ||
+    die "tuicr is required for review — brew install tuicr." "tuicr not found on PATH"
 }
 
 # Read a scalar from the plugin's intentionally flat config.toml. Quoted strings,

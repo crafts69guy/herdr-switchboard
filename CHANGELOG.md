@@ -7,36 +7,58 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-### Added
-
-- The git overlay's history view is now a **scrolling log browser**: it loads up to 200 commits,
-  pages the list so the selection is always on screen (no more overflowing the card), and shows a
-  `n/total` position counter in the title. Enter still opens the selected commit's diff in `hunk`.
-- The history browser is now **fuzzy-filterable** — type to narrow the list by sha, subject, or
-  author (case-insensitive subsequence, chronological order preserved); `↑`/`↓` or `^n`/`^p` move,
-  and `esc` clears the filter before backing out. Its search line carries a **real blinking cursor**
-  after the query.
-- The history browser is now a **fixed-size box**: the detail header is pinned and never shrinks
-  while filtering, the search input sits in its own rounded box just above the list, and only the
-  commit list scrolls — so the card no longer resizes as matches come and go. The **mouse wheel**
-  scrolls the list, and the overlay now swallows mouse events instead of leaking them to the picker.
-
-### Changed
-
-- The preview card is **about twice as fast** — roughly 50ms on average where it used to take 90ms,
-  and 65ms at the tail where it used to reach 214ms. The branch now comes from reading `.git/HEAD`
-  rather than spawning `git symbolic-ref`, and the dirty check no longer walks untracked files.
-  **Behaviour change:** a repository whose only changes are untracked files now reads as `clean`.
+This release **replaces `hunk` with [`tuicr`](https://github.com/agavra/tuicr)** and moves the git
+menu out of the switcher into a pane of its own. It is a breaking change: keys move, two menu rows
+are gone, and `tuicr` is now a hard requirement (`brew install tuicr`, ≥ 0.20.0). Themes for it come
+from [hue-theme](https://github.com/crafts69guy/hue-theme) — install that first, or reviews open in
+tuicr's own colours.
 
 ### Removed
 
-- The **Kitty/herdr graphics startup splash (the animated GIF cat) is gone** — the switcher now
-  always draws the portable ASCII/pixel-art cat. herdr 0.7.5 changed its socket API to serve one
-  request per connection and close it on reply, which stranded the image on screen (the reused
-  graphics connection drew the splash but hit a broken pipe on the `clear` that removes it). Rather
-  than special-case the proxy, the graphics path, its embedded frames, and the
-  `[experimental].kitty_graphics` dependency were dropped. The ASCII cat renders identically in
-  every terminal, needs no herdr config, and cannot linger over the loaded picker.
+- **`⌥g` no longer opens a git menu in the switcher.** The menu is a herdr pane now, reached only by
+  the `ghq.git` action (bind it to `prefix+g`). What you lose with it: reviewing an arbitrary repo
+  you fuzzy-jumped to. `cd` there (`^o`) and press `prefix+g`. Two entry points would have drifted
+  apart, and only one of them could be the fast one.
+- **`s` review staged** — tuicr has no staged-only flag, `d` (`tuicr -w`) already covers staged and
+  unstaged together, and lazygit is the better pre-commit surface.
+- **`x` resolve conflicts** — tuicr's `-p` takes a single path prefix, so `hunk diff -- <files>`
+  has no translation.
+- **The commit history browser** — the scrolling, fuzzy-filterable `git log` list behind `h`. tuicr
+  has a commit panel of its own, so `h` now opens that directly.
+- **The startup animation.** The switcher no longer animates a cat while it loads.
+- **`hunk` is no longer used or configured**, and the plugin writes nothing into tuicr's config.
+
+### Added
+
+- **A dedicated git menu pane.** `prefix+g` opens it straight onto the repo the pane is sitting in;
+  it loads no agents, no workspaces, no repository index, and no preview on the way. Picking a row
+  takes over that pane, and quitting the review returns you to where you started.
+- **`a` — review all files** (`tuicr -A`).
+- **`p` — review a pull request**: `gh pr list` in a fuzzy-filterable list, then `tuicr pr <n>`. The
+  row is hidden when `gh` is not installed.
+- **`r` — saved reviews**: the sessions from `tuicr review list`, with their comment counts. Note
+  this **reads comments only** — tuicr's TUI cannot reopen a session, so there is no way back into a
+  half-finished review yet.
+- **`GHQ_TRACE=1`** writes tab-separated timings to `$XDG_STATE_HOME/herdr-ghq/trace.log` (or
+  `$GHQ_TRACE_FILE`) — first list, keystroke-to-frame, and preview render, each measured
+  separately. Never to stdout or stderr. See the README.
+
+### Changed
+
+- **The switcher opens about 10× sooner** — roughly 35 ms to the first list where it used to be
+  430 ms. Almost all of that was the animation's own 420 ms minimum-visible floor, not the work: the
+  sources are now read synchronously before the terminal is claimed, so the first thing painted is
+  the list. A machine with thousands of repositories will see a blank pane for slightly longer
+  before it appears.
+- **Reviews open in `tuicr`, not `hunk`**: `d` → `tuicr -w`, `b` → `tuicr -r <base>.. -w`,
+  `h` → `tuicr`. Every launch passes `--no-update-check`.
+- The preview card is **about twice as fast** — roughly 50 ms on average where it used to take
+  90 ms, and 65 ms at the tail where it used to reach 214 ms. The branch now comes from reading
+  `.git/HEAD` rather than spawning `git symbolic-ref`, and the dirty check no longer walks untracked
+  files. **Behaviour change:** a repository whose only changes are untracked files now reads as
+  `clean`.
+- The **git menu is sized to fit its command bar**, so a short menu no longer clips `esc close` to
+  `esc clo`, and every row carries an icon.
 
 ### Fixed
 
@@ -44,23 +66,12 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `agent focus`/`agent get` on the pane id, but the switcher was passing the terminal id, so every
   agent focus failed silently (`agent_not_found`) — the picker closed and left you on the current
   agent — and the preview card came up empty. Agents now carry their pane id as the target.
-
-- The **git overlay (⌥g) is now sized to fit its command bar**, so a short menu no longer clips
-  `esc close` to `esc clo`; the card is as wide as the wider of its rows and its footer pills.
-- Opening the git overlay **no longer prints a stray commit SHA** onto the screen beneath the card.
+- Opening the git menu **no longer prints a stray commit SHA** onto the screen beneath the card.
   Base-branch detection ran `git rev-parse --verify` through the terminal-inheriting `status` path,
   and `rev-parse` echoes the resolved SHA on success; it now captures the output instead.
-
-### Changed
-
-- Every **git overlay (⌥g) row now carries an icon** — worktree, staged, branch, and lazygit were
-  previously blank — so the menu reads consistently and the labels line up.
-- The git overlay's **history view now leads with a detail header** for the highlighted commit — its
-  sha, relative date, author, and full (wrapped) subject — above the commit list, so a clipped list
-  row is never the only place a subject appears. Each list row also gains a **relative-date column**,
-  and its footer now reads `↵ show diff`.
-- The git overlay **card is ~30% wider** (max width 60 → 78 columns), giving the history list room for
-  the sha, date, and subject without cramping.
+- The **Kitty/herdr graphics startup splash (the animated GIF cat) is gone**, along with the
+  `[experimental].kitty_graphics` dependency. herdr 0.7.5 changed its socket API to serve one
+  request per connection and close it on reply, which stranded the image on screen.
 
 ## [0.9.0] - 2026-07-22
 

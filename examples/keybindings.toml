@@ -10,7 +10,8 @@ type = "plugin_action"
 command = "ghq.menu"
 description = "Project switcher (ghq)"
 
-# Optional: open the git menu (hunk review + lazygit) for the current repo.
+# Optional: open the git menu (tuicr review + lazygit) for the current repo, in
+# its own pane. This is the only way to reach it — the switcher has no git key.
 # [[keys.command]]
 # key = "prefix+g"
 # type = "plugin_action"

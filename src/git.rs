@@ -1,32 +1,46 @@
-//! The git overlay: a floating menu — the review verbs the retired `git-hub`
-//! plugin used to serve behind `prefix+g` — folded into the switcher itself.
+//! The git menu — the whole `--git` mode, which is the whole `Prefix + g` pane.
 //!
-//! Like the `⌥c` changelog and the `⌥,` settings form, it lives **inside** the
-//! picker: `^g` (Insert) or `␣g` (Normal) opens a centred, rounded, ink-filled
-//! card over the list rather than a separate herdr pane. Selecting a row resolves
-//! a concrete command — which repo, which base branch, which commit — and hands it
-//! to `bin/review.sh`, which `exec`s the right tool in the overlay pane the way the
-//! clone flow `exec`s `get.sh`: **`hunk`** for read-only review, `lazygit` for
-//! staging, `$EDITOR` for conflict resolution.
+//! It is **not** an overlay on the picker any more. `Prefix + g` opens a herdr
+//! pane of its own (`[[panes]] id = "git"` → `bin/git.sh` → this mode), which
+//! loads no sources, spawns no preview worker, and reads no update cache: the
+//! menu is on screen as fast as a `git rev-parse` allows. The repo is the pane's
+//! own cwd.
 //!
-//! Resolution that needs to shell out (base-branch detection, the commit list) runs
-//! **when the overlay opens**, through the [`CommandRunner`] seam, so `on_key` stays
-//! pure IO-free navigation and the whole surface is unit-testable.
+//! Selecting a row resolves a concrete command — which repo, which base branch,
+//! which commit — and hands it to `bin/review.sh`, which **`exec`s over this very
+//! process**, in this very pane: `tuicr` for review, `lazygit` for staging, or a
+//! custom `menu.conf` command. Quitting the tool closes the pane and herdr returns
+//! to the pane you pressed `Prefix + g` in. That is why the pane is a full-frame
+//! overlay rather than a popup — a small popup would hand tuicr a tiny window.
+//!
+//! Every shell-out goes through the [`CommandRunner`] seam and happens **outside**
+//! [`Git::on_key`]: base-branch detection when the menu opens, and a sub-list fetch
+//! when `on_key` returns [`Step::Load`]. So the whole key surface is IO-free and
+//! unit-testable, and `gh` talking to GitHub leaves the menu on screen rather than
+//! freezing a half-drawn list.
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use std::env;
+use std::io::{self, Write};
+use std::time::Duration;
+
+use anyhow::Result;
+use crossterm::event::{
+    self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEventKind,
+};
 use ratatui::layout::{Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 use ratatui::Frame;
 
-use crate::data::Theme;
-use crate::runner::CommandRunner;
+use crate::data::{Config, Theme};
+use crate::runner::{CommandRunner, SystemRunner};
 
 /// The resolved review command, passed to `bin/review.sh` as environment. `mode`
 /// picks the tool + shape; `arg` carries the one variable piece (a base ref for
-/// `branch`, a sha for `history`); `custom` is the shell command for a `menu.conf`
-/// entry. Everything is a plain string so the launcher stays a thin `case`.
+/// `branch`, a number for `pr`, a session slug for `comments`); `custom` is the
+/// shell command for a `menu.conf` entry. Everything is a plain string so the
+/// launcher stays a thin `case`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ReviewSpec {
     pub mode: String,
@@ -36,14 +50,74 @@ pub struct ReviewSpec {
     pub label: String,
 }
 
-/// A commit in the `history` sub-list: a short sha, a relative date and author
-/// (shown in the detail header), and its subject line.
+/// One row of a sub-list — a pull request, a saved review session. The four
+/// fields are what the list can draw, not what any one source happens to have:
+/// `id` is the argument the dispatch carries (a PR number, a session slug), and
+/// the rest is display.
 #[derive(Clone, Debug, PartialEq)]
-pub struct Commit {
-    pub sha: String,
-    pub date: String,
-    pub author: String,
-    pub subject: String,
+pub struct Row {
+    pub id: String,
+    /// The main line: a PR title, a session anchor.
+    pub label: String,
+    /// The dim column beside the id — a date.
+    pub meta: String,
+    /// A third fact for the pinned header: an author, a comment count.
+    pub detail: String,
+}
+
+/// Which sub-list a menu row opens. Both are fetched on demand: a `gh` call and a
+/// `tuicr` call are too slow to make while merely drawing the menu.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ListKind {
+    PullRequests,
+    Reviews,
+}
+
+impl ListKind {
+    /// The card title's tail.
+    fn title(self) -> &'static str {
+        match self {
+            ListKind::PullRequests => "pull requests",
+            ListKind::Reviews => "saved reviews",
+        }
+    }
+
+    /// The `review.sh` mode a picked row dispatches with.
+    fn mode(self) -> &'static str {
+        match self {
+            ListKind::PullRequests => "pr",
+            ListKind::Reviews => "comments",
+        }
+    }
+
+    /// What Enter does, for the command bar.
+    fn verb(self) -> &'static str {
+        match self {
+            ListKind::PullRequests => "review PR",
+            ListKind::Reviews => "read comments",
+        }
+    }
+
+    /// Shown when the fetch came back with nothing.
+    fn empty(self) -> &'static str {
+        match self {
+            ListKind::PullRequests => "  (no open pull requests)",
+            ListKind::Reviews => "  (no saved reviews)",
+        }
+    }
+}
+
+/// What a key press left for the caller to do. Keeping the fetch out here is what
+/// keeps [`Git::on_key`] IO-free and unit-testable.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Step {
+    /// Nothing to do. `show` going false means the user backed out.
+    Stay,
+    /// A row opened a sub-list: fetch it with [`load_rows`] and hand the result
+    /// back through [`Git::show_list`].
+    Load(ListKind),
+    /// `chosen` holds a resolved [`ReviewSpec`]; dispatch it.
+    Chosen,
 }
 
 /// A custom row read from `menu.conf` (`key|icon|label|shell command`).
@@ -58,14 +132,14 @@ pub struct Custom {
 /// What a menu row does when activated.
 #[derive(Clone, Debug, PartialEq)]
 enum Act {
-    /// A `review.sh` mode with no extra argument resolved here: worktree, staged,
-    /// conflicts, lazygit.
+    /// A `review.sh` mode with no extra argument resolved here: worktree, commits,
+    /// all-files, lazygit.
     Review(&'static str),
     /// Review a branch against `base` (resolved at open); empty base still opens,
-    /// `review.sh` falls back to a plain diff.
+    /// `review.sh` falls back to the working tree alone.
     Branch,
-    /// Open the commit sub-list rather than dispatching.
-    History,
+    /// Open a sub-list rather than dispatching.
+    List(ListKind),
     /// A `menu.conf` shell command, run verbatim.
     Custom(String),
 }
@@ -83,29 +157,30 @@ struct Item {
 #[derive(PartialEq)]
 enum View {
     Menu,
-    History,
+    List,
 }
 
-/// The git overlay, embedded in the picker as `App::git` and drawn over it when
-/// `show`. `chosen` is the resolved command a successful activation leaves behind;
-/// the picker reads it after the loop and `exec`s `review.sh` with it.
+/// The menu itself. `chosen` is the resolved command a successful activation
+/// leaves behind; [`main`] reads it after the loop and `exec`s `review.sh` with it.
 pub struct Git {
     pub show: bool,
-    /// The repo the verbs act on: the selected entry's dir, else the origin cwd.
+    /// The repo the verbs act on — the pane's cwd.
     cwd: String,
     /// Short label for the card title and the resolved spec.
     label: String,
     /// Detected base branch for the `branch` review, `None` when none resolves.
     base: Option<String>,
-    commits: Vec<Commit>,
-    /// The history fuzzy filter, and the `commits` indices it currently keeps
-    /// (all of them when empty). `hsel` indexes into `filtered`, not `commits`.
+    /// The open sub-list and what it is; empty while the menu is showing.
+    rows: Vec<Row>,
+    kind: Option<ListKind>,
+    /// The sub-list fuzzy filter, and the `rows` indices it currently keeps (all
+    /// of them when empty). `lsel` indexes into `filtered`, not `rows`.
     query: String,
     filtered: Vec<usize>,
     items: Vec<Item>,
     view: View,
     sel: usize,
-    hsel: usize,
+    lsel: usize,
     /// Set by a successful activation; taken by the picker to dispatch.
     pub chosen: Option<ReviewSpec>,
 }
@@ -117,47 +192,43 @@ impl Git {
             cwd: String::new(),
             label: String::new(),
             base: None,
-            commits: Vec::new(),
+            rows: Vec::new(),
+            kind: None,
             query: String::new(),
             filtered: Vec::new(),
             items: Vec::new(),
             view: View::Menu,
             sel: 0,
-            hsel: 0,
+            lsel: 0,
             chosen: None,
         }
     }
 
-    /// Build the menu for `cwd` and open it. `base`/`commits` are resolved by the
-    /// caller through the runner so this stays IO-free; `has_lazygit` hides the
-    /// staging row when lazygit is not installed (as the fzf menu did); `customs`
-    /// are the `menu.conf` rows, appended after the built-ins.
+    /// Build the menu for `cwd` and open it. `base` is resolved by the caller
+    /// through the runner so this stays IO-free; `has_lazygit` / `has_gh` hide the
+    /// rows whose binary is missing; `customs` are the `menu.conf` rows, appended
+    /// after the built-ins.
     #[allow(clippy::too_many_arguments)]
     pub fn open(
         &mut self,
         cwd: String,
         label: String,
         base: Option<String>,
-        commits: Vec<Commit>,
         has_lazygit: bool,
+        has_gh: bool,
         customs: Vec<Custom>,
     ) {
         // Nerd Font (nf-md) glyphs, one per row so every label lines up: worktree
-        // is unstaged edits (pencil), staged is the ready index (check), branch is
-        // a diff against the base (source-branch), history the commit list (clock),
-        // conflicts the merge (alert), lazygit the git surface (git logo).
+        // is uncommitted edits (pencil), branch a diff against the base
+        // (source-branch), commits the log (clock), all-files a whole-tree read
+        // (file), pull request an incoming change (source-pull), saved reviews the
+        // comments left on one (comment-multiple), lazygit the git surface.
         let mut items = vec![
             Item {
                 key: 'd',
                 icon: "󰏫".into(),
                 label: "review worktree".into(),
                 act: Act::Review("worktree"),
-            },
-            Item {
-                key: 's',
-                icon: "󰄬".into(),
-                label: "review staged".into(),
-                act: Act::Review("staged"),
             },
             Item {
                 key: 'b',
@@ -171,16 +242,32 @@ impl Git {
             Item {
                 key: 'h',
                 icon: "󰋚".into(),
-                label: "review history".into(),
-                act: Act::History,
+                label: "review commits".into(),
+                act: Act::Review("commits"),
             },
             Item {
-                key: 'x',
-                icon: "󰞇".into(),
-                label: "resolve conflicts".into(),
-                act: Act::Review("conflicts"),
+                key: 'a',
+                icon: "󰈔".into(),
+                label: "review all files".into(),
+                act: Act::Review("all-files"),
             },
         ];
+        // `gh` is a soft dependency: without it the row would only ever fail, so
+        // it is not offered at all.
+        if has_gh {
+            items.push(Item {
+                key: 'p',
+                icon: "󰓁".into(),
+                label: "review pull request".into(),
+                act: Act::List(ListKind::PullRequests),
+            });
+        }
+        items.push(Item {
+            key: 'r',
+            icon: "󰅺".into(),
+            label: "saved reviews".into(),
+            act: Act::List(ListKind::Reviews),
+        });
         if has_lazygit {
             items.push(Item {
                 key: 'l',
@@ -206,41 +293,54 @@ impl Git {
         self.cwd = cwd;
         self.label = label;
         self.base = base;
-        self.commits = commits;
+        self.rows = Vec::new();
+        self.kind = None;
         self.items = items;
         self.view = View::Menu;
         self.sel = 0;
-        self.hsel = 0;
+        self.lsel = 0;
         self.query.clear();
         self.refilter();
         self.chosen = None;
         self.show = true;
     }
 
-    /// Recompute `filtered` from `query`: the `commits` indices whose `sha`,
-    /// subject, or author fuzzily match, in chronological order (no re-ranking, so
-    /// the log still reads newest-first). Keeps `hsel` in range.
+    /// Show a fetched sub-list. The caller runs the command (see [`load_rows`]);
+    /// an empty result still opens, saying so, rather than silently doing nothing
+    /// when a mnemonic is pressed.
+    pub fn show_list(&mut self, kind: ListKind, rows: Vec<Row>) {
+        self.kind = Some(kind);
+        self.rows = rows;
+        self.view = View::List;
+        self.lsel = 0;
+        self.query.clear();
+        self.refilter();
+    }
+
+    /// Recompute `filtered` from `query`: the `rows` indices whose id, label, or
+    /// detail fuzzily match, in source order (no re-ranking, so a list that
+    /// arrived newest-first stays that way). Keeps `lsel` in range.
     fn refilter(&mut self) {
         let q = self.query.clone();
         self.filtered = self
-            .commits
+            .rows
             .iter()
             .enumerate()
-            .filter(|(_, c)| {
-                q.is_empty() || fuzzy_match(&q, &format!("{} {} {}", c.sha, c.subject, c.author))
+            .filter(|(_, r)| {
+                q.is_empty() || fuzzy_match(&q, &format!("{} {} {}", r.id, r.label, r.detail))
             })
             .map(|(i, _)| i)
             .collect();
-        if self.hsel >= self.filtered.len() {
-            self.hsel = 0;
+        if self.lsel >= self.filtered.len() {
+            self.lsel = 0;
         }
     }
 
-    /// Resolve the selected menu row into a [`ReviewSpec`], or open the history list.
-    /// Returns `true` when it produced a `chosen` command and closed the overlay.
-    fn activate(&mut self) -> bool {
+    /// Resolve the selected menu row into a [`ReviewSpec`], or ask the caller to
+    /// fetch a sub-list.
+    fn activate(&mut self) -> Step {
         let Some(item) = self.items.get(self.sel) else {
-            return false;
+            return Step::Stay;
         };
         let (mode, arg, custom) = match &item.act {
             Act::Review(m) => (m.to_string(), String::new(), String::new()),
@@ -250,13 +350,7 @@ impl Git {
                 String::new(),
             ),
             Act::Custom(cmd) => ("custom".to_string(), String::new(), cmd.clone()),
-            Act::History => {
-                self.view = View::History;
-                self.hsel = 0;
-                self.query.clear();
-                self.refilter();
-                return false;
-            }
+            Act::List(kind) => return Step::Load(*kind),
         };
         self.chosen = Some(ReviewSpec {
             mode,
@@ -266,34 +360,31 @@ impl Git {
             label: self.label.clone(),
         });
         self.show = false;
-        true
+        Step::Chosen
     }
 
-    /// Dispatch the selected commit as a `history` review.
-    fn activate_commit(&mut self) -> bool {
-        let Some(commit) = self
-            .filtered
-            .get(self.hsel)
-            .and_then(|&i| self.commits.get(i))
-        else {
-            return false;
+    /// Dispatch the selected sub-list row in its list's mode.
+    fn activate_row(&mut self) -> Step {
+        let (Some(kind), Some(row)) = (
+            self.kind,
+            self.filtered.get(self.lsel).and_then(|&i| self.rows.get(i)),
+        ) else {
+            return Step::Stay;
         };
         self.chosen = Some(ReviewSpec {
-            mode: "history".into(),
+            mode: kind.mode().into(),
             cwd: self.cwd.clone(),
-            arg: commit.sha.clone(),
+            arg: row.id.clone(),
             custom: String::new(),
-            label: format!("{} · {}", self.label, commit.sha),
+            label: format!("{} · {}", self.label, row.id),
         });
         self.show = false;
-        true
+        Step::Chosen
     }
 
-    /// Handle a key while the overlay is open. Returns `true` once a selection has
-    /// resolved a command (`chosen` is set and the overlay closed), so the picker
-    /// breaks its loop and dispatches. `esc`/`q` step back a view, then close; the
-    /// caller keeps `^c` as the picker's quit.
-    pub fn on_key(&mut self, k: KeyEvent) -> bool {
+    /// Handle a key. The returned [`Step`] says what the caller must do next;
+    /// `esc`/`q` step back a view, then close, and the caller keeps `^c` as quit.
+    pub fn on_key(&mut self, k: KeyEvent) -> Step {
         match self.view {
             View::Menu => match k.code {
                 KeyCode::Esc | KeyCode::Char('q') => self.show = false,
@@ -311,9 +402,9 @@ impl Git {
                 }
                 _ => {}
             },
-            // The history view is a fuzzy picker: printable keys type into the
-            // filter, so navigation moves to the arrows (and readline `^n`/`^p`).
-            View::History => {
+            // A sub-list is a fuzzy picker: printable keys type into the filter, so
+            // navigation moves to the arrows (and readline `^n`/`^p`).
+            View::List => {
                 let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
                 match k.code {
                     // esc clears a query first, then backs out to the menu.
@@ -325,13 +416,13 @@ impl Git {
                             self.refilter();
                         }
                     }
-                    KeyCode::Down => self.hstep(1),
-                    KeyCode::Up => self.hstep(-1),
-                    KeyCode::Char('n') if ctrl => self.hstep(1),
-                    KeyCode::Char('p') if ctrl => self.hstep(-1),
-                    KeyCode::Home => self.hsel = 0,
-                    KeyCode::End => self.hsel = self.filtered.len().saturating_sub(1),
-                    KeyCode::Enter => return self.activate_commit(),
+                    KeyCode::Down => self.lstep(1),
+                    KeyCode::Up => self.lstep(-1),
+                    KeyCode::Char('n') if ctrl => self.lstep(1),
+                    KeyCode::Char('p') if ctrl => self.lstep(-1),
+                    KeyCode::Home => self.lsel = 0,
+                    KeyCode::End => self.lsel = self.filtered.len().saturating_sub(1),
+                    KeyCode::Enter => return self.activate_row(),
                     KeyCode::Backspace => {
                         self.query.pop();
                         self.refilter();
@@ -344,7 +435,7 @@ impl Git {
                 }
             }
         }
-        false
+        Step::Stay
     }
 
     fn step(&mut self, d: i32) {
@@ -355,20 +446,20 @@ impl Git {
         self.sel = ((self.sel as i32 + d).rem_euclid(n as i32)) as usize;
     }
 
-    /// Wheel over the overlay: scroll the history body by moving the selection
-    /// (which pages the list). A no-op in the menu, which has nothing to scroll.
+    /// Wheel over the card: scroll a sub-list body by moving the selection (which
+    /// pages the list). A no-op in the menu, which has nothing to scroll.
     pub fn on_wheel(&mut self, d: i32) {
-        if matches!(self.view, View::History) {
-            self.hstep(d);
+        if matches!(self.view, View::List) {
+            self.lstep(d);
         }
     }
 
-    fn hstep(&mut self, d: i32) {
+    fn lstep(&mut self, d: i32) {
         let n = self.filtered.len();
         if n == 0 {
             return;
         }
-        self.hsel = ((self.hsel as i32 + d).rem_euclid(n as i32)) as usize;
+        self.lsel = ((self.lsel as i32 + d).rem_euclid(n as i32)) as usize;
     }
 }
 
@@ -404,41 +495,257 @@ pub fn detect_base_branch(
         .map(str::to_string)
 }
 
-/// The recent commits for the history sub-list. A `--pretty` format with a US
-/// (`\x1f`) field separator carries the short sha, relative date, author, and
-/// subject in one line each — the detail header shows the first three, the list
-/// the sha and subject. Empty on any failure (not a repo, no commits) — the
-/// sub-list just shows nothing.
-pub fn load_commits(runner: &dyn CommandRunner, cwd: &str, n: usize) -> Vec<Commit> {
-    let n = n.to_string();
-    let out = runner.capture(
-        "git",
-        &[
-            "-C",
-            cwd,
-            "log",
-            "--no-decorate",
-            "-n",
-            &n,
-            "--pretty=format:%h%x1f%cr%x1f%an%x1f%s",
-        ],
+/// Fetch a sub-list. Both sources speak JSON and both are parsed with
+/// `serde_json` — **never `jq`**, which this repo does not depend on and must
+/// not start depending on for a list that is only ever displayed.
+///
+/// Every failure (binary missing, not a GitHub remote, unparseable output) is an
+/// empty list. The card then says so, which is the same thing the user needs to
+/// know as an error would tell them, without a second failure surface.
+pub fn load_rows(runner: &dyn CommandRunner, cwd: &str, kind: ListKind) -> Vec<Row> {
+    match kind {
+        ListKind::PullRequests => load_pull_requests(runner, cwd),
+        ListKind::Reviews => load_reviews(runner, cwd),
+    }
+}
+
+/// Run a command that returns a JSON array and map each element to a [`Row`].
+/// Anything that is not an array of objects — a `gh` usage error, a missing
+/// binary, an object where a list was expected — is no rows.
+fn json_rows(out: Option<String>, row_of: impl Fn(&serde_json::Value) -> Option<Row>) -> Vec<Row> {
+    let Some(json) = out
+        .as_deref()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
+    else {
+        return Vec::new();
+    };
+    let Some(items) = json.as_array() else {
+        return Vec::new();
+    };
+    items.iter().filter_map(row_of).collect()
+}
+
+/// `gh pr list` as rows: number, title, author, and the date it last moved.
+///
+/// Run through `sh -c` with a `cd` rather than `gh --repo <cwd>`: `--repo` takes
+/// an `OWNER/REPO` coordinate or a URL, **not a path**, so passing the checkout
+/// there is a usage error — and one that would show up as "no open pull
+/// requests", indistinguishable from the truth. `gh` resolves the repo from its
+/// working directory's remote on its own.
+fn load_pull_requests(runner: &dyn CommandRunner, cwd: &str) -> Vec<Row> {
+    let script = format!(
+        "cd {} && gh pr list --limit 50 --json number,title,author,updatedAt",
+        shell_quote(cwd)
     );
-    out.into_iter()
-        .flat_map(|s| s.lines().map(str::to_string).collect::<Vec<_>>())
-        .filter_map(|line| {
-            let mut fields = line.split('\u{1f}');
-            let sha = fields.next()?.to_string();
-            if sha.is_empty() {
-                return None;
-            }
-            Some(Commit {
-                sha,
-                date: fields.next().unwrap_or_default().to_string(),
-                author: fields.next().unwrap_or_default().to_string(),
-                subject: fields.next().unwrap_or_default().to_string(),
-            })
+    json_rows(runner.capture("sh", &["-c", &script]), |pr| {
+        let number = pr.get("number")?.as_u64()?;
+        Some(Row {
+            id: number.to_string(),
+            label: pr
+                .get("title")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string(),
+            meta: day_of(pr.get("updatedAt").and_then(|v| v.as_str()).unwrap_or("")),
+            detail: pr
+                .get("author")
+                .and_then(|a| a.get("login"))
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string(),
         })
+    })
+}
+
+/// Single-quote a string for `sh -c`. The only input is a repository path we were
+/// handed, but a path with a quote in it must become an unreadable path, never a
+/// second command.
+fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', r"'\''"))
+}
+
+/// `tuicr review list` as rows: the session slug is the id (it is what
+/// `review comments --session` takes), with the comment count as the detail.
+/// Here `--repo` **does** take a checkout path — tuicr documents it that way.
+fn load_reviews(runner: &dyn CommandRunner, cwd: &str) -> Vec<Row> {
+    json_rows(
+        runner.capture("tuicr", &["review", "list", "--repo", cwd]),
+        |s| {
+            let slug = s.get("slug")?.as_str()?.to_string();
+            let count = s.get("comment_count").and_then(|v| v.as_u64()).unwrap_or(0);
+            let anchor = s
+                .get("anchor")
+                .and_then(|v| v.as_str())
+                .filter(|a| !a.is_empty())
+                .unwrap_or("(no anchor)");
+            Some(Row {
+                id: slug,
+                label: anchor.to_string(),
+                meta: day_of(s.get("updated_at").and_then(|v| v.as_str()).unwrap_or("")),
+                detail: match count {
+                    1 => "1 comment".to_string(),
+                    n => format!("{n} comments"),
+                },
+            })
+        },
+    )
+}
+
+/// The date out of an ISO-8601 timestamp — the whole string is too wide for the
+/// column and the clock half of it never decides anything.
+fn day_of(timestamp: &str) -> String {
+    timestamp
+        .split('T')
+        .next()
+        .unwrap_or(timestamp)
+        .chars()
+        .take(10)
         .collect()
+}
+
+/// Whether `dir` sits inside a git working tree.
+fn is_repo(runner: &dyn CommandRunner, dir: &str) -> bool {
+    runner
+        .capture("git", &["-C", dir, "rev-parse", "--git-dir"])
+        .is_some()
+}
+
+/// The repo the menu acts on: the pane's own cwd, which herdr sets from the pane
+/// `Prefix + g` was pressed in. `GHQ_ORIGIN_CWD` is the fallback for the case
+/// where the pane started somewhere else — it is a hint, not an authority, so it
+/// is only taken when it is a repo and the cwd is not.
+fn repo_cwd(runner: &dyn CommandRunner) -> Option<String> {
+    let cwd = env::current_dir()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| ".".into());
+    if is_repo(runner, &cwd) {
+        return Some(cwd);
+    }
+    env::var("GHQ_ORIGIN_CWD")
+        .ok()
+        .filter(|s| !s.is_empty() && is_repo(runner, s))
+}
+
+/// Read the `menu.conf` custom rows from the plugin's config dir, if any.
+fn read_menu_conf() -> Vec<Custom> {
+    let dir = env::var("HERDR_PLUGIN_CONFIG_DIR").unwrap_or_default();
+    if dir.is_empty() {
+        return Vec::new();
+    }
+    std::fs::read_to_string(std::path::Path::new(&dir).join("menu.conf"))
+        .map(|t| parse_menu_conf(&t))
+        .unwrap_or_default()
+}
+
+/// Entry point for `herdr-ghq-switcher --git` — the entire `Prefix + g` pane.
+///
+/// Deliberately narrow: no `load_all`, no preview worker, no update cache, no
+/// recency file. The only IO before the first frame is the git reads the menu
+/// needs to label itself.
+pub fn main() -> Result<()> {
+    let runner = SystemRunner;
+    let cfg = Config::load();
+    let theme = Theme::load();
+    let title = theme
+        .resolve(&cfg.get("title_color", "peach"))
+        .unwrap_or_else(|| theme.or("accent", Color::Cyan));
+
+    // Not a repo: say so in one line and let the pane close, rather than opening
+    // a menu whose every row would fail.
+    let Some(cwd) = repo_cwd(&runner) else {
+        println!("Ghq git menu: this pane is not inside a git repository.");
+        return Ok(());
+    };
+    let label = std::path::Path::new(&cwd)
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "repo".into());
+
+    let base = detect_base_branch(&runner, &cwd, &cfg.get("base_branch", ""));
+    let has = |bin: &str| runner.ok("sh", &["-c", &format!("command -v {bin} >/dev/null 2>&1")]);
+    let (has_lazygit, has_gh) = (has("lazygit"), has("gh"));
+    let mut g = Git::new();
+    g.open(
+        cwd.clone(),
+        label,
+        base,
+        has_lazygit,
+        has_gh,
+        read_menu_conf(),
+    );
+
+    let mut terminal = crate::init_terminal();
+    let outcome = loop {
+        if let Err(e) = terminal.draw(|f| draw(f, f.area(), &theme, title, &g)) {
+            break Err(anyhow::Error::from(e));
+        }
+        match event::poll(Duration::from_millis(200)) {
+            Ok(true) => {}
+            Ok(false) => continue,
+            Err(e) => break Err(e.into()),
+        }
+        match event::read() {
+            Ok(Event::Key(k)) if k.kind == KeyEventKind::Press => {
+                if k.modifiers.contains(KeyModifiers::CONTROL)
+                    && matches!(k.code, KeyCode::Char('c'))
+                {
+                    break Ok(());
+                }
+                match g.on_key(k) {
+                    // The fetch lives out here so `on_key` stays IO-free. It runs
+                    // on the menu's frame, which is why the card keeps showing the
+                    // menu while `gh` talks to GitHub.
+                    Step::Load(kind) => {
+                        let rows = load_rows(&runner, &cwd, kind);
+                        g.show_list(kind, rows);
+                    }
+                    Step::Chosen => break Ok(()),
+                    // `show` going false is the user backing all the way out.
+                    Step::Stay if !g.show => break Ok(()),
+                    Step::Stay => {}
+                }
+            }
+            Ok(Event::Mouse(m)) => match m.kind {
+                MouseEventKind::ScrollDown => g.on_wheel(1),
+                MouseEventKind::ScrollUp => g.on_wheel(-1),
+                _ => {}
+            },
+            Ok(_) => {}
+            Err(e) => break Err(e.into()),
+        }
+    };
+    // Restore before anything can return: the loop ended holding raw mode, the
+    // alternate screen, and `?1000h`, and an `Err` that skipped this would drop
+    // mouse escapes into the user's shell. Only the `exec` path below is allowed
+    // to leave the screen claimed, and it re-claims it deliberately.
+    if outcome.is_err() || g.chosen.is_none() {
+        crate::restore_terminal();
+    }
+    outcome?;
+    let Some(spec) = g.chosen.take() else {
+        return Ok(());
+    };
+
+    // The pre-roll. `review.sh` `exec`s over this process, so the next thing to
+    // paint is the review tool — and tuicr can spend a second or more reading a
+    // large diff before its first frame. Tearing the screen down here would leave
+    // that second black. Instead: turn the wheel off (tuicr sets its own), draw
+    // one static frame, and leave the alternate screen up for tuicr to paint over.
+    // Raw mode and the cursor are restored for the brief cooked-mode window before
+    // it claims them back.
+    print!("{}", crate::MOUSE_OFF);
+    let _ = io::stdout().flush();
+    if let Ok(size) = terminal.size() {
+        let area = Rect::new(0, 0, size.width, size.height);
+        let _ = terminal.draw(|f| crate::splash::draw(f, area, &theme, title, "Opening review"));
+    }
+    let _ = crossterm::terminal::disable_raw_mode();
+    let _ = crossterm::execute!(io::stdout(), crossterm::cursor::Show);
+
+    let script_dir = env::var("HERDR_PLUGIN_ROOT")
+        .map(|r| format!("{r}/bin"))
+        .unwrap_or_else(|_| ".".into());
+    crate::action::run_review(&spec, &script_dir)
 }
 
 /// Parse a `menu.conf`: one `key|icon|label|shell command` per line. Blank lines,
@@ -469,7 +776,7 @@ pub fn parse_menu_conf(text: &str) -> Vec<Custom> {
         .collect()
 }
 
-/// Draw the git card centred over the picker, matching the settings/changelog shape.
+/// Draw the git card centred in the pane, matching the settings/changelog shape.
 pub fn draw(f: &mut Frame, area: Rect, theme: &Theme, title: Color, g: &Git) {
     let ink = theme.or("panel_bg", Color::Rgb(16, 18, 20));
     let text = theme.or("text", Color::Reset);
@@ -477,9 +784,9 @@ pub fn draw(f: &mut Frame, area: Rect, theme: &Theme, title: Color, g: &Git) {
     let accent = theme.or("accent", Color::Cyan);
     let border = theme.or("accent", Color::Cyan);
 
-    // The history browser is a fixed-size box with its own internal layout.
-    if matches!(g.view, View::History) {
-        draw_history(f, area, theme, title, g);
+    // A sub-list is a fixed-size box with its own internal layout.
+    if matches!(g.view, View::List) {
+        draw_list(f, area, theme, title, g);
         return;
     }
 
@@ -525,10 +832,10 @@ pub fn draw(f: &mut Frame, area: Rect, theme: &Theme, title: Color, g: &Git) {
     draw_bar(f, g, rows[1], theme);
 }
 
-/// The history log browser, drawn as a **fixed-size** card so filtering never
-/// resizes it: a pinned detail header on top, a rounded search box just above the
-/// body, and — the only part that scrolls — the paged commit list, then the bar.
-fn draw_history(f: &mut Frame, area: Rect, theme: &Theme, title: Color, g: &Git) {
+/// A sub-list, drawn as a **fixed-size** card so filtering never resizes it: a
+/// pinned detail header on top, a rounded search box just above the body, and —
+/// the only part that scrolls — the paged row list, then the bar.
+fn draw_list(f: &mut Frame, area: Rect, theme: &Theme, title: Color, g: &Git) {
     use ratatui::layout::Constraint::{Length, Min};
 
     let ink = theme.or("panel_bg", Color::Rgb(16, 18, 20));
@@ -538,7 +845,7 @@ fn draw_history(f: &mut Frame, area: Rect, theme: &Theme, title: Color, g: &Git)
     let border = theme.or("accent", Color::Cyan);
 
     // Size from the terminal, not the content, so the box is stable across searches.
-    let w = (HIST_W as u16 + 6).min(area.width.saturating_sub(2));
+    let w = (LIST_W as u16 + 6).min(area.width.saturating_sub(2));
     let h = area
         .height
         .saturating_sub(4)
@@ -552,12 +859,13 @@ fn draw_history(f: &mut Frame, area: Rect, theme: &Theme, title: Color, g: &Git)
     );
     f.render_widget(Clear, popup);
 
-    let tail = if g.commits.is_empty() {
-        " · history ".to_string()
+    let what = g.kind.map(ListKind::title).unwrap_or("list");
+    let tail = if g.rows.is_empty() {
+        format!(" · {what} ")
     } else if g.filtered.is_empty() {
-        " · history · no matches ".to_string()
+        format!(" · {what} · no matches ")
     } else {
-        format!(" · history · {}/{} ", g.hsel + 1, g.filtered.len())
+        format!(" · {what} · {}/{} ", g.lsel + 1, g.filtered.len())
     };
     let block = Block::default()
         .borders(Borders::ALL)
@@ -572,12 +880,12 @@ fn draw_history(f: &mut Frame, area: Rect, theme: &Theme, title: Color, g: &Git)
     let inner = block.inner(popup);
     f.render_widget(block, popup);
 
-    // A repo with no commits: nothing to browse.
-    if g.commits.is_empty() {
+    // Nothing came back: say which nothing, rather than an empty box.
+    if g.rows.is_empty() {
         let rows = ratatui::layout::Layout::vertical([Min(1), Length(1)]).split(inner);
         f.render_widget(
             Paragraph::new(Line::from(Span::styled(
-                "  (no commits)",
+                g.kind.map(ListKind::empty).unwrap_or("  (nothing here)"),
                 Style::default().fg(sub),
             ))),
             rows[0],
@@ -588,12 +896,12 @@ fn draw_history(f: &mut Frame, area: Rect, theme: &Theme, title: Color, g: &Git)
 
     // Header (fixed) · search box (rounded, near the body) · scrolling list · bar.
     let a =
-        ratatui::layout::Layout::vertical([Length(HIST_HEADER_ROWS), Length(3), Min(1), Length(1)])
+        ratatui::layout::Layout::vertical([Length(LIST_HEADER_ROWS), Length(3), Min(1), Length(1)])
             .split(inner);
     let (header_area, search_area, body_area, bar_area) = (a[0], a[1], a[2], a[3]);
 
     f.render_widget(
-        Paragraph::new(history_header_lines(
+        Paragraph::new(list_header_lines(
             g,
             text,
             sub,
@@ -622,10 +930,10 @@ fn draw_history(f: &mut Frame, area: Rect, theme: &Theme, title: Color, g: &Git)
     }
     f.render_widget(Paragraph::new(Line::from(qline)), sinner);
 
-    // Only this scrolls: the page of commits holding the selection.
+    // Only this scrolls: the page of rows holding the selection.
     let viewport = body_area.height as usize;
     f.render_widget(
-        Paragraph::new(history_body_lines(
+        Paragraph::new(list_body_lines(
             g,
             text,
             sub,
@@ -686,18 +994,18 @@ fn menu_lines(
         .collect()
 }
 
-/// Target content width of the fixed history card, driving the card's width and
-/// the subject wrap.
-const HIST_W: usize = 68;
+/// Target content width of the fixed sub-list card, driving the card's width and
+/// the label wrap.
+const LIST_W: usize = 68;
 
-/// The pinned detail header's height: one meta row plus up to two subject rows.
-const HIST_HEADER_ROWS: u16 = 3;
+/// The pinned detail header's height: one meta row plus up to two label rows.
+const LIST_HEADER_ROWS: u16 = 3;
 
-/// The relative-date column in a history list row, padded so subjects line up.
+/// The date column in a list row, padded so labels line up.
 const DATE_COL: usize = 14;
 
-/// The leading run of the history search line (a leading space, the filter icon,
-/// a space) — shared so `draw_history` can place the real terminal cursor exactly
+/// The leading run of the sub-list search line (a leading space, the filter icon,
+/// a space) — shared so `draw_list` can place the real terminal cursor exactly
 /// where the query text starts.
 const SEARCH_PREFIX: &str = " 󰍉 ";
 
@@ -726,18 +1034,18 @@ fn clip(s: &str, w: usize) -> String {
     out
 }
 
-/// The pinned detail header for the highlighted commit — its sha, relative date,
-/// author, then the (wrapped, two-row-capped) subject. Fixed height, so it never
-/// shrinks while filtering; a clipped list row is never the only place a subject
-/// appears. Falls back to a placeholder when the filter matches nothing.
-fn history_header_lines(
+/// The pinned detail header for the highlighted row — its id, date, and detail,
+/// then the (wrapped, two-row-capped) label. Fixed height, so it never shrinks
+/// while filtering; a clipped list row is never the only place a label appears.
+/// Falls back to a placeholder when the filter matches nothing.
+fn list_header_lines(
     g: &Git,
     text: Color,
     sub: Color,
     title: Color,
     width: usize,
 ) -> Vec<Line<'static>> {
-    let Some(c) = g.filtered.get(g.hsel).and_then(|&i| g.commits.get(i)) else {
+    let Some(r) = g.filtered.get(g.lsel).and_then(|&i| g.rows.get(i)) else {
         return vec![Line::from(Span::styled(
             "  no matches",
             Style::default().fg(sub),
@@ -746,24 +1054,24 @@ fn history_header_lines(
     let mut meta = vec![
         Span::raw(" "),
         Span::styled(
-            c.sha.clone(),
+            r.id.clone(),
             Style::default().fg(title).add_modifier(Modifier::BOLD),
         ),
     ];
-    if !c.date.is_empty() {
+    if !r.meta.is_empty() {
         meta.push(Span::styled(
-            format!("  {}", c.date),
+            format!("  {}", r.meta),
             Style::default().fg(sub),
         ));
     }
-    if !c.author.is_empty() {
+    if !r.detail.is_empty() {
         meta.push(Span::styled(
-            format!("  ·  {}", c.author),
+            format!("  ·  {}", r.detail),
             Style::default().fg(sub),
         ));
     }
     let mut lines = vec![Line::from(meta)];
-    for (prefix, line) in crate::markdown::wrap(&c.subject, width.saturating_sub(1), "", "")
+    for (prefix, line) in crate::markdown::wrap(&r.label, width.saturating_sub(1), "", "")
         .into_iter()
         .take(2)
     {
@@ -775,10 +1083,10 @@ fn history_header_lines(
     lines
 }
 
-/// The scrolling body: the page of the filtered commit list holding the
-/// selection, each row a marker, sha, date column, and clipped subject. This is
-/// the only part of the card that moves; `viewport` is the body area's height.
-fn history_body_lines(
+/// The scrolling body: the page of the filtered list holding the selection, each
+/// row a marker, id, date column, and clipped label. This is the only part of the
+/// card that moves; `viewport` is the body area's height.
+fn list_body_lines(
     g: &Git,
     text: Color,
     sub: Color,
@@ -797,7 +1105,7 @@ fn history_body_lines(
     let start = if len <= viewport {
         0
     } else {
-        (g.hsel / viewport) * viewport
+        (g.lsel / viewport) * viewport
     };
     let end = (start + viewport).min(len);
     g.filtered
@@ -806,23 +1114,23 @@ fn history_body_lines(
         .take(end)
         .skip(start)
         .filter_map(|(rank, &i)| {
-            let c = g.commits.get(i)?;
-            let selected = rank == g.hsel;
-            // marker(2) + sha + space + date column + space, then the subject fills the rest.
-            let room = width.saturating_sub(5 + c.sha.chars().count() + DATE_COL);
-            let date = clip(&c.date, DATE_COL);
+            let r = g.rows.get(i)?;
+            let selected = rank == g.lsel;
+            // marker(2) + id + space + date column + space, then the label fills the rest.
+            let room = width.saturating_sub(5 + r.id.chars().count() + DATE_COL);
+            let date = clip(&r.meta, DATE_COL);
             Some(Line::from(vec![
                 Span::styled(
                     if selected { "▌ " } else { "  " },
                     Style::default().fg(accent),
                 ),
                 Span::styled(
-                    format!("{} ", c.sha),
+                    format!("{} ", r.id),
                     Style::default().fg(accent).add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(format!("{date:<DATE_COL$} "), Style::default().fg(sub)),
                 Span::styled(
-                    clip(&c.subject, room),
+                    clip(&r.label, room),
                     Style::default().fg(if selected { text } else { sub }),
                 ),
             ]))
@@ -839,8 +1147,12 @@ fn bar_pills(g: &Git, theme: &Theme) -> Vec<crate::tui::Pill<'static>> {
             crate::tui::Pill::new("↑ ↓", "move", theme.or("blue", Color::Blue)),
             crate::tui::Pill::new("esc", "close", theme.or("red", Color::Red)),
         ],
-        View::History => vec![
-            crate::tui::Pill::new("↵", "show diff", theme.or("accent", Color::Cyan)),
+        View::List => vec![
+            crate::tui::Pill::new(
+                "↵",
+                g.kind.map(ListKind::verb).unwrap_or("open"),
+                theme.or("accent", Color::Cyan),
+            ),
             crate::tui::Pill::new("↑ ↓", "move", theme.or("blue", Color::Blue)),
             crate::tui::Pill::new("esc", "back", theme.or("red", Color::Red)),
         ],
@@ -867,7 +1179,6 @@ fn draw_bar(f: &mut Frame, g: &Git, area: Rect, theme: &Theme) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::data::Config;
     use crate::runner::MockRunner;
     use crossterm::event::KeyModifiers;
 
@@ -875,28 +1186,49 @@ mod tests {
         KeyEvent::new(c, KeyModifiers::NONE)
     }
 
+    /// The menu as `Prefix + g` builds it in a repo with both optional binaries.
     fn open_default(g: &mut Git) {
         g.open(
             "/repo".into(),
             "repo".into(),
             Some("main".into()),
-            vec![
-                Commit {
-                    sha: "aaa1111".into(),
-                    date: "2 hours ago".into(),
-                    author: "Ada".into(),
-                    subject: "first".into(),
-                },
-                Commit {
-                    sha: "bbb2222".into(),
-                    date: "3 hours ago".into(),
-                    author: "Ada".into(),
-                    subject: "second".into(),
-                },
-            ],
+            true,
             true,
             vec![],
         );
+    }
+
+    fn rows() -> Vec<Row> {
+        vec![
+            Row {
+                id: "12".into(),
+                label: "add login".into(),
+                meta: "2026-08-01".into(),
+                detail: "ada".into(),
+            },
+            Row {
+                id: "13".into(),
+                label: "fix logout".into(),
+                meta: "2026-08-02".into(),
+                detail: "bea".into(),
+            },
+        ]
+    }
+
+    /// The whole screen as text, for the draw assertions.
+    fn screen(g: &Git, w: u16, h: u16) -> String {
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(w, h)).unwrap();
+        term.draw(|f| draw(f, f.area(), &Theme::default(), Color::Yellow, g))
+            .unwrap();
+        let buf = term.backend().buffer().clone();
+        (0..h)
+            .map(|y| {
+                (0..w)
+                    .map(|x| buf[(x, y)].symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     #[test]
@@ -927,42 +1259,14 @@ mod tests {
     }
 
     #[test]
-    fn commits_parse_into_sha_date_author_and_subject() {
-        // The `\x1f`-delimited pretty format, one commit per line.
-        let runner = MockRunner::new().on(
-            "log",
-            "abc1234\u{1f}2 hours ago\u{1f}Ada\u{1f}fix the thing\n\
-             def5678\u{1f}3 days ago\u{1f}Bea\u{1f}add a test\n",
-        );
-        let commits = load_commits(&runner, "/r", 50);
-        assert_eq!(
-            commits,
-            vec![
-                Commit {
-                    sha: "abc1234".into(),
-                    date: "2 hours ago".into(),
-                    author: "Ada".into(),
-                    subject: "fix the thing".into()
-                },
-                Commit {
-                    sha: "def5678".into(),
-                    date: "3 days ago".into(),
-                    author: "Bea".into(),
-                    subject: "add a test".into()
-                },
-            ]
-        );
-    }
-
-    #[test]
     fn menu_conf_skips_comments_blanks_and_incomplete_rows() {
         let conf = "\
 # a comment
 
-p|󰊢|push|git push
+p|X|push|git push
 bad line with no pipes
 k||no command|
-r|󰑓|pull|git pull
+z|Y|pull|git pull
 ";
         let rows = parse_menu_conf(conf);
         assert_eq!(
@@ -970,13 +1274,13 @@ r|󰑓|pull|git pull
             vec![
                 Custom {
                     key: 'p',
-                    icon: "󰊢".into(),
+                    icon: "X".into(),
                     label: "push".into(),
                     cmd: "git push".into()
                 },
                 Custom {
-                    key: 'r',
-                    icon: "󰑓".into(),
+                    key: 'z',
+                    icon: "Y".into(),
                     label: "pull".into(),
                     cmd: "git pull".into()
                 },
@@ -988,7 +1292,7 @@ r|󰑓|pull|git pull
     fn enter_on_worktree_resolves_a_worktree_spec_and_closes() {
         let mut g = Git::new();
         open_default(&mut g);
-        assert!(g.on_key(key(KeyCode::Enter)));
+        assert_eq!(g.on_key(key(KeyCode::Enter)), Step::Chosen);
         assert!(!g.show);
         let spec = g.chosen.unwrap();
         assert_eq!(spec.mode, "worktree");
@@ -999,40 +1303,103 @@ r|󰑓|pull|git pull
     fn branch_row_carries_the_detected_base() {
         let mut g = Git::new();
         open_default(&mut g);
-        // d, s, then b (branch).
         g.on_key(key(KeyCode::Char('b')));
         let spec = g.chosen.unwrap();
         assert_eq!(spec.mode, "branch");
         assert_eq!(spec.arg, "main");
     }
 
+    /// `h` no longer opens a browser of our own — tuicr has a commit panel, so it
+    /// dispatches straight into it.
     #[test]
-    fn history_opens_a_sublist_then_shows_the_chosen_commit() {
-        let mut g = Git::new();
-        open_default(&mut g);
-        // h opens history (no dispatch yet)...
-        assert!(!g.on_key(key(KeyCode::Char('h'))));
-        assert!(g.show, "history must stay in the overlay");
-        // ...move to the second commit (↓, since letters now type into the filter) and pick it.
-        g.on_key(key(KeyCode::Down));
-        assert!(g.on_key(key(KeyCode::Enter)));
-        let spec = g.chosen.unwrap();
-        assert_eq!(spec.mode, "history");
-        assert_eq!(spec.arg, "bbb2222");
+    fn commits_and_all_files_dispatch_without_an_argument() {
+        for (k, mode) in [('h', "commits"), ('a', "all-files")] {
+            let mut g = Git::new();
+            open_default(&mut g);
+            assert_eq!(g.on_key(key(KeyCode::Char(k))), Step::Chosen);
+            let spec = g.chosen.unwrap();
+            assert_eq!(spec.mode, mode);
+            assert_eq!(spec.arg, "");
+        }
     }
 
     #[test]
-    fn esc_in_history_steps_back_to_the_menu_not_out() {
+    fn the_retired_staged_and_conflicts_mnemonics_do_nothing() {
         let mut g = Git::new();
         open_default(&mut g);
-        g.on_key(key(KeyCode::Char('h')));
-        g.on_key(key(KeyCode::Esc));
-        assert!(
-            g.show,
-            "the first esc backs out of history, not the overlay"
+        for k in ['s', 'x'] {
+            assert_eq!(g.on_key(key(KeyCode::Char(k))), Step::Stay);
+        }
+        assert!(g.show);
+        assert!(g.chosen.is_none());
+    }
+
+    #[test]
+    fn a_list_row_asks_the_caller_to_fetch_then_dispatches_a_pick() {
+        let mut g = Git::new();
+        open_default(&mut g);
+        assert_eq!(
+            g.on_key(key(KeyCode::Char('p'))),
+            Step::Load(ListKind::PullRequests)
         );
+        assert!(g.show, "the menu stays open while the fetch runs");
+
+        g.show_list(ListKind::PullRequests, rows());
+        g.on_key(key(KeyCode::Down));
+        assert_eq!(g.on_key(key(KeyCode::Enter)), Step::Chosen);
+        let spec = g.chosen.unwrap();
+        assert_eq!(spec.mode, "pr");
+        assert_eq!(spec.arg, "13");
+    }
+
+    #[test]
+    fn saved_reviews_dispatch_the_comments_mode_with_the_slug() {
+        let mut g = Git::new();
+        open_default(&mut g);
+        assert_eq!(
+            g.on_key(key(KeyCode::Char('r'))),
+            Step::Load(ListKind::Reviews)
+        );
+        g.show_list(
+            ListKind::Reviews,
+            vec![Row {
+                id: "9f6c1b3e09a54e2a".into(),
+                label: "main..HEAD".into(),
+                meta: "2026-08-03".into(),
+                detail: "3 comments".into(),
+            }],
+        );
+        assert_eq!(g.on_key(key(KeyCode::Enter)), Step::Chosen);
+        let spec = g.chosen.unwrap();
+        assert_eq!(spec.mode, "comments");
+        assert_eq!(spec.arg, "9f6c1b3e09a54e2a");
+    }
+
+    #[test]
+    fn esc_in_a_list_steps_back_to_the_menu_not_out() {
+        let mut g = Git::new();
+        open_default(&mut g);
+        g.on_key(key(KeyCode::Char('p')));
+        g.show_list(ListKind::PullRequests, rows());
         g.on_key(key(KeyCode::Esc));
-        assert!(!g.show, "a second esc closes the overlay");
+        assert!(g.show, "the first esc backs out of the list, not the menu");
+        g.on_key(key(KeyCode::Esc));
+        assert!(!g.show, "a second esc closes the menu");
+    }
+
+    #[test]
+    fn esc_clears_the_filter_before_leaving_a_list() {
+        let mut g = Git::new();
+        open_default(&mut g);
+        g.show_list(ListKind::PullRequests, rows());
+        g.on_key(key(KeyCode::Char('f'))); // filter query "f"
+        assert_eq!(g.query, "f");
+        g.on_key(key(KeyCode::Esc)); // first esc clears the query...
+        assert!(g.query.is_empty());
+        assert!(g.show, "clearing the filter must not close the menu");
+        g.on_key(key(KeyCode::Esc)); // ...then list → menu...
+        g.on_key(key(KeyCode::Esc)); // ...then the menu closes.
+        assert!(!g.show);
     }
 
     #[test]
@@ -1042,7 +1409,7 @@ r|󰑓|pull|git pull
             "/repo".into(),
             "repo".into(),
             None,
-            vec![],
+            false,
             false,
             vec![Custom {
                 key: 'z',
@@ -1051,129 +1418,173 @@ r|󰑓|pull|git pull
                 cmd: "git gc".into(),
             }],
         );
-        assert!(g.on_key(key(KeyCode::Char('z'))));
+        assert_eq!(g.on_key(key(KeyCode::Char('z'))), Step::Chosen);
         let spec = g.chosen.unwrap();
         assert_eq!(spec.mode, "custom");
         assert_eq!(spec.custom, "git gc");
     }
 
     #[test]
-    fn lazygit_row_is_hidden_without_lazygit() {
+    fn rows_whose_binary_is_missing_are_not_offered() {
         let mut g = Git::new();
-        g.open("/repo".into(), "repo".into(), None, vec![], false, vec![]);
-        assert!(g.items.iter().all(|i| i.key != 'l'));
+        g.open("/repo".into(), "repo".into(), None, false, false, vec![]);
+        assert!(g.items.iter().all(|i| i.key != 'l'), "lazygit row survived");
+        assert!(
+            g.items.iter().all(|i| i.key != 'p'),
+            "pull request row survived"
+        );
+        // The rest are unconditional.
+        for k in ['d', 'b', 'h', 'a', 'r'] {
+            assert!(g.items.iter().any(|i| i.key == k), "row {k} is missing");
+        }
+
+        let mut g = Git::new();
+        open_default(&mut g);
+        assert!(g.items.iter().any(|i| i.key == 'l'));
+        assert!(g.items.iter().any(|i| i.key == 'p'));
     }
 
     #[test]
-    fn draw_renders_the_card_over_the_picker() {
+    fn pull_requests_parse_out_of_ghs_json() {
+        let runner = MockRunner::new().on(
+            "pr list",
+            r#"[{"number":12,"title":"add login","author":{"login":"ada"},"updatedAt":"2026-08-01T10:11:12Z"}]"#,
+        );
+        assert_eq!(
+            load_rows(&runner, "/r", ListKind::PullRequests),
+            vec![Row {
+                id: "12".into(),
+                label: "add login".into(),
+                meta: "2026-08-01".into(),
+                detail: "ada".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn saved_reviews_parse_out_of_tuicrs_json() {
+        let runner = MockRunner::new().on(
+            "review list",
+            r#"[{"slug":"9f6c1b3e09a54e2a","kind":"local","anchor":"main..HEAD",
+                 "updated_at":"2026-08-03T09:00:00Z","comment_count":3,"active":false},
+                {"slug":"aa11","kind":"pr","anchor":"pr/7",
+                 "updated_at":"2026-08-02T09:00:00Z","comment_count":1,"active":true}]"#,
+        );
+        let rows = load_rows(&runner, "/r", ListKind::Reviews);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].id, "9f6c1b3e09a54e2a");
+        assert_eq!(rows[0].label, "main..HEAD");
+        assert_eq!(rows[0].meta, "2026-08-03");
+        assert_eq!(rows[0].detail, "3 comments");
+        // A count of one must not read "1 comments".
+        assert_eq!(rows[1].detail, "1 comment");
+    }
+
+    /// The two failure shapes a list fetch actually has. Neither may panic, and
+    /// neither may be told apart from "you have no sessions" by the caller — the
+    /// card says as much either way.
+    #[test]
+    fn an_empty_or_broken_fetch_is_an_empty_list() {
+        for (tag, out) in [
+            ("empty", "[]"),
+            ("broken", "not json at all"),
+            ("object", "{}"),
+        ] {
+            let runner = MockRunner::new().on("review list", out);
+            assert!(
+                load_rows(&runner, "/r", ListKind::Reviews).is_empty(),
+                "{tag} output produced rows"
+            );
+        }
+        // The binary is missing entirely.
+        let runner = MockRunner::new().failing("pr list");
+        assert!(load_rows(&runner, "/r", ListKind::PullRequests).is_empty());
+    }
+
+    #[test]
+    fn draw_renders_the_menu_card() {
         let mut g = Git::new();
         open_default(&mut g);
-        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
-        term.draw(|f| draw(f, f.area(), &Theme::default(), Color::Yellow, &g))
-            .unwrap();
-        let buf = term.backend().buffer().clone();
-        let screen: String = (0..24)
-            .map(|y| {
-                (0..80)
-                    .map(|x| buf[(x, y)].symbol().to_string())
-                    .collect::<String>()
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert!(screen.contains("Git"), "{screen}");
-        assert!(screen.contains("review worktree"), "{screen}");
-        assert!(screen.contains('╭'), "{screen}");
+        let s = screen(&g, 80, 24);
+        assert!(s.contains("Git"), "{s}");
+        assert!(s.contains("review worktree"), "{s}");
+        assert!(s.contains("review all files"), "{s}");
+        assert!(s.contains("saved reviews"), "{s}");
+        assert!(s.contains('╭'), "{s}");
         // The card must be wide enough for the whole command bar — a narrow menu
         // once clipped `esc close` to `esc clo`.
-        assert!(screen.contains("close"), "{screen}");
-        let _ = Config::default();
+        assert!(s.contains("close"), "{s}");
     }
 
     #[test]
-    fn history_view_shows_a_detail_header_and_show_diff_action() {
+    fn a_list_shows_a_detail_header_and_its_own_verb() {
         let mut g = Git::new();
         open_default(&mut g);
-        g.on_key(key(KeyCode::Char('h'))); // open the history sub-list
-        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
-        term.draw(|f| draw(f, f.area(), &Theme::default(), Color::Yellow, &g))
-            .unwrap();
-        let buf = term.backend().buffer().clone();
-        let screen: String = (0..24)
-            .map(|y| {
-                (0..80)
-                    .map(|x| buf[(x, y)].symbol().to_string())
-                    .collect::<String>()
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        // The detail header carries the selected commit's date and author, and the
-        // footer spells out what Enter does.
-        assert!(screen.contains("2 hours ago"), "{screen}");
-        assert!(screen.contains("Ada"), "{screen}");
-        assert!(screen.contains("show diff"), "{screen}");
+        g.show_list(ListKind::PullRequests, rows());
+        let s = screen(&g, 80, 24);
+        assert!(s.contains("2026-08-01"), "{s}");
+        assert!(s.contains("ada"), "{s}");
+        assert!(s.contains("review PR"), "{s}");
+        assert!(s.contains("pull requests"), "{s}");
     }
 
     #[test]
-    fn history_browser_scrolls_and_shows_a_position_counter() {
-        // More commits than fit; the list must page rather than overflow.
-        let commits: Vec<Commit> = (0..60)
-            .map(|i| Commit {
-                sha: format!("sha{i:04}"),
-                date: "1 hour ago".into(),
-                author: "Ada".into(),
-                subject: format!("commit number {i}"),
+    fn an_empty_list_says_which_nothing_it_found() {
+        let mut g = Git::new();
+        open_default(&mut g);
+        g.show_list(ListKind::Reviews, vec![]);
+        let s = screen(&g, 80, 24);
+        assert!(s.contains("(no saved reviews)"), "{s}");
+    }
+
+    #[test]
+    fn a_list_scrolls_and_shows_a_position_counter() {
+        // More rows than fit; the list must page rather than overflow.
+        let many: Vec<Row> = (0..60)
+            .map(|i| Row {
+                id: format!("{i}"),
+                label: format!("pull request number {i}"),
+                meta: "2026-08-01".into(),
+                detail: "ada".into(),
             })
             .collect();
         let mut g = Git::new();
-        g.open("/repo".into(), "repo".into(), None, commits, false, vec![]);
-        g.on_key(key(KeyCode::Char('h'))); // enter the history browser
-        g.on_key(key(KeyCode::End)); // jump to the last commit
+        open_default(&mut g);
+        g.show_list(ListKind::PullRequests, many);
+        g.on_key(key(KeyCode::End)); // jump to the last row
 
-        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(90, 24)).unwrap();
-        term.draw(|f| draw(f, f.area(), &Theme::default(), Color::Yellow, &g))
-            .unwrap();
-        let buf = term.backend().buffer().clone();
-        let screen: String = (0..24)
-            .map(|y| {
-                (0..90)
-                    .map(|x| buf[(x, y)].symbol().to_string())
-                    .collect::<String>()
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        // The counter reflects the End jump, the last commit's page is on screen,
-        // and an early commit has scrolled off.
-        assert!(screen.contains("60/60"), "{screen}");
-        assert!(screen.contains("commit number 59"), "{screen}");
-        assert!(!screen.contains("commit number 0 "), "{screen}");
+        let s = screen(&g, 90, 24);
+        assert!(s.contains("60/60"), "{s}");
+        assert!(s.contains("pull request number 59"), "{s}");
+        assert!(!s.contains("pull request number 0 "), "{s}");
     }
 
     #[test]
-    fn wheel_scrolls_the_history_body_but_not_the_menu() {
+    fn wheel_scrolls_a_list_body_but_not_the_menu() {
         let mut g = Git::new();
-        open_default(&mut g); // two commits
+        open_default(&mut g);
         g.on_wheel(1);
-        assert_eq!(g.hsel, 0, "the menu has nothing to scroll");
-        g.on_key(key(KeyCode::Char('h'))); // enter history
+        assert_eq!(g.lsel, 0, "the menu has nothing to scroll");
+        g.show_list(ListKind::PullRequests, rows());
         g.on_wheel(1);
-        assert_eq!(g.hsel, 1, "wheel-down moves the history selection");
+        assert_eq!(g.lsel, 1, "wheel-down moves the list selection");
         g.on_wheel(-1);
-        assert_eq!(g.hsel, 0, "wheel-up moves it back");
+        assert_eq!(g.lsel, 0, "wheel-up moves it back");
     }
 
     #[test]
-    fn history_box_stays_fixed_size_while_filtering() {
-        let commits: Vec<Commit> = (0..40)
-            .map(|i| Commit {
-                sha: format!("s{i:03}"),
-                date: "1h".into(),
-                author: "Ada".into(),
-                subject: format!("thing {i}"),
+    fn a_list_box_stays_fixed_size_while_filtering() {
+        let many: Vec<Row> = (0..40)
+            .map(|i| Row {
+                id: format!("{i}"),
+                label: format!("thing {i}"),
+                meta: "2026-08-01".into(),
+                detail: "ada".into(),
             })
             .collect();
         let mut g = Git::new();
-        g.open("/repo".into(), "repo".into(), None, commits, false, vec![]);
-        g.on_key(key(KeyCode::Char('h')));
+        open_default(&mut g);
+        g.show_list(ListKind::PullRequests, many);
 
         // The row of the card's bottom border (the lowest `╰`).
         let card_bottom = |g: &Git| -> usize {
@@ -1192,18 +1603,15 @@ r|󰑓|pull|git pull
         for ch in "thing 3".chars() {
             g.on_key(key(KeyCode::Char(ch))); // narrow to a handful of matches
         }
-        assert!(
-            g.filtered.len() < 40,
-            "the filter should have narrowed the list"
-        );
+        assert!(g.filtered.len() < 40, "the filter should have narrowed");
         assert_eq!(full, card_bottom(&g), "the box resized when filtering");
     }
 
     #[test]
-    fn history_places_the_cursor_after_the_query() {
+    fn a_list_places_the_cursor_after_the_query() {
         let mut g = Git::new();
         open_default(&mut g);
-        g.on_key(key(KeyCode::Char('h'))); // history
+        g.show_list(ListKind::PullRequests, rows());
         g.on_key(key(KeyCode::Char('x'))); // query "x"
         let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(90, 24)).unwrap();
         term.draw(|f| draw(f, f.area(), &Theme::default(), Color::Yellow, &g))
@@ -1225,57 +1633,16 @@ r|󰑓|pull|git pull
     }
 
     #[test]
-    fn typing_filters_the_history_and_enter_picks_a_match() {
+    fn typing_filters_a_list_and_enter_picks_a_match() {
         let mut g = Git::new();
-        g.open(
-            "/repo".into(),
-            "repo".into(),
-            None,
-            vec![
-                Commit {
-                    sha: "aaa1111".into(),
-                    date: "1h".into(),
-                    author: "Ada".into(),
-                    subject: "add login".into(),
-                },
-                Commit {
-                    sha: "bbb2222".into(),
-                    date: "2h".into(),
-                    author: "Bea".into(),
-                    subject: "fix logout".into(),
-                },
-                Commit {
-                    sha: "ccc3333".into(),
-                    date: "3h".into(),
-                    author: "Cy".into(),
-                    subject: "refactor cache".into(),
-                },
-            ],
-            false,
-            vec![],
-        );
-        g.on_key(key(KeyCode::Char('h'))); // enter history
+        open_default(&mut g);
+        g.show_list(ListKind::PullRequests, rows());
         for ch in "fix".chars() {
             g.on_key(key(KeyCode::Char(ch)));
         }
-        // Only the "fix logout" commit is a subsequence match.
+        // Only "fix logout" is a subsequence match.
         assert_eq!(g.filtered.len(), 1);
-        assert!(g.on_key(key(KeyCode::Enter)));
-        assert_eq!(g.chosen.unwrap().arg, "bbb2222");
-    }
-
-    #[test]
-    fn esc_clears_the_filter_before_leaving_history() {
-        let mut g = Git::new();
-        open_default(&mut g);
-        g.on_key(key(KeyCode::Char('h')));
-        g.on_key(key(KeyCode::Char('f'))); // filter query "f"
-        assert_eq!(g.query, "f");
-        g.on_key(key(KeyCode::Esc)); // first esc clears the query...
-        assert!(g.query.is_empty());
-        assert!(g.show, "clearing the filter must not close the overlay");
-        g.on_key(key(KeyCode::Esc)); // ...then history → menu...
-        g.on_key(key(KeyCode::Esc)); // ...then menu closes.
-        assert!(!g.show);
+        assert_eq!(g.on_key(key(KeyCode::Enter)), Step::Chosen);
+        assert_eq!(g.chosen.unwrap().arg, "13");
     }
 }

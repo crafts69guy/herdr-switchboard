@@ -2,7 +2,7 @@ id = "ghq"
 name = "Ghq"
 version = "0.9.0"
 min_herdr_version = "0.7.4"
-description = "A unified herdr switcher: fuzzy-jump across running agents, open workspaces, ghq repositories, and linked worktrees in one themed picker — open repos/worktrees in a new workspace/tab/split/pane, plus clone, update, remove, and a built-in git menu (hunk review + lazygit)."
+description = "A unified herdr switcher: fuzzy-jump across running agents, open workspaces, ghq repositories, and linked worktrees in one themed picker — open repos/worktrees in a new workspace/tab/split/pane, plus clone, update, remove, and a separate git menu pane (tuicr review + lazygit)."
 platforms = ["macos", "linux"]
 
 [[actions]]
@@ -15,7 +15,7 @@ command = ["bash", "bin/action.sh"]
 [[actions]]
 id = "git"
 title = "Git Menu"
-description = "Open the git menu for the current repo: review the worktree, a branch, or history with hunk, resolve conflicts, or stage with lazygit."
+description = "Open the git menu for the current repo in its own pane: review the worktree, a branch, or a commit with tuicr, or stage with lazygit."
 contexts = ["global", "pane"]
 command = ["bash", "bin/action.sh"]
 
@@ -68,6 +68,12 @@ id = "picker"
 title = "󰊢"
 placement = "overlay"
 command = ["bash", "-c", "exec bash \"$HERDR_PLUGIN_ROOT/bin/picker.sh\""]
+
+[[panes]]
+id = "git"
+title = "󰊢"
+placement = "overlay"
+command = ["bash", "-c", "exec bash \"$HERDR_PLUGIN_ROOT/bin/git.sh\""]
 
 [[panes]]
 id = "get"

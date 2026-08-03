@@ -34,7 +34,8 @@ fzf required.
 | **herdr** ≥ 0.7.4                                                        | the host multiplexer                                |
 | **[`ghq`](https://github.com/x-motemen/ghq)**                            | repository source                                   |
 | _fallback_ **[Rust / `cargo`](https://rustup.rs)**                       | only needed if a release binary cannot be downloaded |
-| _optional_ **[`hunk`](https://github.com/modem-dev/hunk)**               | the git menu's review pane (`brew install hunk`)    |
+| **[`tuicr`](https://github.com/agavra/tuicr)** ≥ 0.20.0                  | the git menu's review tool (`brew install tuicr`)   |
+| _optional_ **[`gh`](https://cli.github.com)**                            | the git menu's pull-request row (hidden without it) |
 | _optional_ **[`lazygit`](https://github.com/jesseduffield/lazygit)**     | staging/commit from the git menu                    |
 | _optional_ **[`eza`](https://github.com/eza-community/eza)**             | richer preview tree                                 |
 
@@ -83,7 +84,7 @@ command bar re-labels itself per mode. Press `i` or `/` in Normal to type again.
 | `↵` · `⌥↵`         | open · switch to the **clone** flow                                      |
 | `^j`/`^n` · `^k`/`^p` | down · up                                                             |
 | `^t` · `^v` · `^o` | open in a new **tab** · **split** · the **current pane** (`cd`)          |
-| `⌥w` · `^g` · `^r` · `^x` | to a **workspace** · the **git menu** · `ghq get -u` · **remove** |
+| `⌥w` · `^r` · `^x` | to a **workspace** · `ghq get -u` · **remove**                          |
 | `tab` / `⇧tab`     | cycle groups (All → Agents → Workspaces → Repos → Worktrees)              |
 | `⌥p` · `⌥s` · `⌥j`/`⌥k` | toggle preview · cycle sort · scroll the preview                    |
 | `^u` · `^w` · `⌫`  | clear the query · delete a word · delete a char (readline)               |
@@ -92,7 +93,7 @@ command bar re-labels itself per mode. Press `i` or `/` in Normal to type again.
 **Normal mode** (`esc` from Insert; `i` or `/` returns): bare `h`/`j`/`k`/`l` motion is Vim's —
 `j`/`k` move, `g`/`G` top/bottom, `^d`/`^u` page, `H`/`L` prev/next group. Frequent opens sit
 on unshifted keys — `t` tab, `v` split, `o` cd, `w` workspace, `p` toggle preview — and the
-**`␣` leader** groups the rest: `␣g` git, `␣u` update repo, `␣x` remove, `␣c` clone, `␣s` sort,
+**`␣` leader** groups the rest: `␣u` update repo, `␣x` remove, `␣c` clone, `␣s` sort,
 `␣l` changelog, `␣,` settings. `q` or `esc` closes. (`?` always shows the exact, current bindings.)
 
 **Anywhere:** the **wheel** scrolls the pane under the pointer (card over the preview, list
@@ -124,7 +125,7 @@ Bind any of these the same way as `ghq.menu`:
 | Action                                                   | Does                                                           |
 | -------------------------------------------------------- | -------------------------------------------------------------- |
 | `ghq.menu`                                               | the switcher                                                   |
-| `ghq.git`                                                | the git menu for the current repo (bind to `prefix+g`)         |
+| `ghq.git`                                                | the git menu for the current repo, in its own pane (bind to `prefix+g`) |
 | `ghq.get`                                                | the clone flow                                                 |
 | `ghq.changelog`                                          | what changed, with your installed version marked               |
 | `ghq.update-plugin`                                      | install a newer version (refuses to touch a `link`ed checkout) |
@@ -132,28 +133,40 @@ Bind any of these the same way as `ghq.menu`:
 
 ## Git menu
 
-`^g` (Insert) or `␣g` (Normal) opens a git menu **overlay** over the switcher — the floating-card
-shape of `⌥c`/`⌥,` — acting on the highlighted repo or linked worktree (or, via the `ghq.git`
-action on `prefix+g`, the pane you launched from). Walk it with `↑`/`↓`, `enter` runs the row,
-a mnemonic letter runs it directly, `esc` closes. Worktrees deliberately omit the repo-only
-update and remove actions.
+The git menu is its **own herdr pane**, opened by the `ghq.git` action — bind it to `prefix+g`.
+It acts on the repo the pane you launched from is sitting in, and it loads nothing else: no
+agents, no workspaces, no repository index, no preview. That is the whole point of it being a
+separate pane rather than an overlay on the switcher.
 
-| Row                   | Runs                                                                 |
-| --------------------- | ------------------------------------------------------------------- |
-| review **worktree**   | `hunk diff`                                                          |
-| review **staged**     | `hunk diff --staged`                                                 |
-| review **branch**     | `hunk diff <base>` — base auto-detected, or pinned via `base_branch` |
-| review **history**    | a scrolling, fuzzy-filterable `git log` browser → `hunk show <commit>` |
-| **resolve conflicts** | review the unmerged diff in `hunk`, then open `$EDITOR` on the files |
-| **lazygit**           | stage / commit / push (shown only when `lazygit` is installed)       |
+> **There is no `⌥g` in the switcher any more.** Reviewing an arbitrary repo you fuzzy-jumped to
+> is gone with it; `cd` there (`^o`) and press `prefix+g`.
 
-**review history** opens a log browser: up to 200 commits with a detail header (sha, date, author,
-subject) for the highlighted one. **Type to fuzzy-filter** by sha, subject, or author; `↑`/`↓` (or
-`^n`/`^p`) move, `enter` opens the commit's diff, and `esc` clears the filter before backing out.
+Walk it with `↑`/`↓`, `enter` runs the row, a mnemonic letter runs it directly, `esc` closes.
+Whatever you pick **takes over this pane** — quit the tool and you are back where you started.
 
-Reviews open in [`hunk`](https://github.com/modem-dev/hunk) (`brew install hunk`), themed from your
-herdr `[theme.custom]`. Add your own rows in `menu.conf` (`key|icon|label|shell command`) beside
-`config.toml`.
+| Key | Row                       | Runs                                                                 |
+| --- | ------------------------- | -------------------------------------------------------------------- |
+| `d` | review **worktree**       | `tuicr -w` — staged and unstaged together                            |
+| `b` | review **branch**         | `tuicr -r <base>.. -w` — base auto-detected, or pinned via `base_branch` |
+| `h` | review **commits**        | `tuicr` — tuicr's own commit selector                                |
+| `a` | review **all files**      | `tuicr -A`                                                           |
+| `p` | review **pull request**   | `gh pr list` → `tuicr pr <n>` (hidden when `gh` is not installed)    |
+| `r` | **saved reviews**         | `tuicr review list` → `tuicr review comments --session <slug>`       |
+| `l` | **lazygit**               | stage / commit / push (shown only when `lazygit` is installed)       |
+
+`p` and `r` open a sub-list: **type to fuzzy-filter**, `↑`/`↓` (or `^n`/`^p`) move, `enter` picks,
+and `esc` clears the filter before backing out to the menu.
+
+**`r` reads comments, it does not reopen a review.** `--session` exists only on tuicr's headless
+`review add` / `review comments`; the TUI does not take it.
+
+Reviews open in [`tuicr`](https://github.com/agavra/tuicr) (`brew install tuicr`, ≥ 0.20.0), which
+is a **hard requirement** — the menu is a review menu. Its colours come from tuicr's own
+`theme` setting, which [hue-theme](https://github.com/crafts69guy/hue-theme) generates; this
+plugin writes nothing into tuicr's config, because a theme it half-agreed with would make tuicr
+exit 2 and take every review down with it.
+
+Add your own rows in `menu.conf` (`key|icon|label|shell command`) beside `config.toml`.
 
 ## Configuration
 
@@ -199,32 +212,46 @@ their local source instead.
 ## How it works
 
 Each action starts in `bin/action.sh`, which captures the origin pane id and cwd before the
-new pane steals focus, then opens that pane — an overlay for the picker and clone flow, a
-popup for the changelog.
+new pane steals focus, then opens that pane — an overlay for the picker, the git menu, and the
+clone flow, a popup for the changelog.
 
 The picker itself is the Rust TUI in `src/`. On a managed install, `bin/picker.sh` selects a
 versioned macOS/Linux release binary for the host architecture and verifies its SHA-256;
 offline or linked checkouts fall back to Cargo. A small typing-cat bootstrap animates during
-that one-time preparation. The Rust TUI then claims the pane immediately and animates a
-theme-coloured, pixel-art ASCII cat while a worker reads `herdr agent list`,
-`herdr workspace list`, `ghq list`, and Git's stable `worktree list --porcelain -z` output.
+that one-time preparation.
 
-The cat is drawn entirely with terminal cells — no Kitty graphics, no herdr config, no image
-decoder — so it renders the same in every terminal and small panes fall back to an even more
-compact frame. It uses the terminal's default background instead of painting an opaque panel.
-Once ready the TUI fuzzy-filters with nucleo and
-previews the selection as a card drawn in your herdr theme colours — `bin/preview.sh` supplies
-only the repo/worktree file tree. On accept it maps the key to a herdr CLI verb — `agent focus`,
-`workspace focus`, `workspace create`, `tab create`, `pane split`, `pane send-text` — always targeting the
+The TUI then reads `herdr agent list`, `herdr workspace list`, `ghq list`, and Git's stable
+`worktree list --porcelain -z` output **synchronously, before it claims the terminal** — the
+whole set costs around 35 ms, so the first thing painted is the loaded list rather than a
+placeholder. (An empty result never claims the terminal at all: it hands the pane straight to
+the clone flow.) It fuzzy-filters with nucleo and previews the selection as a card drawn in
+your herdr theme colours — `bin/preview.sh` supplies only the repo/worktree file tree. On
+accept it maps the key to a herdr CLI verb — `agent focus`, `workspace focus`,
+`workspace create`, `tab create`, `pane split`, `pane send-text` — always targeting the
 captured origin pane or a real id from herdr, never a guessed one.
 
-The startup frame is always painted once and remains visible for at least 420 ms, even when
-source discovery finishes sooner, so the animation does not disappear during terminal setup.
-`Esc` or `Ctrl-C` still cancels immediately.
-
-The changelog viewer is the same binary in `--changelog` mode; the settings form is a
+The git menu is the same binary in `--git` mode, in a pane of its own, and picking a row
+`exec`s `bin/review.sh` over it. One static ASCII-cat frame is drawn first and left on screen
+for tuicr to paint over, because tuicr can take a second or more to read a large diff before
+its own first frame. The changelog viewer is `--changelog` mode; the settings form is a
 floating overlay inside the switcher itself (`⌥,`), not a separate pane. Only the clone flow
 is still bash (`bin/get.sh`).
+
+### Measuring it
+
+Set `GHQ_TRACE=1` and every launch appends tab-separated timings to
+`$XDG_STATE_HOME/herdr-ghq/trace.log` (or `$GHQ_TRACE_FILE`). Nothing is ever written to
+stdout or stderr — the TUI owns the terminal for its whole life.
+
+```sh
+GHQ_TRACE=1 herdr plugin run ghq menu
+awk -F'\t' '$2 == "frame.first_list" { print $1 }' ~/.local/state/herdr-ghq/trace.log
+awk -F'\t' '$2 == "preview.render" { n++; t += $3 } END { print t / n }' \
+  ~/.local/state/herdr-ghq/trace.log
+```
+
+The budgets the current code is held to: first list < 100 ms, keystroke-to-frame < 16 ms,
+preview render < 50 ms mean and < 70 ms at the tail.
 
 ## Contributing
 

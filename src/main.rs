@@ -6,14 +6,13 @@ mod changelog;
 mod data;
 mod git;
 mod history;
-mod hunk;
 mod keymap;
 mod markdown;
 mod preview;
 mod runner;
 mod settings;
 mod source;
-mod startup;
+mod splash;
 mod state;
 mod trace;
 mod tui;
@@ -40,7 +39,6 @@ use ratatui::widgets::ListState;
 
 use action::Accept;
 use data::{Config, Entry, GroupFilter, Kind, SortMode, Theme};
-use runner::CommandRunner;
 
 /// The searchable model: the entries, the query and its result, and the two
 /// orderings (group filter + sort) applied to the resting list. Everything here
@@ -144,14 +142,7 @@ pub struct App {
     pub changelog: ChangelogState,
     /// The settings form, drawn as a floating overlay when `settings.show`.
     pub settings: settings::Settings,
-    /// The git menu, drawn as a floating overlay when `git.show`.
-    pub git: git::Git,
     pub zones: HitZones,
-    /// Present only while the source commands run before the first picker frame.
-    pub startup: Option<startup::State>,
-    startup_ready: bool,
-    startup_empty: bool,
-    startup_failed: bool,
 }
 
 enum Flow {
@@ -433,54 +424,7 @@ impl App {
             preview,
             changelog: ChangelogState::new(),
             settings,
-            git: git::Git::new(),
             zones: HitZones::new(),
-            startup: None,
-            startup_ready: false,
-            startup_empty: false,
-            startup_failed: false,
-        }
-    }
-
-    fn new_loading(theme: Theme, cfg: Config, script_dir: String) -> Self {
-        let loader = startup::State::spawn(cfg.clone(), theme.clone());
-        let mut app = Self::new(Vec::new(), theme, cfg, script_dir);
-        app.startup = Some(loader);
-        app
-    }
-
-    /// Install a completed startup result without rebuilding the rest of App's
-    /// already-loaded config/theme state. An empty result preserves the old
-    /// behavior of handing the terminal to the clone flow.
-    fn absorb_startup(&mut self) -> bool {
-        let poll = match self.startup.as_mut() {
-            Some(state) => state.poll(),
-            None => return false,
-        };
-        match poll {
-            startup::Poll::Pending => false,
-            startup::Poll::Changed => true,
-            startup::Poll::Failed => {
-                self.startup = None;
-                self.startup_failed = true;
-                true
-            }
-            startup::Poll::Ready(entries) => {
-                self.startup = None;
-                if entries.is_empty() {
-                    self.startup_empty = true;
-                    return true;
-                }
-                let sort = SortMode::parse(&self.cfg.get("sort", "recent"));
-                let mut picker = Picker::new(entries, sort, history::load());
-                picker.select_group_or_all(GroupFilter::parse(&self.cfg.get("default_tab", "all")));
-                self.picker = picker;
-                self.startup_ready = true;
-                if trace::enabled() {
-                    trace::mark_with("sources.ready", &self.picker.entries.len().to_string());
-                }
-                true
-            }
         }
     }
 
@@ -579,11 +523,6 @@ impl App {
         // keys — the pointer is not used to pick a row.
         if self.settings.show {
             self.settings.show = false;
-            return Flow::Continue;
-        }
-        // The git overlay is modal too: a click dismisses it, no row picking.
-        if self.git.show {
-            self.git.show = false;
             return Flow::Continue;
         }
         // The command bar: one row, so the x span is the whole test. A pill runs
@@ -704,57 +643,6 @@ fn delete_word(q: &mut String) {
     }
 }
 
-/// Open the git overlay for the repo the verbs should act on. `force_origin` uses
-/// the origin pane's cwd (the `prefix+g` entry point, where there is no meaningful
-/// selection); otherwise the selected repo/agent's dir wins, falling back to the
-/// origin cwd. Base-branch detection and the commit list shell out here, once, so
-/// `Git::on_key` stays IO-free.
-fn open_git(app: &mut App, force_origin: bool) {
-    let runner = runner::SystemRunner;
-    let origin_cwd = env::var("GHQ_ORIGIN_CWD").ok().filter(|s| !s.is_empty());
-
-    let selected = app.picker.selected_entry();
-    let (cwd, label) = if force_origin {
-        (
-            origin_cwd.clone().unwrap_or_else(|| ".".into()),
-            selected.map(|e| e.label.clone()).unwrap_or_default(),
-        )
-    } else {
-        let dir = selected.and_then(|e| e.dir.clone());
-        let label = selected.map(|e| e.label.clone()).unwrap_or_default();
-        (
-            dir.or(origin_cwd.clone()).unwrap_or_else(|| ".".into()),
-            label,
-        )
-    };
-    let label = if label.is_empty() {
-        std::path::Path::new(&cwd)
-            .file_name()
-            .map(|s| s.to_string_lossy().to_string())
-            .unwrap_or_else(|| "repo".into())
-    } else {
-        label
-    };
-
-    let base = git::detect_base_branch(&runner, &cwd, &app.cfg.get("base_branch", ""));
-    let commits = git::load_commits(&runner, &cwd, 200);
-    let has_lazygit = runner.ok("sh", &["-c", "command -v lazygit >/dev/null 2>&1"]);
-    let customs = read_menu_conf();
-    app.git
-        .open(cwd, label, base, commits, has_lazygit, customs);
-}
-
-/// Read the `menu.conf` custom rows from the plugin's config dir, if any.
-fn read_menu_conf() -> Vec<git::Custom> {
-    let dir = env::var("HERDR_PLUGIN_CONFIG_DIR").unwrap_or_default();
-    if dir.is_empty() {
-        return Vec::new();
-    }
-    std::fs::read_to_string(std::path::Path::new(&dir).join("menu.conf"))
-        .map(|t| git::parse_menu_conf(&t))
-        .unwrap_or_default()
-}
-
 /// Run a resolved [`keymap::Action`] against the app.
 fn apply_action(app: &mut App, action: keymap::Action) -> Flow {
     use keymap::Action;
@@ -766,7 +654,6 @@ fn apply_action(app: &mut App, action: keymap::Action) -> Flow {
         Action::Help => app.show_help = true,
         Action::Changelog => app.changelog.open(),
         Action::Settings => app.settings.open(),
-        Action::GitMenu => open_git(app, false),
         Action::NextGroup => app.picker.cycle_group(1),
         Action::PrevGroup => app.picker.cycle_group(-1),
         Action::Down => app.picker.move_sel(1),
@@ -806,19 +693,6 @@ fn apply_action(app: &mut App, action: keymap::Action) -> Flow {
 
 fn handle_key(app: &mut App, k: crossterm::event::KeyEvent) -> Flow {
     let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
-
-    // The git overlay owns navigation and Enter while open. `on_key` returns true once
-    // it has resolved a review command (`git.chosen` set, overlay closed): break the
-    // loop with an accept so the picker `exec`s `review.sh`. `^c` still quits.
-    if app.git.show {
-        if ctrl && matches!(k.code, KeyCode::Char('c')) {
-            return Flow::Quit;
-        }
-        if app.git.on_key(k) {
-            return Flow::Accept(Accept::Git);
-        }
-        return Flow::Continue;
-    }
 
     // The settings overlay is a form: while open it owns navigation, Enter (cycle),
     // and the in-place split_ratio edit, so route every key to it. `esc`/`q` close it
@@ -913,9 +787,8 @@ const PLACEHOLDER_FRAME: Duration = Duration::from_millis(80);
 /// next placeholder frame.
 fn wait_for_work(app: &mut App) -> Result<()> {
     let entered_on = app.preview.placeholder_frame();
-    let startup_frame = app.startup.as_ref().map(startup::State::frame);
     loop {
-        let tick = if app.startup.is_some() || app.preview.pending() {
+        let tick = if app.preview.pending() {
             PREVIEW_TICK
         } else {
             IDLE_TICK
@@ -924,12 +797,6 @@ fn wait_for_work(app: &mut App) -> Result<()> {
             return Ok(()); // a key is waiting: it takes priority
         }
         if app.preview.absorb() {
-            return Ok(());
-        }
-        if app.absorb_startup() {
-            return Ok(());
-        }
-        if app.startup.as_ref().map(startup::State::frame) != startup_frame {
             return Ok(());
         }
         // Redraw on a frame change only — polling at 16ms must not drag the
@@ -948,28 +815,6 @@ fn run(
     let mut first_list_drawn = false;
     let mut key_at: Option<Instant> = None;
     loop {
-        // A fast source set may finish before the terminal's first draw. Absorb
-        // it now so the animation has no artificial minimum frame or flash.
-        app.absorb_startup();
-        if app.startup_failed {
-            return Err(anyhow::anyhow!("startup data worker stopped unexpectedly"));
-        }
-        if app.startup_empty {
-            return Ok(None);
-        }
-        if app.startup_ready {
-            app.startup_ready = false;
-            // `prefix+g` launches with this set: wait until entries exist, then
-            // open the menu for the origin pane before the first picker frame.
-            if env::var("GHQ_OPEN_GIT").is_ok_and(|v| !v.is_empty()) {
-                open_git(app, true);
-            }
-        }
-        if let Some(startup) = app.startup.as_mut() {
-            // A completed worker stays pending until this first display begins,
-            // so terminal setup can never consume the animation before it shows.
-            startup.begin_display();
-        }
         // Draw first: it publishes the preview pane's width, which the request
         // below needs to clip the card to. The first pass draws an empty pane
         // for one frame, which is what the placeholder is for anyway.
@@ -980,7 +825,7 @@ fn run(
             if let Some(at) = key_at.take() {
                 trace::span("key.to_frame", at);
             }
-            if !first_list_drawn && app.startup.is_none() && !app.picker.entries.is_empty() {
+            if !first_list_drawn && !app.picker.entries.is_empty() {
                 first_list_drawn = true;
                 trace::mark("frame.first_list");
             }
@@ -992,20 +837,6 @@ fn run(
         }
         match event::read()? {
             Event::Mouse(m) => {
-                if app.startup.is_some() {
-                    continue;
-                }
-                // The git overlay owns the mouse while open: the wheel scrolls its
-                // history body, and other mouse events are swallowed rather than
-                // leaking to the picker hidden beneath it.
-                if app.git.show {
-                    match m.kind {
-                        MouseEventKind::ScrollDown => app.git.on_wheel(1),
-                        MouseEventKind::ScrollUp => app.git.on_wheel(-1),
-                        _ => {}
-                    }
-                    continue;
-                }
                 let at = Position::new(m.column, m.row);
                 match m.kind {
                     MouseEventKind::ScrollDown => {
@@ -1030,14 +861,6 @@ fn run(
                 if k.kind != KeyEventKind::Press {
                     continue;
                 }
-                if app.startup.is_some() {
-                    let ctrl_c = k.modifiers.contains(KeyModifiers::CONTROL)
-                        && matches!(k.code, KeyCode::Char('c'));
-                    if matches!(k.code, KeyCode::Esc) || ctrl_c {
-                        return Ok(None);
-                    }
-                    continue;
-                }
                 if trace::enabled() {
                     key_at = Some(Instant::now());
                 }
@@ -1059,14 +882,14 @@ fn run(
 /// redraw hundreds of times a second for events it discards. `?1000h` reports
 /// buttons only — the wheel among them — and `?1006h` asks for SGR encoding, so
 /// coordinates past column 223 survive.
-const MOUSE_ON: &str = "\x1b[?1000h\x1b[?1006h";
-const MOUSE_OFF: &str = "\x1b[?1006l\x1b[?1000l";
+pub(crate) const MOUSE_ON: &str = "\x1b[?1000h\x1b[?1006h";
+pub(crate) const MOUSE_OFF: &str = "\x1b[?1006l\x1b[?1000l";
 
 /// Claim the terminal, then the wheel. Also chains the mouse teardown ahead of
 /// the panic hook `ratatui::init` installs — that hook restores the screen but
 /// knows nothing about the wheel, and a panic must not leave the terminal
 /// reporting clicks at a shell.
-fn init_terminal() -> ratatui::DefaultTerminal {
+pub(crate) fn init_terminal() -> ratatui::DefaultTerminal {
     let terminal = ratatui::init();
     let restore = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
@@ -1079,7 +902,7 @@ fn init_terminal() -> ratatui::DefaultTerminal {
     terminal
 }
 
-fn restore_terminal() {
+pub(crate) fn restore_terminal() {
     print!("{MOUSE_OFF}");
     let _ = io::stdout().flush();
     ratatui::restore();
@@ -1120,138 +943,6 @@ fn cli_config(args: &[String]) -> Result<()> {
     }
 }
 
-/// The `git` read hunk is about to perform for a review mode, mirroring
-/// `bin/review.sh`'s dispatch. The pre-roll runs it only to warm the OS/object
-/// cache; `None` (unknown or arg-less history) means "just show the floor".
-fn review_warm_args(mode: &str, arg: &str) -> Option<Vec<String>> {
-    match mode {
-        // A conflict review opens `hunk diff` on the unmerged files first.
-        "worktree" | "conflicts" => Some(vec!["diff".into()]),
-        "staged" => Some(vec!["diff".into(), "--staged".into()]),
-        "branch" if arg.is_empty() => Some(vec!["diff".into()]),
-        "branch" => Some(vec!["diff".into(), arg.into()]),
-        "history" if !arg.is_empty() => Some(vec!["show".into(), arg.into()]),
-        _ => None,
-    }
-}
-
-/// Long enough for the 140ms cat to advance through ~3 frames even when the
-/// cache is already warm, so the pre-roll never flashes a half-drawn image.
-const REVIEW_SPLASH_FLOOR: Duration = Duration::from_millis(420);
-/// A huge repository must not stall the review behind the splash: past this the
-/// pre-roll hands off to hunk regardless of the warm-up, still partly warmed.
-const REVIEW_SPLASH_CAP: Duration = Duration::from_millis(5000);
-/// Event-poll cadence; short enough to advance the 140ms animation smoothly.
-const REVIEW_SPLASH_TICK: Duration = Duration::from_millis(60);
-
-/// `herdr-ghq-switcher review-splash` — the branded pre-roll `bin/review.sh` plays
-/// before it execs hunk, so a slow `hunk diff` on a large repo opens onto the same
-/// ASCII cat the picker starts with instead of a frozen pane.
-///
-/// Unlike the picker splash there is no data worker to wait on, so the cat would
-/// otherwise be pure added latency. Instead it warms the exact diff hunk is about
-/// to read (a read-only `git diff`/`git show`, discarded) on a detached child and
-/// animates until that finishes — the OS page cache and git objects it touches are
-/// the same ones hunk reads, so the cat covers real work and hunk then opens fast.
-/// The floor keeps the animation visible on an already-warm repo; the cap keeps a
-/// pathological one from stalling. Esc/Enter/Ctrl-C skip. Best effort throughout:
-/// the review is dispatched by review.sh no matter how this returns.
-fn review_splash() -> Result<()> {
-    let cfg = Config::load();
-    let theme = Theme::load();
-    let title = theme
-        .resolve(&cfg.get("title_color", "peach"))
-        .unwrap_or_else(|| theme.or("accent", ratatui::style::Color::Cyan));
-    let mode = env::var("REVIEW_MODE").unwrap_or_default();
-    let arg = env::var("REVIEW_ARG").unwrap_or_default();
-    let cwd = env::var("REVIEW_CWD").unwrap_or_else(|_| ".".into());
-
-    // Warm the diff hunk will read. Read-only, output discarded; a spawn failure
-    // just means we fall back to the timed floor.
-    let mut warm = review_warm_args(&mode, &arg).and_then(|git_args| {
-        Command::new("git")
-            .arg("-C")
-            .arg(&cwd)
-            .args(&git_args)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .ok()
-    });
-
-    let mut state = startup::State::animation("Preparing review");
-    // ratatui::init claims the alt screen + hides the cursor; unlike the picker we
-    // never enable the wheel, so there is no MOUSE_ON/OFF pair to restore.
-    let mut terminal = ratatui::init();
-    state.begin_display();
-    let started = Instant::now();
-
-    let result = (|| -> Result<()> {
-        let mut last_frame = usize::MAX;
-        loop {
-            let size = terminal.size()?;
-            let area = Rect::new(0, 0, size.width, size.height);
-            let frame = state.frame();
-            if frame != last_frame {
-                terminal.draw(|f| startup::draw(f, area, &theme, title, &state))?;
-                last_frame = frame;
-            }
-
-            let elapsed = started.elapsed();
-            // `is_none_or`: no warm-up child means the floor alone decides.
-            let warm_done = warm
-                .as_mut()
-                .is_none_or(|c| matches!(c.try_wait(), Ok(Some(_))));
-            if (warm_done && elapsed >= REVIEW_SPLASH_FLOOR) || elapsed >= REVIEW_SPLASH_CAP {
-                break;
-            }
-
-            if event::poll(REVIEW_SPLASH_TICK)? {
-                if let Event::Key(k) = event::read()? {
-                    if k.kind == KeyEventKind::Press {
-                        let ctrl_c = k.modifiers.contains(KeyModifiers::CONTROL)
-                            && matches!(k.code, KeyCode::Char('c'));
-                        if ctrl_c || matches!(k.code, KeyCode::Esc | KeyCode::Enter) {
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-        Ok(())
-    })();
-
-    // Never leave a warm-up git competing with hunk if we broke on the cap or a
-    // skip; a child that already exited ignores the kill.
-    if let Some(mut child) = warm {
-        let _ = child.kill();
-        let _ = child.wait();
-    }
-
-    // Hand off without a blank gap. The picker splash restores the terminal because
-    // the picker keeps drawing after it; here the very next thing is hunk, and the
-    // pause the user would otherwise see is hunk entering its own screen and rendering
-    // the diff — after this process is gone, so nothing could animate over it. So
-    // instead of tearing the screen down we freeze one static "Opening review…" cat
-    // frame, leaving the alternate screen up for hunk to paint straight over. Only raw
-    // mode and the cursor are restored, for the brief cooked-mode window before hunk
-    // grabs them back. hunk is a full-screen alt-screen diff pager, so the frozen frame
-    // shows only until its first paint. A splash error still gets the full restore.
-    if result.is_ok() {
-        state.status = "Opening review".into();
-        if let Ok(size) = terminal.size() {
-            let area = Rect::new(0, 0, size.width, size.height);
-            let _ = terminal.draw(|f| startup::draw(f, area, &theme, title, &state));
-        }
-        let _ = crossterm::terminal::disable_raw_mode();
-        let _ = crossterm::execute!(io::stdout(), crossterm::cursor::Show);
-    } else {
-        ratatui::restore();
-    }
-    result
-}
-
 fn main() -> Result<()> {
     // First statement on purpose: it fixes the zero point every other trace mark
     // is measured from. Inert unless GHQ_TRACE is set.
@@ -1268,8 +959,7 @@ fn main() -> Result<()> {
         }
         Some("--changelog") => return changelog::main(),
         Some("--update-check") => return update::main(),
-        Some("hunk-theme") => return hunk::main(),
-        Some("review-splash") => return review_splash(),
+        Some("--git") => return git::main(),
         Some("open") => return cli_open(&args[1..]),
         Some("config") => return cli_config(&args[1..]),
         _ => {}
@@ -1288,35 +978,39 @@ fn main() -> Result<()> {
     update::spawn_refresh_if_stale(&cfg);
 
     trace::mark("config+theme.loaded");
-    let mut app = App::new_loading(theme, cfg, script_dir.clone());
-    let mut terminal = init_terminal();
-    trace::mark("terminal.claimed");
-    let outcome = run(&mut terminal, &mut app);
-    restore_terminal();
 
-    if app.startup_empty {
-        // Nothing to switch to yet — preserve the existing handoff to clone.
+    // Loading is synchronous, and it happens *before* the terminal is claimed.
+    // The source commands cost ~35ms together, which is well under the frame the
+    // old animation spent covering them — and this way an empty result hands off
+    // to the clone flow without ever having taken the screen and given it back.
+    let root = data::ghq_root(&runner);
+    let entries = source::load_all(
+        &cfg,
+        &source::LoadCtx {
+            runner: &runner,
+            theme: &theme,
+            root: &root,
+        },
+    );
+    if trace::enabled() {
+        trace::mark_with("sources.ready", &entries.len().to_string());
+    }
+    if entries.is_empty() {
+        // Nothing to switch to yet — hand the pane to the clone flow.
         let err = Command::new("bash")
             .arg(format!("{script_dir}/get.sh"))
             .exec();
         return Err(err.into());
     }
 
+    let mut app = App::new(entries, theme, cfg, script_dir.clone());
+    let mut terminal = init_terminal();
+    trace::mark("terminal.claimed");
+    let outcome = run(&mut terminal, &mut app);
+    restore_terminal();
+
     if let Some((entry, accept)) = outcome? {
         let id = entry.as_ref().map(|e| e.id.clone());
-
-        // Git review is its own dispatch: the overlay already resolved which repo /
-        // branch / commit, so `exec` `review.sh` with it (replacing this process in the
-        // overlay pane, like the clone flow). Record recency first — exec never returns.
-        if accept == Accept::Git {
-            if let Some(spec) = app.git.chosen.take() {
-                if let Some(id) = &id {
-                    history::touch(id);
-                }
-                action::run_review(&spec, &script_dir)?;
-            }
-            return Ok(());
-        }
 
         // Resolve where Enter lands a repo from the (possibly just-applied) config, so a
         // `default_target` change made in the settings overlay is honoured this session.
@@ -1342,8 +1036,8 @@ fn main() -> Result<()> {
                 | Accept::Split
                 | Accept::Pane => history::touch(&id),
                 Accept::Remove => history::forget(&id),
-                // Git is handled and returned above; Clone / UpdatePlugin exec away.
-                Accept::Git | Accept::Update | Accept::Clone | Accept::UpdatePlugin => {}
+                // Clone / UpdatePlugin exec away and never come back here.
+                Accept::Update | Accept::Clone | Accept::UpdatePlugin => {}
             }
         }
     }
@@ -1486,92 +1180,13 @@ mod tests {
     }
 
     #[test]
-    fn review_warm_args_mirror_the_hunk_dispatch() {
-        assert_eq!(review_warm_args("worktree", ""), Some(vec!["diff".into()]));
-        assert_eq!(review_warm_args("conflicts", ""), Some(vec!["diff".into()]));
-        assert_eq!(
-            review_warm_args("staged", ""),
-            Some(vec!["diff".into(), "--staged".into()])
-        );
-        assert_eq!(review_warm_args("branch", ""), Some(vec!["diff".into()]));
-        assert_eq!(
-            review_warm_args("branch", "main"),
-            Some(vec!["diff".into(), "main".into()])
-        );
-        assert_eq!(
-            review_warm_args("history", "abc123"),
-            Some(vec!["show".into(), "abc123".into()])
-        );
-        // A history entry with no sha and lazygit/custom modes warm nothing —
-        // the pre-roll then rides the timed floor alone.
-        assert_eq!(review_warm_args("history", ""), None);
-        assert_eq!(review_warm_args("lazygit", ""), None);
-        assert_eq!(review_warm_args("custom", ""), None);
-    }
-
-    #[test]
-    fn startup_draws_the_cat_instead_of_the_empty_picker() {
-        let mut app = App::new(Vec::new(), Theme::default(), Config::default(), ".".into());
-        app.startup = Some(startup::State::waiting("Checking linked worktrees"));
+    fn the_first_frame_is_the_loaded_list_not_a_splash() {
+        // Sources load before `App` exists, so there is no state in which the
+        // picker draws anything but its own list.
+        let mut app = App::new(sample(), Theme::default(), Config::default(), ".".into());
         let screen = rendered(&mut app, 80, 24);
-        assert!(screen.contains("/\\_____/\\"), "{screen}");
-        assert!(screen.contains("Checking linked worktrees"), "{screen}");
-        assert!(screen.contains("Esc or Ctrl-C to cancel"), "{screen}");
-        assert!(!screen.contains("Search"), "{screen}");
-    }
-
-    #[test]
-    fn compact_startup_still_shows_status_and_cancel_hint() {
-        let mut app = App::new(Vec::new(), Theme::default(), Config::default(), ".".into());
-        app.startup = Some(startup::State::waiting("Indexing repositories"));
-        let screen = rendered(&mut app, 34, 10);
-        assert!(screen.contains("( o.o )"), "{screen}");
-        assert!(screen.contains("Indexing repositories"), "{screen}");
-    }
-
-    #[test]
-    fn startup_preserves_the_terminals_default_background() {
-        let mut app = App::new(Vec::new(), Theme::default(), Config::default(), ".".into());
-        app.startup = Some(startup::State::waiting("Loading"));
-        let mut terminal =
-            ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
-        terminal.draw(|f| ui::draw(f, &mut app)).unwrap();
-        assert!(terminal
-            .backend()
-            .buffer()
-            .content
-            .iter()
-            .all(|cell| cell.bg == Color::Reset));
-    }
-
-    #[test]
-    fn completed_startup_installs_entries_and_default_tab() {
-        let cfg = Config::from_pairs(&[("default_tab", "repos")]);
-        let mut app = App::new(Vec::new(), Theme::default(), cfg, ".".into());
-        app.startup = Some(startup::State::ready(sample()));
-        assert!(app.absorb_startup());
-        assert!(app.startup.is_none());
-        assert!(app.startup_ready);
-        assert_eq!(app.picker.entries.len(), 4);
-        assert_eq!(app.picker.group, GroupFilter::Only(Kind::Repo));
-    }
-
-    #[test]
-    fn empty_startup_requests_the_clone_handoff() {
-        let mut app = App::new(Vec::new(), Theme::default(), Config::default(), ".".into());
-        app.startup = Some(startup::State::ready(Vec::new()));
-        assert!(app.absorb_startup());
-        assert!(app.startup_empty);
-        assert!(!app.startup_ready);
-    }
-
-    #[test]
-    fn disconnected_startup_worker_surfaces_a_failure() {
-        let mut app = App::new(Vec::new(), Theme::default(), Config::default(), ".".into());
-        app.startup = Some(startup::State::waiting("Loading"));
-        assert!(app.absorb_startup());
-        assert!(app.startup_failed);
-        assert!(!app.startup_empty);
+        assert!(screen.contains("Search"), "{screen}");
+        assert!(screen.contains("zeta"), "{screen}");
     }
 
     #[test]
@@ -1756,7 +1371,6 @@ mod tests {
         );
         assert!(!app.action_available(keymap::Action::Accept(Accept::Update)));
         assert!(!app.action_available(keymap::Action::Accept(Accept::Remove)));
-        assert!(app.action_available(keymap::Action::GitMenu));
         assert!(app.action_available(keymap::Action::Accept(Accept::Tab)));
     }
 

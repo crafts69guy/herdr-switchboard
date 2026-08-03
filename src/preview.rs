@@ -16,9 +16,9 @@
 //! the distinct repositories their panes sit in (branch + dirty, the same git
 //! read `repo_card` makes).
 //!
-//! `render` shells out and costs ~100ms on a large repo — mostly `git status`
-//! — so it runs on a [`Worker`] thread rather than between a keypress and the
-//! next frame.
+//! `render` shells out and costs ~50ms on a large repo, spread across several
+//! small `git` calls with no single dominant one, so it runs on a [`Worker`]
+//! thread rather than between a keypress and the next frame.
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -954,6 +954,68 @@ mod tests {
         assert!(out.contains("feature/x"), "{out}");
         assert!(out.contains("clean"), "{out}");
         assert!(out.contains("initial commit"), "{out}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A throwaway directory holding a `.git` of the given shape.
+    fn head_fixture(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("ghq-head-{tag}-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn branch_from_head_reads_a_plain_checkout() {
+        let dir = head_fixture("plain");
+        let git = dir.join(".git");
+        std::fs::create_dir_all(&git).unwrap();
+        std::fs::write(git.join("HEAD"), "ref: refs/heads/feature/x\n").unwrap();
+        assert_eq!(
+            branch_from_head(&dir.to_string_lossy()),
+            Some("feature/x".into())
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn branch_from_head_follows_a_linked_worktrees_gitdir_pointer() {
+        let dir = head_fixture("linked");
+        let real = dir.join("repo/.git/worktrees/wt");
+        std::fs::create_dir_all(&real).unwrap();
+        std::fs::write(real.join("HEAD"), "ref: refs/heads/wt-branch\n").unwrap();
+        let work = dir.join("wt");
+        std::fs::create_dir_all(&work).unwrap();
+        std::fs::write(
+            work.join(".git"),
+            format!("gitdir: {}\n", real.to_string_lossy()),
+        )
+        .unwrap();
+        assert_eq!(
+            branch_from_head(&work.to_string_lossy()),
+            Some("wt-branch".into())
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn branch_from_head_gives_up_on_a_detached_head() {
+        let dir = head_fixture("detached");
+        let git = dir.join(".git");
+        std::fs::create_dir_all(&git).unwrap();
+        std::fs::write(
+            git.join("HEAD"),
+            "9f1c0dea1d2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d\n",
+        )
+        .unwrap();
+        assert_eq!(branch_from_head(&dir.to_string_lossy()), None);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn branch_from_head_gives_up_outside_a_repository() {
+        let dir = head_fixture("bare-dir");
+        assert_eq!(branch_from_head(&dir.to_string_lossy()), None);
         std::fs::remove_dir_all(&dir).ok();
     }
 
