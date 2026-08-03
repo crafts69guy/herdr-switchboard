@@ -1004,6 +1004,13 @@ const LIST_HEADER_ROWS: u16 = 3;
 /// The date column in a list row, padded so labels line up.
 const DATE_COL: usize = 14;
 
+/// Widest an id may draw in a list row. A PR number is two characters, but a
+/// tuicr session slug is a whole revset —
+/// `herdr-ghq@main/staged-and-unstaged/4e27385` — and unclipped it eats the row
+/// until the label has nothing left. The pinned header still shows the id at the
+/// card's full width, so nothing is only visible here.
+const ID_COL: usize = 26;
+
 /// The leading run of the sub-list search line (a leading space, the filter icon,
 /// a space) — shared so `draw_list` can place the real terminal cursor exactly
 /// where the query text starts.
@@ -1117,7 +1124,8 @@ fn list_body_lines(
             let r = g.rows.get(i)?;
             let selected = rank == g.lsel;
             // marker(2) + id + space + date column + space, then the label fills the rest.
-            let room = width.saturating_sub(5 + r.id.chars().count() + DATE_COL);
+            let id = clip(&r.id, ID_COL);
+            let room = width.saturating_sub(5 + id.chars().count() + DATE_COL);
             let date = clip(&r.meta, DATE_COL);
             Some(Line::from(vec![
                 Span::styled(
@@ -1125,7 +1133,7 @@ fn list_body_lines(
                     Style::default().fg(accent),
                 ),
                 Span::styled(
-                    format!("{} ", r.id),
+                    format!("{id} "),
                     Style::default().fg(accent).add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(format!("{date:<DATE_COL$} "), Style::default().fg(sub)),
@@ -1535,6 +1543,40 @@ z|Y|pull|git pull
         g.show_list(ListKind::Reviews, vec![]);
         let s = screen(&g, 80, 24);
         assert!(s.contains("(no saved reviews)"), "{s}");
+    }
+
+    /// A real tuicr session slug is a whole revset. Unclipped it swallowed the
+    /// row, leaving the anchor with no columns to draw in.
+    #[test]
+    fn a_long_id_still_leaves_room_for_the_label() {
+        let mut g = Git::new();
+        open_default(&mut g);
+        g.show_list(
+            ListKind::Reviews,
+            vec![Row {
+                id: "herdr-ghq@main/staged-and-unstaged-and-commits/4e27385..06e9955".into(),
+                label: "the anchor".into(),
+                meta: "2026-08-03".into(),
+                detail: "2 comments".into(),
+            }],
+        );
+        let s = screen(&g, 80, 24);
+        let row = s
+            .lines()
+            .find(|l| l.contains('▌'))
+            .expect("a selected row")
+            .to_string();
+        assert!(
+            row.contains("the anchor"),
+            "the label was crowded out: {row}"
+        );
+        // The row clips the id; the pinned header above it still carries the whole
+        // revset, so nothing is only visible in the clipped column.
+        assert!(!row.contains("4e27385..06e9955"), "{row}");
+        assert!(
+            s.contains("4e27385..06e9955"),
+            "the header lost the id: {s}"
+        );
     }
 
     #[test]
