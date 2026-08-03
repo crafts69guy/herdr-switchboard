@@ -21,6 +21,13 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   commit list scrolls — so the card no longer resizes as matches come and go. The **mouse wheel**
   scrolls the list, and the overlay now swallows mouse events instead of leaking them to the picker.
 
+### Changed
+
+- The preview card is **about twice as fast** — roughly 50ms on average where it used to take 90ms,
+  and 65ms at the tail where it used to reach 214ms. The branch now comes from reading `.git/HEAD`
+  rather than spawning `git symbolic-ref`, and the dirty check no longer walks untracked files.
+  **Behaviour change:** a repository whose only changes are untracked files now reads as `clean`.
+
 ### Removed
 
 - The **Kitty/herdr graphics startup splash (the animated GIF cat) is gone** — the switcher now

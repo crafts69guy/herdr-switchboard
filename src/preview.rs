@@ -70,7 +70,13 @@ impl Worker {
                 while let Ok(newer) = job_rx.try_recv() {
                     job = newer;
                 }
+                let started = std::time::Instant::now();
                 let text = render(&job.entry, &runner, &script_dir, &cfg, &theme, job.width);
+                if crate::trace::enabled() {
+                    // Measured around `render` so the number includes the
+                    // `preview.sh` shell-out, which is the part under suspicion.
+                    crate::trace::span_with("preview.render", started, &job.entry.label);
+                }
                 if done_tx.send(Done { seq: job.seq, text }).is_err() {
                     break; // the UI is gone
                 }
@@ -586,13 +592,20 @@ fn workspace_repos(
     for dir in dirs {
         let name = clip(basename(dir), name_col);
         // Detached HEAD has no symbolic ref; fall back to the short sha.
-        let branch = git(runner, dir, &["symbolic-ref", "--short", "HEAD"])
-            .filter(|s| !s.is_empty())
+        let branch = branch_from_head(dir)
+            .or_else(|| {
+                git(runner, dir, &["symbolic-ref", "--short", "HEAD"]).filter(|s| !s.is_empty())
+            })
             .or_else(|| {
                 git(runner, dir, &["rev-parse", "--short", "HEAD"]).filter(|s| !s.is_empty())
             })
             .unwrap_or_else(|| "—".into());
-        let dirty = git(runner, dir, &["status", "--porcelain"]).is_some_and(|s| !s.is_empty());
+        let dirty = git(
+            runner,
+            dir,
+            &["status", "--porcelain", "--untracked-files=no"],
+        )
+        .is_some_and(|s| !s.is_empty());
         let mut spans = vec![
             Span::raw("  "),
             Span::styled(format!("{name:<name_col$}"), Style::default().fg(p.text)),
@@ -641,11 +654,18 @@ fn repo_card(
     }
 
     // Detached HEAD has no symbolic ref; fall back to the short sha.
-    let branch = git(runner, dir, &["symbolic-ref", "--short", "HEAD"])
-        .filter(|s| !s.is_empty())
+    let branch = branch_from_head(dir)
+        .or_else(|| {
+            git(runner, dir, &["symbolic-ref", "--short", "HEAD"]).filter(|s| !s.is_empty())
+        })
         .or_else(|| git(runner, dir, &["rev-parse", "--short", "HEAD"]).filter(|s| !s.is_empty()))
         .unwrap_or_else(|| "—".into());
-    let dirty = git(runner, dir, &["status", "--porcelain"]).is_some_and(|s| !s.is_empty());
+    let dirty = git(
+        runner,
+        dir,
+        &["status", "--porcelain", "--untracked-files=no"],
+    )
+    .is_some_and(|s| !s.is_empty());
     let (state, state_c) = if dirty {
         ("dirty", theme.or("yellow", Color::Yellow))
     } else {
@@ -739,10 +759,41 @@ fn readme_lines(body: &str, width: u16, p: &Ink) -> Vec<Line<'static>> {
 /// Trimmed stdout of a `git -C dir` call, or None when git fails. Success with
 /// empty output stays `Some("")` — for `status --porcelain` the emptiness *is*
 /// the answer — so callers that want a value filter for it themselves.
+/// The current branch read straight from `HEAD`, with no subprocess.
+///
+/// `git symbolic-ref` costs a process spawn (~14ms measured) to report something
+/// that is one line of a file. `.git` is a directory in a normal checkout and a
+/// `gitdir:` pointer file in a linked worktree, so both shapes are followed here.
+/// `None` means "not a plain branch" — a detached HEAD, or anything unreadable —
+/// and the caller falls back to the git commands it already had.
+fn branch_from_head(dir: &str) -> Option<String> {
+    let dot_git = Path::new(dir).join(".git");
+    let git_dir = if dot_git.is_dir() {
+        dot_git
+    } else {
+        let pointer = fs::read_to_string(&dot_git).ok()?;
+        let rel = pointer.trim().strip_prefix("gitdir:")?.trim();
+        let path = Path::new(rel);
+        if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            Path::new(dir).join(path)
+        }
+    };
+    let head = fs::read_to_string(git_dir.join("HEAD")).ok()?;
+    let name = head.trim().strip_prefix("ref: refs/heads/")?;
+    (!name.is_empty()).then(|| name.to_string())
+}
+
 fn git(runner: &dyn CommandRunner, dir: &str, args: &[&str]) -> Option<String> {
     let mut full = vec!["-C", dir];
     full.extend_from_slice(args);
-    runner.capture("git", &full)
+    let started = std::time::Instant::now();
+    let out = runner.capture("git", &full);
+    if crate::trace::enabled() {
+        crate::trace::span_with("preview.git", started, args.first().copied().unwrap_or("-"));
+    }
+    out
 }
 
 /// The file tree, still from `preview.sh`: it is the one part of the card that
@@ -750,7 +801,12 @@ fn git(runner: &dyn CommandRunner, dir: &str, args: &[&str]) -> Option<String> {
 /// being re-styled here.
 fn tree(runner: &dyn CommandRunner, dir: &str, script_dir: &str, width: u16) -> Vec<Line<'static>> {
     let script = format!("{script_dir}/preview.sh");
-    let Ok(out) = runner.output("bash", &[&script, dir]) else {
+    let started = std::time::Instant::now();
+    let out = runner.output("bash", &[&script, dir]);
+    if crate::trace::enabled() {
+        crate::trace::span("preview.tree_sh", started);
+    }
+    let Ok(out) = out else {
         return Vec::new();
     };
     let lines = out.stdout.into_text().map(|t| t.lines).unwrap_or_else(|_| {
