@@ -528,6 +528,7 @@ fn port_item(entry: &PortEntry) -> PickerItem {
         id: port_id(entry),
         primary: format!(":{port}"),
         secondary: format!("{} · pid {pid}", entry.process_name),
+        trailing: None,
         document: Document {
             fuzzy: format!(
                 "{port} {addresses} {pid} {} {} {cwd} {repo} {user}",

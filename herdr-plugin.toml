@@ -93,7 +93,7 @@ command = ["bash", "bin/action.sh"]
 
 [[panes]]
 id = "menu"
-title = "Switchboard"
+title = "󰍜"
 placement = "popup"
 width = 76
 height = 24
@@ -107,13 +107,13 @@ command = ["bash", "-c", "exec bash \"$HERDR_PLUGIN_ROOT/bin/picker.sh\""]
 
 [[panes]]
 id = "commands"
-title = "Commands"
+title = "󰆍"
 placement = "overlay"
 command = ["bash", "-c", "exec bash \"$HERDR_PLUGIN_ROOT/bin/picker.sh\" --commands"]
 
 [[panes]]
 id = "ports"
-title = "Ports"
+title = "󰛳"
 placement = "overlay"
 command = ["bash", "-c", "exec bash \"$HERDR_PLUGIN_ROOT/bin/picker.sh\" --ports"]
 

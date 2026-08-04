@@ -81,11 +81,16 @@ must come from `herdr agent list`, `herdr workspace list`, or the captured origi
 - `markdown.rs` — the changelog/README markdown (`Block`, `parse`, `render`, `spans`,
   `flatten_links`, `wrap`), shared by `changelog`, `ui`, and `preview`
 - `state.rs` — `state_dir()` + `now()`, shared by `history` and `update`
-- `tui.rs` — the shared command-bar `pill_row` widget and `run_simple` (the changelog
-  event loop; the picker keeps its own loop for the preview worker + mouse)
-- `ui.rs` — three-row layout: Search (3) / body (list + optional preview) / full-width command bar (1);
-  `boxed()` is the shared rounded-block helper. It also draws the in-picker overlays: the `⌥c`
+- `tui.rs` — the shared chrome: `boxed()` (the one rounded-panel helper — rounded border in
+  `overlay0`, caption in `title_color`), the command-bar `pill_row` widget, and `run_simple`
+  (the changelog event loop; the picker keeps its own loop for the preview worker + mouse)
+- `ui.rs` — three-row layout: Search (3) / body (list + optional preview) / full-width command bar (1),
+  built from `tui::boxed`. It also draws the in-picker overlays: the `⌥c`
   changelog, the `?` cheatsheet, and — via `settings::draw` — the `⌥,` settings form
+- `picker.rs` — the shared engine behind the **mode** pickers (`menu` / `commands` / `ports`):
+  the `PickerMode` trait, the fuzzy/query state, and a `draw` that renders the same three
+  panels as `ui.rs` through `tui::boxed`. Its chrome is not free-styled — see the
+  constraint below
 - `preview.rs` — the preview card (header + pills / meta column / captioned rules). Reads
   agents and workspaces from herdr's JSON with `serde_json` and styles everything from
   `Theme`; shells out to `bin/preview.sh` only for the repo file tree, which arrives as
@@ -117,6 +122,23 @@ order so the list stays stable.
 
 ## Non-obvious constraints
 
+- **herdr draws the pane frame; the TUI must not compete with it.** Every plugin pane is
+  `popup` or `overlay`, and herdr frames both and requires a non-empty title. So a pane
+  title is a **single icon** (`󰊢`, `󰍜`, `󰆍`, `󰛳`) and the human-readable mode name goes on
+  the *list panel* inside — word titles on both produced `Ports` twice, two rows apart.
+  For the same reason the plugin's own borders recede in `overlay0` while herdr's frame
+  keeps the accent, and **no panel paints a background**: the panes are transparent so the
+  terminal shows through all of them. `panel_bg` is for text sitting *on* a coloured pill or
+  mode chip, and for the floating popups (changelog/settings) that genuinely need to occlude
+  what is under them — not for the picker's own panels. Three tests in `picker.rs`
+  (`the_search_box_is_captioned_search_and_the_list_carries_the_mode_title`,
+  `panels_use_the_projects_pickers_border_and_caption_slots`,
+  `no_panel_paints_an_opaque_background`) pin this down.
+- **There is one panel helper, `tui::boxed`, and every framed surface goes through it.**
+  It lived in `ui.rs` while `picker.rs` hand-rolled its own `Block`s, and the two drifted
+  exactly as you would expect: accent borders instead of `overlay0`, and captions passed as
+  bare `&str` so they rendered in the terminal's default foreground rather than
+  `title_color`. A new framed surface calls `boxed`; it does not build a `Block` itself.
 - **The git menu is a pane, and a review `exec`s over that pane.** There is a manifest pane for
   the *menu* (`[[panes]] id = "git"`), but **none for the review**: `git::main` `exec`s
   `bin/review.sh` over itself the way the clone flow's `Accept::Clone` `exec`s `get.sh`, so tuicr

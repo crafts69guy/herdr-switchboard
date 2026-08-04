@@ -1,5 +1,5 @@
-//! Shared TUI plumbing: the coloured command-bar pill row, and the plain
-//! draw/poll/read event loop the two popup modes run.
+//! Shared TUI plumbing: the rounded panel block, the coloured command-bar pill
+//! row, and the plain draw/poll/read event loop the two popup modes run.
 //!
 //! The picker keeps its own loop in `main.rs` on purpose — it also drives a
 //! background preview worker, consumes mouse events, and returns a chosen
@@ -12,7 +12,25 @@ use anyhow::Result;
 use crossterm::event::{self, Event, KeyEvent, KeyEventKind};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Span;
+use ratatui::widgets::{Block, BorderType, Borders};
 use ratatui::Frame;
+
+/// The one panel a Switchboard surface is allowed to draw: rounded, bordered in
+/// `border`, captioned in `title_color`. Every framed thing goes through here so
+/// the projects picker, the mode pickers, and the popups cannot drift into three
+/// different looks — the bug that shipped as accent boxes with unstyled captions.
+pub fn boxed(label: &str, title_color: Color, border: Color) -> Block<'_> {
+    Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(border))
+        .title(Span::styled(
+            format!(" {label} "),
+            Style::default()
+                .fg(title_color)
+                .add_modifier(Modifier::BOLD),
+        ))
+}
 
 /// One coloured command-bar pill: a bold key cap and its label, drawn in
 /// `ink`-on-`color`.

@@ -303,6 +303,50 @@ fn add_source(record: &mut CommandRecord, source: &str) {
     }
 }
 
+/// A unix timestamp as the gutter tag the list is actually sorted by: `2h`, `3d`.
+/// Coarse on purpose — this column exists to show the recency gradient down the
+/// list, not to report a duration.
+fn ago(at: u64) -> String {
+    if at == 0 {
+        return "—".into();
+    }
+    let secs = crate::state::now().saturating_sub(at);
+    match secs {
+        0..=59 => "now".into(),
+        60..=3599 => format!("{}m", secs / 60),
+        3600..=86_399 => format!("{}h", secs / 3600),
+        86_400..=2_591_999 => format!("{}d", secs / 86_400),
+        2_592_000..=31_535_999 => format!("{}mo", secs / 2_592_000),
+        _ => format!("{}y", secs / 31_536_000),
+    }
+}
+
+/// The same instant as a sortable absolute date, for the preview card.
+fn stamp(at: u64) -> String {
+    if at == 0 {
+        return "never".into();
+    }
+    // Civil-from-days (Howard Hinnant's algorithm), so the card can print a date
+    // without pulling in a date crate for one line.
+    let days = (at / 86_400) as i64;
+    let secs_of_day = at % 86_400;
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    format!(
+        "{y:04}-{m:02}-{d:02} {:02}:{:02}",
+        secs_of_day / 3600,
+        (secs_of_day % 3600) / 60
+    )
+}
+
 fn frecency(record: &CommandRecord) -> u64 {
     record
         .last_selected_at
@@ -665,6 +709,7 @@ impl CommandMode {
                 id: "__diagnostic".into(),
                 primary: "No safe commands".into(),
                 secondary: "review preset diagnostics".into(),
+                trailing: None,
                 document: Document::default(),
                 preview: self.catalog.diagnostics().to_vec(),
                 accent_slot: Some("red".into()),
@@ -680,6 +725,15 @@ impl PickerMode for CommandMode {
     }
     fn accent_slot(&self) -> &'static str {
         "mauve"
+    }
+    fn emphasize_head(&self) -> bool {
+        true
+    }
+    /// Rows here are whole shell commands and the card beside them is a short
+    /// metadata block, so the split that suits Ports leaves this list truncating
+    /// against a mostly empty preview.
+    fn list_pct(&self) -> u16 {
+        58
     }
     fn schema(&self) -> FieldSchema {
         FieldSchema::new(
@@ -840,8 +894,15 @@ fn command_item(record: &CommandRecord) -> PickerItem {
     preview.extend([
         String::new(),
         format!("source  {source}"),
-        format!("selected  {}", record.selected_count),
-        format!("last used  {}", record.last_selected_at),
+        format!("selected  {} ×", record.selected_count),
+        // A unix timestamp is not a fact anyone can read off a card. Both forms
+        // are here because the relative one answers "is this stale?" at a glance
+        // and the absolute one is what you quote when something looks wrong.
+        format!(
+            "last used  {} ({})",
+            ago(record.last_selected_at),
+            stamp(record.last_selected_at)
+        ),
     ]);
     if !cwd.is_empty() {
         preview.push(format!("cwd  {cwd}"));
@@ -855,7 +916,14 @@ fn command_item(record: &CommandRecord) -> PickerItem {
     PickerItem {
         id: fingerprint(&record.command),
         primary: label,
-        secondary: source.clone(),
+        // `shell` is where all but a handful of these come from, so printing it on
+        // every row was forty identical words down a ragged column. The badge now
+        // says only what is worth noticing — that an entry is a preset, or ours.
+        secondary: match source.as_str() {
+            "shell" => String::new(),
+            other => other.to_string(),
+        },
+        trailing: Some(ago(record.last_selected_at)),
         document: Document {
             fuzzy: format!("{} {} {} {}", record.command, record.label, cwd, source),
             fields: picker::fields(&[
@@ -929,6 +997,46 @@ fn program_exists(program: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The gutter tag reads as a recency gradient, so the unit has to change with
+    /// the magnitude rather than run to four digits of minutes.
+    #[test]
+    fn ago_picks_a_unit_that_keeps_the_gutter_narrow() {
+        let t = now();
+        assert_eq!(ago(0), "—");
+        assert_eq!(ago(t), "now");
+        assert_eq!(ago(t - 90), "1m");
+        assert_eq!(ago(t - 7_200), "2h");
+        assert_eq!(ago(t - 3 * 86_400), "3d");
+        assert_eq!(ago(t - 60 * 86_400), "2mo");
+        assert_eq!(ago(t - 800 * 86_400), "2y");
+        // Whatever the age, the tag stays inside the gutter the list reserves.
+        assert!(ago(t - 999 * 86_400).chars().count() <= 4);
+    }
+
+    /// The preview used to print `last used  1785811497`, which is not a fact
+    /// anyone can read. Verified against the same instants in UTC.
+    #[test]
+    fn stamp_renders_a_readable_utc_date() {
+        assert_eq!(stamp(1_785_811_497), "2026-08-04 02:44");
+        assert_eq!(stamp(1_785_203_321), "2026-07-28 01:48");
+        assert_eq!(stamp(1), "1970-01-01 00:00");
+        assert_eq!(stamp(0), "never");
+    }
+
+    /// `shell` is the source of all but a handful of entries, so it earns no
+    /// column; a preset is worth pointing at.
+    #[test]
+    fn only_a_notable_source_earns_a_badge() {
+        let item = |sources: &[&str]| {
+            let mut record = empty_record("vim".into(), String::new());
+            record.sources = sources.iter().map(|s| s.to_string()).collect();
+            command_item(&record)
+        };
+        assert_eq!(item(&["shell"]).secondary, "");
+        assert_eq!(item(&["preset"]).secondary, "preset");
+        assert_eq!(item(&["switchboard"]).secondary, "switchboard");
+    }
 
     #[test]
     fn shell_parsers_preserve_multiline_commands() {

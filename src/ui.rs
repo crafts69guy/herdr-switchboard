@@ -139,17 +139,6 @@ fn draw_changelog(f: &mut Frame, app: &mut App, area: Rect) {
     f.render_widget(Paragraph::new(lines).scroll((c.scroll, 0)), inner);
 }
 
-fn boxed(title: &str, accent: Color, border: Color) -> Block<'_> {
-    Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(border))
-        .title(Span::styled(
-            format!(" {title} "),
-            Style::default().fg(accent).add_modifier(Modifier::BOLD),
-        ))
-}
-
 fn draw_input(
     f: &mut Frame,
     app: &App,
@@ -178,7 +167,7 @@ fn draw_input(
         ),
         Mode::Insert => (" INSERT ", app.theme.or("green", Color::Green)),
     };
-    let block = boxed("Search", title, border)
+    let block = crate::tui::boxed("Search", title, border)
         .title(Line::from(Span::styled(count, Style::default().fg(sub))).right_aligned())
         .title(Line::from(Span::styled(
             tag,
@@ -305,7 +294,7 @@ fn draw_list(
 }
 
 fn draw_preview(f: &mut Frame, app: &App, area: Rect, title: Color, border: Color) {
-    let mut block = boxed("󰈈 Preview", title, border);
+    let mut block = crate::tui::boxed("󰈈 Preview", title, border);
     // Say so only when there is something below the fold, and say where you are
     // — an offset on a card that fits would be noise.
     if app.preview.scroll > 0 || app.preview.len > app.preview.rows() {

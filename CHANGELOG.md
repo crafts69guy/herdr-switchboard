@@ -12,6 +12,34 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Removed the old `ghq` configuration/state migration and flat-config compatibility path;
   Switchboard now reads only namespaced configuration from its own plugin directory.
 
+### Changed
+
+- The Menu, Commands, and Ports pickers now render in the Projects picker's visual
+  language: borders recede in `overlay0` instead of shouting in the mode accent, every
+  panel caption uses `title_color`, and the selected row is a subtle `surface1` bar
+  rather than a full-width inverted accent block.
+- Those three panes no longer repeat their name: herdr already draws the pane frame and
+  its title, so the pane title is now a single icon (as Projects and Git already were)
+  and the mode name moved onto the list panel.
+- All three panels are transparent, so the terminal shows through consistently. The
+  Search and Preview panels previously painted an opaque `panel_bg` while the list did
+  not, which read as two different themes inside one pane.
+- The Preview panel gained the Projects picker's `⌥jk n/total` scroll indicator, shown
+  only when the card runs past the fold, and its scroll now clamps to the content.
+- Picker rows are laid out against the panel's real width. A row longer than the panel
+  now ends in an ellipsis instead of being cut mid-word wherever the border fell, and a
+  row's trailing tag sits in its own right-hand gutter instead of a column that went
+  ragged as soon as one entry ran long.
+- Commands stopped printing `shell` on every row — it was the source of all but a handful
+  of entries. The badge now appears only for a preset or a Switchboard command, and the
+  right-hand gutter carries how long ago the command was last used (`2h`, `3d`), which is
+  what the list is sorted by.
+- Commands draws each row's leading word — the program — in the entry's colour, bold, so
+  a wall of history has something to scan down, and gives the list 58% of the body rather
+  than 42, since its rows are long and its preview card is short.
+- The Commands preview reports `last used` as a relative age plus a readable UTC date
+  instead of a raw unix timestamp, and labels the selection count as `n ×`.
+
 ## [0.11.0] - 2026-08-04
 
 ### Breaking

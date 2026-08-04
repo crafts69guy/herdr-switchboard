@@ -11,7 +11,7 @@ use nucleo_matcher::{Config as MatcherConfig, Matcher};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph};
+use ratatui::widgets::{Clear, List, ListItem, ListState, Paragraph};
 use ratatui::Frame;
 
 use crate::data::Theme;
@@ -23,6 +23,10 @@ pub struct PickerItem {
     pub id: String,
     pub primary: String,
     pub secondary: String,
+    /// A short tag pinned to the row's right edge — a relative time, a badge.
+    /// It gets its own gutter, so put facts here that repeat down the whole list
+    /// and would otherwise read as a ragged column of noise.
+    pub trailing: Option<String>,
     pub document: Document,
     pub preview: Vec<String>,
     pub accent_slot: Option<String>,
@@ -59,6 +63,18 @@ pub trait PickerMode {
     }
     fn action_disabled_reason(&self, _item_id: &str, _action: &str) -> Option<String> {
         None
+    }
+    /// Draw each row's leading word in the item's own colour, bold. For a list of
+    /// shell commands that word is the program, and it is what the eye hunts for;
+    /// for a list of names it would just be a stray colour.
+    fn emphasize_head(&self) -> bool {
+        false
+    }
+    /// The list's share of the body, as a percentage. A mode whose rows are long
+    /// and whose preview is a short metadata card should claim more of it than the
+    /// 42 that suits a card-heavy mode.
+    fn list_pct(&self) -> u16 {
+        42
     }
     fn reload_config(&mut self, _config: &crate::config::Config) -> Result<()> {
         Ok(())
@@ -172,16 +188,28 @@ impl State {
     }
 }
 
+/// The caption colour every panel is titled in — `common.title_color` resolved
+/// through the herdr theme, exactly as `App::new` resolves it for the projects
+/// picker. Read here rather than passed in, so all three modes agree without
+/// each caller having to remember to look it up.
+fn title_color(theme: &Theme) -> Color {
+    crate::config::Config::try_load()
+        .ok()
+        .and_then(|cfg| theme.resolve(&cfg.get("title_color", "peach")))
+        .unwrap_or_else(|| theme.or("peach", Color::Yellow))
+}
+
 pub fn run<M: PickerMode>(mut mode: M, mut theme: Theme, normal: bool) -> Result<()> {
     let schema = mode.schema();
     let mut state = State::new(mode.initial()?, normal);
     state.recompute(&schema);
+    let mut title = title_color(&theme);
     loop {
         let mut actions = mode.actions();
         apply_bindings(&mut actions, &mode.key_bindings());
         let mut terminal = crate::init_terminal();
         let outcome: Result<Option<(String, &'static str)>> = (|| loop {
-            terminal.draw(|frame| draw(frame, &mode, &theme, &actions, &mut state))?;
+            terminal.draw(|frame| draw(frame, &mode, &theme, title, &actions, &mut state))?;
             if let Some(snapshot) = mode.poll() {
                 match snapshot {
                     Ok(items) => {
@@ -300,6 +328,11 @@ pub fn run<M: PickerMode>(mut mode: M, mut theme: Theme, normal: bool) -> Result
                 InputMode::Insert
             };
             theme = Theme::load();
+            // `title_color` is one of the settings the overlay writes, so re-resolve
+            // it against the reloaded theme rather than keeping the stale colour.
+            title = theme
+                .resolve(&cfg.get("title_color", "peach"))
+                .unwrap_or_else(|| theme.or("peach", Color::Yellow));
             state.replace(mode.initial()?, &schema);
             continue;
         }
@@ -359,6 +392,7 @@ fn draw<M: PickerMode>(
     frame: &mut Frame,
     mode: &M,
     theme: &Theme,
+    title_color: Color,
     actions: &[ActionSpec],
     state: &mut State,
 ) {
@@ -374,93 +408,195 @@ fn draw<M: PickerMode>(
     let ink = theme.or("panel_bg", Color::Black);
     let text = theme.or("text", Color::White);
     let muted = theme.or("subtext0", Color::DarkGray);
-    let mode_label = if state.input_mode == InputMode::Insert {
-        "INSERT"
-    } else {
-        "NORMAL"
+    // The projects picker's palette, slot for slot: borders recede in `overlay0`
+    // so herdr's own accent pane frame stays the loudest line on screen, and every
+    // caption is `title_color`. Nothing here paints a background — the panes are
+    // transparent, like the projects picker, so the terminal shows through all
+    // three of them instead of two opaque cards beside a see-through list.
+    let border = theme.or("overlay0", Color::DarkGray);
+    let surface = theme.or("surface1", Color::Indexed(236));
+
+    // Whichever mode owns the keys, tagged the way the projects picker tags it:
+    // a bold ink-on-colour chip in the border, not a muted word off to the right.
+    let (tag, tag_bg) = match state.input_mode {
+        InputMode::Normal => (" NORMAL ", accent),
+        InputMode::Insert => (" INSERT ", theme.or("green", Color::Green)),
     };
-    let title = if let Some(error) = &state.runtime_error {
-        format!(" {} · {} ", mode.title(), error)
+    // A bad query takes over the caption and reddens the border; the mode title
+    // has moved to the list, so there is room to say what is actually wrong.
+    let (caption, caption_color) = if let Some(error) = &state.runtime_error {
+        (error.clone(), theme.or("red", Color::Red))
     } else if let Some(diagnostic) = &state.diagnostic {
-        format!(
-            " {} · {} [{}..{}] ",
-            mode.title(),
-            diagnostic.message,
-            diagnostic.span.start,
-            diagnostic.span.end
+        (
+            format!(
+                "{} [{}..{}]",
+                diagnostic.message, diagnostic.span.start, diagnostic.span.end
+            ),
+            theme.or("red", Color::Red),
         )
     } else {
-        format!(" {} · {} results ", mode.title(), state.filtered.len())
+        ("Search".into(), title_color)
     };
-    let search = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(
-            if state.diagnostic.is_some() || state.runtime_error.is_some() {
-                theme.or("red", Color::Red)
-            } else {
-                accent
-            },
+    let bad = state.diagnostic.is_some() || state.runtime_error.is_some();
+    let search = tui::boxed(
+        &caption,
+        caption_color,
+        if bad { caption_color } else { border },
+    )
+    .title(
+        Line::from(Span::styled(
+            format!(" {}/{} ", state.filtered.len(), state.items.len()),
+            Style::default().fg(muted),
         ))
-        .title(Span::styled(
-            title,
-            Style::default().fg(accent).add_modifier(Modifier::BOLD),
-        ))
-        .title(
-            Line::from(Span::styled(
-                format!(" {mode_label} "),
-                Style::default().fg(muted),
-            ))
-            .right_aligned(),
-        );
+        .right_aligned(),
+    )
+    .title(Line::from(Span::styled(
+        tag,
+        Style::default()
+            .bg(tag_bg)
+            .fg(ink)
+            .add_modifier(Modifier::BOLD),
+    )));
     frame.render_widget(
-        Paragraph::new(format!(" {}", state.query))
-            .block(search)
-            .style(Style::default().bg(ink).fg(text)),
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                "  ",
+                Style::default().fg(if state.input_mode == InputMode::Normal {
+                    muted
+                } else {
+                    accent
+                }),
+            ),
+            Span::styled(state.query.clone(), Style::default().fg(text)),
+        ]))
+        .block(search),
         rows[0],
     );
 
-    let cols =
-        Layout::horizontal([Constraint::Percentage(42), Constraint::Percentage(58)]).split(rows[1]);
+    let list_pct = mode.list_pct();
+    let cols = Layout::horizontal([
+        Constraint::Percentage(list_pct),
+        Constraint::Percentage(100 - list_pct),
+    ])
+    .split(rows[1]);
     state.list_area = Rect::new(
         cols[0].x + 1,
         cols[0].y + 1,
         cols[0].width.saturating_sub(2),
         cols[0].height.saturating_sub(2),
     );
+    // A row is laid out against the panel's real width, not padded to the widest
+    // entry: padding to a measured column went ragged the moment one entry ran
+    // past the cap, and anything past the border was cut mid-word by the block.
+    // So the trailing tag is right-aligned in its own gutter, and what is left is
+    // the budget the primary and secondary must fit — with an ellipsis if they
+    // don't, which is the difference between "…follows '" and "follows ' \".
+    //
+    // The width available is the block's inner width less the two columns the
+    // highlight symbol reserves on *every* row, selected or not. A row must add no
+    // indent of its own on top of that: a single uncounted leading space is enough
+    // to push the last character of the gutter under the border.
+    let row_width = state.list_area.width.saturating_sub(2) as usize;
+    let gutter = state
+        .filtered
+        .iter()
+        .filter_map(|&index| state.items[index].trailing.as_deref())
+        .map(|tag| tag.chars().count())
+        .max()
+        .unwrap_or(0);
+    let emphasize = mode.emphasize_head();
     let items = state
         .filtered
         .iter()
         .map(|index| {
             let item = &state.items[*index];
-            ListItem::new(Line::from(vec![
-                Span::styled(
-                    format!(" {}", item.primary),
-                    Style::default().fg(item
-                        .accent_slot
-                        .as_deref()
-                        .map(|slot| theme.or(slot, text))
-                        .unwrap_or(text)),
-                ),
-                Span::styled(format!("  {}", item.secondary), Style::default().fg(muted)),
-            ]))
+            let slot = item
+                .accent_slot
+                .as_deref()
+                .map(|slot| theme.or(slot, accent));
+            // An emphasized head falls back to the mode's accent, never to `muted`:
+            // the point of the head is to stand out, and a slotless item drawing it
+            // dimmer than its own tail is the opposite of that. The secondary note
+            // does fall back to `muted` — being quiet is its job.
+            let head_color = slot.unwrap_or(accent);
+            let note_color = slot.unwrap_or(muted);
+            // Reserve the gutter (plus a space before it) so no row can grow into
+            // the column the tags live in.
+            let budget = row_width.saturating_sub(if gutter == 0 { 0 } else { gutter + 2 });
+
+            let mut spans: Vec<Span<'static>> = Vec::new();
+            let mut used = 0usize;
+            let mut push = |text: &str, style: Style, spans: &mut Vec<Span<'static>>| {
+                if used >= budget {
+                    return;
+                }
+                let len = text.chars().count();
+                if used + len <= budget {
+                    used += len;
+                    spans.push(Span::styled(text.to_string(), style));
+                } else {
+                    let room = budget - used;
+                    let cut: String = text.chars().take(room.saturating_sub(1)).collect();
+                    used = budget;
+                    spans.push(Span::styled(format!("{cut}…"), style));
+                }
+            };
+
+            // For a wall of shell commands the leading word is what the eye hunts
+            // for, so a mode can ask for it in its own colour and bold. Everything
+            // else stays plain `text`, the projects picker's division of colour.
+            match item.primary.split_once(' ').filter(|_| emphasize) {
+                Some((head, tail)) => {
+                    push(
+                        head,
+                        Style::default().fg(head_color).add_modifier(Modifier::BOLD),
+                        &mut spans,
+                    );
+                    push(" ", Style::default(), &mut spans);
+                    push(tail, Style::default().fg(text), &mut spans);
+                }
+                None => {
+                    let style = if emphasize {
+                        Style::default().fg(head_color).add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(text)
+                    };
+                    push(&item.primary, style, &mut spans);
+                }
+            }
+            if !item.secondary.is_empty() {
+                push("  ", Style::default(), &mut spans);
+                push(
+                    &item.secondary,
+                    Style::default().fg(note_color).add_modifier(Modifier::DIM),
+                    &mut spans,
+                );
+            }
+
+            // Right-align the tag: pad out to the gutter, then draw it.
+            if gutter > 0 {
+                let tag = item.trailing.clone().unwrap_or_default();
+                let pad = row_width
+                    .saturating_sub(used)
+                    .saturating_sub(tag.chars().count());
+                spans.push(Span::raw(" ".repeat(pad)));
+                spans.push(Span::styled(
+                    tag,
+                    Style::default().fg(muted).add_modifier(Modifier::DIM),
+                ));
+            }
+            ListItem::new(Line::from(spans))
         })
         .collect::<Vec<_>>();
     let list = List::new(items)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .border_style(Style::default().fg(accent))
-                .title(" List "),
-        )
+        .block(tui::boxed(mode.title(), title_color, border))
         .highlight_style(
             Style::default()
-                .bg(accent)
-                .fg(ink)
+                .fg(accent)
+                .bg(surface)
                 .add_modifier(Modifier::BOLD),
         )
-        .highlight_symbol("▌");
+        .highlight_symbol("▌ ");
     state
         .list_state
         .select((!state.filtered.is_empty()).then_some(state.selected));
@@ -480,17 +616,29 @@ fn draw<M: PickerMode>(
                 Style::default().fg(muted),
             ))]
         });
+    // Say where you are in the card only when there is something below the fold,
+    // in the projects picker's wording.
+    let mut block = tui::boxed("󰈈 Preview", title_color, border);
+    let rows_visible = cols[1].height.saturating_sub(2);
+    let len = preview.len() as u16;
+    state.preview_scroll = state.preview_scroll.min(len.saturating_sub(rows_visible));
+    if state.preview_scroll > 0 || len > rows_visible {
+        block = block.title(
+            Line::from(Span::styled(
+                format!(
+                    " ⌥jk {}/{len} ",
+                    state.preview_scroll + rows_visible.min(len)
+                ),
+                Style::default().fg(muted),
+            ))
+            .right_aligned(),
+        );
+    }
     frame.render_widget(
         Paragraph::new(preview)
             .scroll((state.preview_scroll, 0))
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_type(BorderType::Rounded)
-                    .border_style(Style::default().fg(accent))
-                    .title(" Preview "),
-            )
-            .style(Style::default().bg(ink).fg(text)),
+            .block(block)
+            .style(Style::default().fg(text)),
         cols[1],
     );
 
@@ -534,12 +682,285 @@ pub fn fields(pairs: &[(&str, String)]) -> HashMap<String, String> {
 mod tests {
     use super::*;
 
+    struct TestMode;
+
+    impl PickerMode for TestMode {
+        fn title(&self) -> &str {
+            "Ports"
+        }
+        fn accent_slot(&self) -> &'static str {
+            "accent"
+        }
+        fn schema(&self) -> FieldSchema {
+            FieldSchema::default()
+        }
+        fn actions(&self) -> Vec<ActionSpec> {
+            Vec::new()
+        }
+        fn initial(&mut self) -> Result<Vec<PickerItem>> {
+            Ok(Vec::new())
+        }
+        fn execute(&mut self, _item_id: &str, _action: &str) -> Result<ActionOutcome> {
+            Ok(ActionOutcome::Close)
+        }
+    }
+
+    fn render(state: &mut State) -> ratatui::buffer::Buffer {
+        let theme = Theme::from_slots(&[
+            ("accent", "#6fd0a8"),
+            ("overlay0", "#6c7e76"),
+            ("peach", "#dcbb80"),
+        ]);
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 12)).unwrap();
+        terminal
+            .draw(|f| {
+                draw(
+                    f,
+                    &TestMode,
+                    &theme,
+                    theme.or("peach", Color::Yellow),
+                    &[],
+                    state,
+                )
+            })
+            .unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    fn test_item(id: &str) -> PickerItem {
+        PickerItem {
+            id: id.into(),
+            primary: id.into(),
+            secondary: format!("{id} detail"),
+            trailing: None,
+            document: Document {
+                fuzzy: id.into(),
+                fields: HashMap::new(),
+            },
+            preview: Vec::new(),
+            accent_slot: None,
+        }
+    }
+
+    /// The mode title belongs to the list, not the search box: herdr already puts
+    /// the pane's name on the frame it draws, and captioning the search box with it
+    /// too is what showed `Ports` twice, two rows apart.
+    #[test]
+    fn the_search_box_is_captioned_search_and_the_list_carries_the_mode_title() {
+        let mut state = State::new(vec![test_item("a"), test_item("b")], false);
+        let buffer = render(&mut state);
+        let rows: Vec<String> = (0..12)
+            .map(|y| (0..80).map(|x| buffer[(x, y)].symbol()).collect::<String>())
+            .collect();
+
+        assert!(rows[0].contains(" Search "), "{}", rows[0]);
+        assert!(rows[0].contains(" INSERT "), "{}", rows[0]);
+        assert!(rows[0].contains(" 2/2 "), "{}", rows[0]);
+        assert!(rows[3].contains(" Ports "), "{}", rows[3]);
+        assert!(rows[3].contains(" 󰈈 Preview "), "{}", rows[3]);
+        assert!(
+            !rows[0].contains("Ports"),
+            "the mode title must not double the pane frame's: {}",
+            rows[0]
+        );
+    }
+
+    /// Borders recede in `overlay0` and captions are `title_color`, the way the
+    /// projects picker paints them — not accent boxes with terminal-default titles.
+    #[test]
+    fn panels_use_the_projects_pickers_border_and_caption_slots() {
+        let mut state = State::new(vec![test_item("a")], false);
+        let buffer = render(&mut state);
+        let overlay = Color::Rgb(0x6c, 0x7e, 0x76);
+        let peach = Color::Rgb(0xdc, 0xbb, 0x80);
+
+        // The list block's top-left corner, and the first cell of its caption.
+        assert_eq!(buffer[(0, 3)].fg, overlay, "list border");
+        assert_eq!(buffer[(0, 0)].fg, overlay, "search border");
+        let caption = (0..80).find(|&x| buffer[(x, 3)].symbol() == "P").unwrap();
+        assert_eq!(buffer[(caption, 3)].fg, peach, "list caption");
+    }
+
+    /// Nothing paints a background: all three panes are transparent, so the
+    /// terminal shows through consistently instead of two opaque cards next to a
+    /// see-through list.
+    #[test]
+    fn no_panel_paints_an_opaque_background() {
+        let mut state = State::new(vec![test_item("a"), test_item("b")], false);
+        let buffer = render(&mut state);
+        // Rows 0-2 are the search box (its border carries the mode chip), row 4 is
+        // the selected list row (the highlight bar), row 11 is the pill bar. Every
+        // other cell — including the unselected rows and the whole preview — must
+        // be transparent, which is what the opaque `panel_bg` cards got wrong.
+        for y in [3, 5, 6, 7, 8, 9, 10] {
+            for x in 0..80 {
+                assert_eq!(
+                    buffer[(x, y)].bg,
+                    Color::Reset,
+                    "cell ({x},{y}) painted a background"
+                );
+            }
+        }
+        // The selection bar is the one thing that does paint, in `surface1`.
+        assert_eq!(buffer[(2, 4)].bg, Color::Indexed(236), "selection bar");
+    }
+
+    struct WideMode(bool);
+
+    impl PickerMode for WideMode {
+        fn title(&self) -> &str {
+            "Commands"
+        }
+        fn accent_slot(&self) -> &'static str {
+            "accent"
+        }
+        fn emphasize_head(&self) -> bool {
+            self.0
+        }
+        fn list_pct(&self) -> u16 {
+            58
+        }
+        fn schema(&self) -> FieldSchema {
+            FieldSchema::default()
+        }
+        fn actions(&self) -> Vec<ActionSpec> {
+            Vec::new()
+        }
+        fn initial(&mut self) -> Result<Vec<PickerItem>> {
+            Ok(Vec::new())
+        }
+        fn execute(&mut self, _item_id: &str, _action: &str) -> Result<ActionOutcome> {
+            Ok(ActionOutcome::Close)
+        }
+    }
+
+    fn render_wide(state: &mut State, emphasize: bool) -> Vec<String> {
+        let theme = Theme::from_slots(&[("accent", "#6fd0a8"), ("overlay0", "#6c7e76")]);
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(60, 10)).unwrap();
+        terminal
+            .draw(|f| draw(f, &WideMode(emphasize), &theme, Color::Yellow, &[], state))
+            .unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        (0..10)
+            .map(|y| (0..60).map(|x| buffer[(x, y)].symbol()).collect::<String>())
+            .collect()
+    }
+
+    fn tagged(id: &str, primary: &str, tag: &str) -> PickerItem {
+        PickerItem {
+            id: id.into(),
+            primary: primary.into(),
+            secondary: String::new(),
+            trailing: Some(tag.into()),
+            document: Document {
+                fuzzy: primary.into(),
+                fields: HashMap::new(),
+            },
+            preview: Vec::new(),
+            accent_slot: None,
+        }
+    }
+
+    /// A row longer than the panel used to be cut wherever the border fell, mid
+    /// word and with no sign it had been cut. It must end in an ellipsis instead,
+    /// inside the border.
+    #[test]
+    fn an_overlong_row_is_truncated_with_an_ellipsis_not_clipped_by_the_border() {
+        let long = "cd '/Users/caongoccuong/Developments/github.com/crafts69guy/herdr-ghq'";
+        let mut state = State::new(vec![tagged("a", long, "2h")], false);
+        let rows = render_wide(&mut state, false);
+        let row = &rows[4];
+
+        assert!(row.contains('…'), "expected an ellipsis in {row:?}");
+        // The block's right border survives, so nothing overran the panel.
+        assert!(row.ends_with('│'), "{row:?}");
+        assert!(
+            !row.contains("herdr-ghq"),
+            "the tail should be cut: {row:?}"
+        );
+    }
+
+    /// Every tag lands in one column at the right edge, whatever the rows in front
+    /// of them do — the ragged `shell` column was the whole complaint.
+    #[test]
+    fn trailing_tags_line_up_in_one_right_hand_gutter() {
+        let mut state = State::new(
+            vec![
+                tagged("a", "vim", "2h"),
+                tagged("b", "docker compose -f compose.dev.yaml up -d", "3d"),
+                tagged("c", "g st", "12mo"),
+            ],
+            false,
+        );
+        let rows = render_wide(&mut state, false);
+        // In *columns*, not bytes: the box-drawing border is three bytes wide, so
+        // a byte offset would compare the wrong things.
+        let end_column = |row: &str, tag: &str| {
+            let cells: Vec<char> = row.chars().collect();
+            let want: Vec<char> = tag.chars().collect();
+            cells
+                .windows(want.len())
+                .position(|w| w == want.as_slice())
+                .map(|i| i + want.len())
+                .unwrap_or_else(|| panic!("{tag} in {row:?}"))
+        };
+
+        // Right-aligned means the tags share an *end* column, not a start column.
+        let ends: Vec<usize> = [(4, "2h"), (5, "3d"), (6, "12mo")]
+            .iter()
+            .map(|(y, tag)| end_column(&rows[*y], tag))
+            .collect();
+        assert_eq!(ends[0], ends[1], "{rows:#?}");
+        assert_eq!(ends[1], ends[2], "{rows:#?}");
+    }
+
+    /// The leading word is the program, and a mode can ask for it in its own
+    /// colour so a wall of commands has something to scan down.
+    #[test]
+    fn the_head_is_emphasized_only_when_the_mode_asks_for_it() {
+        let theme_accent = Color::Rgb(0x6f, 0xd0, 0xa8);
+        let plain = |emphasize: bool| {
+            // Two items, and probe the *second*: `highlight_style` repaints the
+            // whole selected row, so the first one would report the selection's
+            // colour no matter what the head is styled with.
+            let mut state = State::new(
+                vec![
+                    tagged("a", "vim", "2h"),
+                    tagged("b", "docker compose down", "3d"),
+                ],
+                false,
+            );
+            let t = Theme::from_slots(&[("accent", "#6fd0a8"), ("overlay0", "#6c7e76")]);
+            let mut terminal =
+                ratatui::Terminal::new(ratatui::backend::TestBackend::new(60, 10)).unwrap();
+            terminal
+                .draw(|f| draw(f, &WideMode(emphasize), &t, Color::Yellow, &[], &mut state))
+                .unwrap();
+            let buffer = terminal.backend().buffer().clone();
+            // Column 3 is the first letter of `docker`: past the border and the two
+            // columns the highlight symbol reserves. Row 5 is the second entry.
+            let cell = buffer[(3, 5)].clone();
+            (cell.symbol().to_string(), cell.fg, cell.modifier)
+        };
+
+        let (symbol, fg, modifier) = plain(true);
+        assert_eq!(symbol, "d");
+        assert_eq!(fg, theme_accent, "the head takes the item's slot");
+        assert!(modifier.contains(Modifier::BOLD));
+
+        let (_, fg, _) = plain(false);
+        assert_ne!(fg, theme_accent, "a plain mode leaves the head alone");
+    }
+
     #[test]
     fn snapshot_replacement_preserves_selection_by_identity() {
         let item = |id: &str| PickerItem {
             id: id.into(),
             primary: id.into(),
             secondary: String::new(),
+            trailing: None,
             document: Document {
                 fuzzy: id.into(),
                 fields: HashMap::new(),
