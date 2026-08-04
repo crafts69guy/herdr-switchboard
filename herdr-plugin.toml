@@ -1,6 +1,6 @@
 id = "switchboard"
 name = "Switchboard"
-version = "0.11.0"
+version = "1.0.0"
 min_herdr_version = "0.7.4"
 description = "A colorful Herdr command palette with searchable Projects, Commands, and Ports pickers plus Git, Clone, Settings, Changelog, and Update utilities."
 platforms = ["macos", "linux"]
