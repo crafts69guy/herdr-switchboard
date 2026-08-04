@@ -7,6 +7,8 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-08-04
+
 ### Breaking
 
 - Renamed the package, binary, plugin id, release assets, runtime environment variables, and state
@@ -483,7 +485,8 @@ tuicr's own colours.
   open it in a new workspace, tab, split, or the current pane, plus clone (`ghq get`),
   update, remove, and a handoff to the git-hub menu.
 
-[Unreleased]: https://github.com/crafts69guy/herdr-switchboard/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/crafts69guy/herdr-switchboard/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/crafts69guy/herdr-switchboard/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/crafts69guy/herdr-switchboard/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/crafts69guy/herdr-switchboard/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/crafts69guy/herdr-switchboard/compare/v0.7.0...v0.8.0
