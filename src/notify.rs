@@ -11,8 +11,6 @@ pub enum Event {
     TermSucceeded,
     KillSucceeded,
     SignalFailed,
-    MigrationSucceeded,
-    MigrationFailed,
     ListenerStale,
 }
 
@@ -88,14 +86,6 @@ impl Notifier {
                     "Could not signal listener{}.",
                     suffix(safe_subject.as_deref())
                 ),
-                "request",
-            ),
-            Event::MigrationSucceeded => (
-                "Migrated Switchboard configuration and state.".into(),
-                "done",
-            ),
-            Event::MigrationFailed => (
-                "Switchboard migration failed; legacy files were kept.".into(),
                 "request",
             ),
             Event::ListenerStale => (

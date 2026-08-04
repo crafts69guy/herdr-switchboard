@@ -287,21 +287,14 @@ fn load_document(path: &PathBuf) -> Result<toml_edit::DocumentMut> {
         fs::create_dir_all(dir)?;
     }
     let existing = fs::read_to_string(path).unwrap_or_default();
-    let migrated = if existing
-        .lines()
-        .any(|line| line.trim_start().starts_with('['))
-    {
-        existing
-    } else {
-        // Config::parse owns the legacy semantics. Serializing its typed result is
-        // the one-time conversion; subsequent edits preserve its TOML document.
-        toml::to_string_pretty(&Config::parse(&existing)?)?
-    };
-    Ok(migrated.parse::<toml_edit::DocumentMut>()?)
+    Ok(existing.parse::<toml_edit::DocumentMut>()?)
 }
 
 fn set_document_value(doc: &mut toml_edit::DocumentMut, key: &str, value: &str) -> Result<()> {
     let (section, field) = setting_path(key);
+    if doc.get(section).is_none() {
+        doc[section] = toml_edit::Item::Table(toml_edit::Table::new());
+    }
     if is_bool_setting(key) {
         doc[section][field] = toml_edit::value(value == "true");
     } else if matches!(key, "history_limit" | "refresh_interval_ms") {
@@ -804,7 +797,7 @@ mod tests {
 
     #[test]
     fn write_replaces_namespaced_value_and_keeps_comments_and_unknown_keys() {
-        let dir = std::env::temp_dir().join(format!("ghq-set-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("switchboard-set-{}", std::process::id()));
         let path = dir.join("config.toml");
         fs::create_dir_all(&dir).unwrap();
         fs::write(
@@ -824,7 +817,7 @@ mod tests {
 
     #[test]
     fn write_appends_a_missing_key() {
-        let dir = std::env::temp_dir().join(format!("ghq-app-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("switchboard-app-{}", std::process::id()));
         let path = dir.join("config.toml");
         fs::create_dir_all(&dir).unwrap();
         fs::write(&path, "[projects]\nsort = \"name\"\n").unwrap();
@@ -871,7 +864,7 @@ mod tests {
 
     #[test]
     fn enter_drafts_a_value_without_touching_disk() {
-        let dir = std::env::temp_dir().join(format!("ghq-draft-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("switchboard-draft-{}", std::process::id()));
         let path = dir.join("config.toml");
         let mut s = Settings::new(&Config::default());
         s.path = path.clone();
@@ -886,7 +879,7 @@ mod tests {
 
     #[test]
     fn apply_writes_the_draft_and_clears_dirty() {
-        let dir = std::env::temp_dir().join(format!("ghq-apply-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("switchboard-apply-{}", std::process::id()));
         let path = dir.join("config.toml");
         let mut s = Settings::new(&Config::default());
         s.path = path.clone();
@@ -915,7 +908,7 @@ mod tests {
     fn esc_discards_the_draft_and_closes() {
         let mut s = Settings::new(&Config::default());
         // Point away from the real config; esc must not write regardless.
-        s.path = std::env::temp_dir().join("ghq-never-written.toml");
+        s.path = std::env::temp_dir().join("switchboard-never-written.toml");
         s.open();
         s.on_key(key(KeyCode::Enter)); // draft
         assert_eq!(s.values[0], "tab");

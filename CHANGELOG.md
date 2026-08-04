@@ -7,6 +7,11 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Breaking
+
+- Removed the old `ghq` configuration/state migration and flat-config compatibility path;
+  Switchboard now reads only namespaced configuration from its own plugin directory.
+
 ## [0.11.0] - 2026-08-04
 
 ### Breaking

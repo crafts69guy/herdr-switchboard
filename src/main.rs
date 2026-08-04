@@ -936,7 +936,7 @@ fn cli_open(args: &[String]) -> Result<()> {
     action::open_target(&runner::SystemRunner, &target, &path, &origin, &label, &cfg)
 }
 
-/// `herdr-switchboard config get KEY [DEFAULT]` — the compatibility scalar reader,
+/// `herdr-switchboard config get KEY [DEFAULT]` — the scalar config reader,
 /// so bash reads a setting through the same parser the TUI uses.
 fn cli_config(args: &[String]) -> Result<()> {
     match args.first().map(String::as_str) {
@@ -956,7 +956,7 @@ fn main() -> Result<()> {
     trace::init();
     // One binary, many modes. bin/changelog.sh execs us with --changelog for the
     // standalone changelog pane; the clone flow execs `open`/`config` so the herdr
-    // verbs and the compatibility config reader live only here, not mirrored in bash.
+    // verbs and the scalar config reader live only here, not mirrored in bash.
     let args: Vec<String> = env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("--version") => {

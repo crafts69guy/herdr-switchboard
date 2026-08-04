@@ -228,10 +228,9 @@ and a README excerpt rendered as markdown; agents show what they are doing and t
 output, in the agent's own colours; workspaces list their tabs, each with its live status.
 Long cards scroll with `alt-j` / `alt-k`.
 
-On the first launch after upgrading from `ghq`, Switchboard converts flat settings into namespaced
-tables and moves the plugin state to `herdr-switchboard`. The migration validates its destination
-before removing the old files. The old binding `ghq.menu` intentionally maps to
-`switchboard.projects`; `switchboard.menu` is the new central menu.
+Switchboard only reads its namespaced configuration from the `switchboard` plugin config directory.
+Bind `switchboard.projects` for the direct Projects picker or `switchboard.menu` for the Central
+Menu.
 
 `update_check` only ever shows `↑ v0.6.0` in the command bar — it never installs anything.
 Set it to `false` to disable that daily check. A managed install can still contact GitHub once
@@ -273,7 +272,7 @@ Set `SWITCHBOARD_TRACE=1` and every launch appends tab-separated timings to
 stdout or stderr — the TUI owns the terminal for its whole life.
 
 ```sh
-SWITCHBOARD_TRACE=1 herdr plugin run ghq menu
+SWITCHBOARD_TRACE=1 herdr plugin action invoke projects --plugin switchboard
 awk -F'\t' '$2 == "frame.first_list" { print $1 }' ~/.local/state/herdr-switchboard/trace.log
 awk -F'\t' '$2 == "preview.render" { n++; t += $3 } END { print t / n }' \
   ~/.local/state/herdr-switchboard/trace.log
