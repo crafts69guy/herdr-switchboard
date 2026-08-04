@@ -7,6 +7,19 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **An AI Agents picker.** Bind `switchboard.agents` or open it from the central menu to list the
+  AI integrations installed in Herdr. `enter` starts the selected AI in the origin pane, `ctrl-t`
+  starts it in a new tab, and `alt-w` starts it in a new workspace; failed starts clean up any
+  tab or workspace Switchboard created. The focused picker opens as a compact centered popup rather
+  than a mostly empty full-screen overlay. This requires Herdr 0.8.0 or newer.
+
+### Fixed
+
+- Linked development checkouts now rebuild their release binary when Rust sources or Cargo metadata
+  are newer, instead of silently running an old same-version binary after source changes.
+
 ## [1.0.0] - 2026-08-04
 
 ### Breaking

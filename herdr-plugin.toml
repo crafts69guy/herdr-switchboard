@@ -1,8 +1,8 @@
 id = "switchboard"
 name = "Switchboard"
 version = "1.0.0"
-min_herdr_version = "0.7.4"
-description = "A colorful Herdr command palette with searchable Projects, Commands, and Ports pickers plus Git, Clone, Settings, Changelog, and Update utilities."
+min_herdr_version = "0.8.0"
+description = "A colorful Herdr command palette with searchable Projects, AI Agents, Commands, and Ports pickers plus Git, Clone, Settings, Changelog, and Update utilities."
 platforms = ["macos", "linux"]
 
 [[actions]]
@@ -16,6 +16,13 @@ command = ["bash", "bin/action.sh"]
 id = "projects"
 title = "Projects"
 description = "Open the switcher over running agents, open workspaces, ghq repositories, and linked worktrees."
+contexts = ["global", "pane"]
+command = ["bash", "bin/action.sh"]
+
+[[actions]]
+id = "agents"
+title = "AI Agents"
+description = "Start an installed Herdr AI integration in the current pane, a new tab, or a new workspace."
 contexts = ["global", "pane"]
 command = ["bash", "bin/action.sh"]
 
@@ -104,6 +111,14 @@ id = "projects"
 title = "󰊢"
 placement = "overlay"
 command = ["bash", "-c", "exec bash \"$HERDR_PLUGIN_ROOT/bin/picker.sh\""]
+
+[[panes]]
+id = "agents"
+title = "󰚩"
+placement = "popup"
+width = 100
+height = 26
+command = ["bash", "-c", "exec bash \"$HERDR_PLUGIN_ROOT/bin/picker.sh\" --agents"]
 
 [[panes]]
 id = "commands"

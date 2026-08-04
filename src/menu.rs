@@ -42,6 +42,15 @@ const ROUTES: &[Route] = &[
         key_label: "⌥p",
     },
     Route {
+        id: "agents",
+        group: "Pickers",
+        title: "AI Agents",
+        detail: "start an installed AI integration",
+        color: "mauve",
+        mnemonic: 'a',
+        key_label: "⌥a",
+    },
+    Route {
         id: "commands",
         group: "Pickers",
         title: "Commands",

@@ -1,14 +1,14 @@
 # herdr-switchboard
 
-![herdr 0.7.4+](https://img.shields.io/badge/herdr-0.7.4%2B-lightgrey)
+![herdr 0.8.0+](https://img.shields.io/badge/herdr-0.8.0%2B-lightgrey)
 ![ghq required](https://img.shields.io/badge/ghq-required-green)
 ![platform macOS | Linux](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-blue)
 ![license MIT](https://img.shields.io/badge/license-MIT-green)
 
-A colorful [herdr](https://herdr.dev) command palette with three searchable pickers:
-**Projects** for agents/workspaces/ghq repos/worktrees, **Commands** for exact shell history and
-presets, and **Ports** for live local TCP listeners. Open the central menu or bind each picker
-directly.
+A colorful [herdr](https://herdr.dev) command palette with searchable pickers:
+**Projects** for running agents/workspaces/ghq repos/worktrees, **AI Agents** for starting installed
+Herdr integrations, **Commands** for exact shell history and presets, and **Ports** for live local
+TCP listeners. Open the central menu or bind each picker directly.
 
 Where `ghq list | fzf | cd` can only change a directory, this uses herdr as a multiplexer:
 jump to a live agent, switch workspaces, or open a repo/worktree exactly where you want it —
@@ -31,7 +31,7 @@ fzf required.
 
 |                                                                          |                                                     |
 | ------------------------------------------------------------------------ | --------------------------------------------------- |
-| **herdr** ≥ 0.7.4                                                        | the host multiplexer                                |
+| **herdr** ≥ 0.8.0                                                        | the host multiplexer and AI integration launcher    |
 | **[`ghq`](https://github.com/x-motemen/ghq)**                            | repository source                                   |
 | _fallback_ **[Rust / `cargo`](https://rustup.rs)**                       | only needed if a release binary cannot be downloaded |
 | **[`tuicr`](https://github.com/agavra/tuicr)** ≥ 0.20.0                  | the git menu's review tool (`brew install tuicr`)   |
@@ -126,7 +126,8 @@ Bind any of these as a Herdr `plugin_action`:
 | Action                                                   | Does                                                           |
 | -------------------------------------------------------- | -------------------------------------------------------------- |
 | `switchboard.menu`                                               | searchable central menu                                        |
-| `switchboard.projects`                                           | Projects: agents, workspaces, repos and worktrees               |
+| `switchboard.projects`                                           | Projects: running agents, workspaces, repos and worktrees       |
+| `switchboard.agents`                                             | start an installed AI integration in a pane, tab, or workspace  |
 | `switchboard.commands`                                           | Commands: shell history and configured presets                  |
 | `switchboard.ports`                                              | Ports: live listeners, owner process and safe actions           |
 | `switchboard.settings`                                           | package settings (`Common / Projects / Commands / Ports`)       |
@@ -135,6 +136,24 @@ Bind any of these as a Herdr `plugin_action`:
 | `switchboard.changelog`                                          | what changed, with your installed version marked               |
 | `switchboard.update`                                             | install a newer version (refuses to touch a `link`ed checkout) |
 | `switchboard.open-workspace` · `switchboard.open-tab` · `switchboard.open-split` | the switcher with `enter`'s repo target forced                 |
+
+### AI Agents
+
+AI Agents is available as `alt-a` in the central menu, or bind it directly:
+
+```toml
+[[keys.command]]
+key = "prefix+a"
+type = "plugin_action"
+command = "switchboard.agents"
+description = "Start an AI agent"
+```
+
+It reads `herdr integration status` and lists only installed integrations. `Enter` starts
+the selected AI in the pane that opened Switchboard, `ctrl-t` creates and focuses a new tab, and
+`alt-w` creates and focuses a new workspace. New targets inherit the origin pane's cwd; if startup
+fails, Switchboard closes the tab/workspace it created instead of leaving an empty target behind.
+The three actions can be remapped under `[keys.agents]` as `pane`, `tab`, and `workspace`.
 
 ### Commands
 
@@ -248,7 +267,7 @@ versioned macOS/Linux release binary for the host architecture and verifies its 
 offline or linked checkouts fall back to Cargo. A small typing-cat bootstrap animates during
 that one-time preparation.
 
-The TUI then reads `herdr agent list`, `herdr workspace list`, `ghq list`, and Git's stable
+The Projects TUI reads `herdr agent list`, `herdr workspace list`, `ghq list`, and Git's stable
 `worktree list --porcelain -z` output **synchronously, before it claims the terminal** — the
 whole set costs around 35 ms, so the first thing painted is the loaded list rather than a
 placeholder. (An empty result never claims the terminal at all: it hands the pane straight to

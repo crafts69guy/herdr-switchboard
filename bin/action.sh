@@ -15,6 +15,7 @@ force_target=""
 case "$ACTION_ID" in
   menu) entrypoint="menu" ;;
   projects) entrypoint="projects" ;;
+  agents) entrypoint="agents" ;;
   commands) entrypoint="commands" ;;
   ports) entrypoint="ports" ;;
   settings) entrypoint="settings" ;;
@@ -41,6 +42,7 @@ cwd="${SWITCHBOARD_ORIGIN_CWD:-}"
 placement=(--placement overlay)
 case "$entrypoint" in
   menu) placement=(--placement popup --width 76 --height 24) ;;
+  agents) placement=(--placement popup --width 100 --height 26) ;;
   settings) placement=(--placement popup --width 100 --height 32) ;;
   changelog) placement=(--placement popup --width 88 --height 28) ;;
 esac

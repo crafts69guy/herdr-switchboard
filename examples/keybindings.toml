@@ -15,6 +15,14 @@ description = "Switchboard menu"
 # command = "switchboard.commands"
 # command = "switchboard.ports"
 
+# Optional: list installed AI integrations and start one in the current pane,
+# a new tab, or a new workspace.
+# [[keys.command]]
+# key = "prefix+a"
+# type = "plugin_action"
+# command = "switchboard.agents"
+# description = "Start an AI agent"
+
 # Optional: open the git menu (tuicr review + lazygit) for the current repo, in
 # its own pane. This is the only way to reach it — the switcher has no git key.
 # [[keys.command]]

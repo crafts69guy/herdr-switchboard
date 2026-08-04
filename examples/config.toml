@@ -48,6 +48,11 @@ base_branch = ""
 
 # Picker-specific remaps. Projects keeps its full existing action vocabulary;
 # Commands and Ports use the action ids printed in their footer.
+[keys.agents]
+# pane = "enter"
+# tab = "ctrl-t"
+# workspace = "alt-w"
+
 [keys.commands]
 # copy = "ctrl-y"
 

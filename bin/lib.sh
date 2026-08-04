@@ -151,6 +151,19 @@ binary_version_matches() {
   [[ "$actual" == "herdr-switchboard $2" ]]
 }
 
+# A linked development checkout keeps one stable version while its source changes.
+# Version equality alone therefore cannot prove its cached release binary is usable.
+linked_binary_is_current() {
+  local root="$1"
+  local bin="$2"
+  local -a inputs=()
+  [[ -f "$root/Cargo.toml" ]] && inputs+=("$root/Cargo.toml")
+  [[ -f "$root/Cargo.lock" ]] && inputs+=("$root/Cargo.lock")
+  [[ -d "$root/src" ]] && inputs+=("$root/src")
+  ((${#inputs[@]} > 0)) || return 1
+  [[ -z "$(find "${inputs[@]}" -type f -newer "$bin" -print -quit 2>/dev/null)" ]]
+}
+
 download_prebuilt() (
   local version="$1"
   local target="$2"
@@ -199,8 +212,10 @@ ensure_built() (
   fi
   export PATH="$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
   if [[ -x "$bin" ]] && binary_version_matches "$bin" "$version"; then
-    printf '%s\n' "$bin"
-    return
+    if [[ "$managed" == "true" ]] || linked_binary_is_current "$root" "$bin"; then
+      printf '%s\n' "$bin"
+      return
+    fi
   fi
 
   mkdir -p "$root/target/release"

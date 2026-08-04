@@ -21,6 +21,20 @@ fi
 
 tmp="$(mktemp -d)"
 trap 'rm -rf -- "$tmp"' EXIT
+linked="$tmp/linked"
+mkdir -p "$linked/src" "$linked/target/release"
+printf 'fn main() {}\n' >"$linked/src/main.rs"
+printf '#!/usr/bin/env bash\n' >"$linked/target/release/herdr-switchboard"
+chmod 755 "$linked/target/release/herdr-switchboard"
+touch -t 202601010100 "$linked/src/main.rs"
+touch -t 202601010200 "$linked/target/release/herdr-switchboard"
+linked_binary_is_current "$linked" "$linked/target/release/herdr-switchboard" ||
+  fail "a linked binary newer than its source should be reused"
+touch -t 202601010300 "$linked/src/main.rs"
+if linked_binary_is_current "$linked" "$linked/target/release/herdr-switchboard"; then
+  fail "a linked binary older than its source must be rebuilt"
+fi
+
 version="9.8.7"
 target="$(host_target)"
 asset="herdr-switchboard-v${version}-${target}.tar.gz"

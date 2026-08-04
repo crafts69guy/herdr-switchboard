@@ -2,6 +2,7 @@
 //! repos) with fuzzy search, a live preview, and a full-width command bar.
 
 mod action;
+mod agents;
 mod changelog;
 mod commands;
 mod config;
@@ -967,6 +968,7 @@ fn main() -> Result<()> {
         Some("--update-check") => return update::main(),
         Some("--git") => return git::main(),
         Some("--menu") => return menu::main(Config::try_load()?, Theme::load()),
+        Some("--agents") => return agents::main(Config::try_load()?, Theme::load()),
         Some("--commands") => return commands::main(Config::try_load()?, Theme::load()),
         Some("--ports") => return ports::main(Config::try_load()?, Theme::load()),
         Some("--settings") => return settings::main(Config::try_load()?, Theme::load()),
