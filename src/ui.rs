@@ -617,7 +617,11 @@ fn draw_help(f: &mut Frame, app: &App, area: Rect) {
         vec![
             opt(Action::Settings, teal, "Settings"),
             opt(Action::Changelog, title, "What's new"),
-            opt(Action::Accept(Accept::UpdatePlugin), peach, "Update Ghq"),
+            opt(
+                Action::Accept(Accept::UpdatePlugin),
+                peach,
+                "Update Switchboard",
+            ),
         ],
     );
 

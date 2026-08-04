@@ -27,9 +27,9 @@ bash tests/manifest_spec.sh                  # manifest/entrypoint contract, ver
 bash tests/update_guard_spec.sh              # the update guard, with herdr stubbed via HERDR_BIN_PATH
 bash bin/release.sh 0.5.0                    # cut a release (gates, bump, changelog, tag, gh release)
 
-herdr plugin link /path/to/herdr-ghq         # install this checkout for manual testing
+herdr plugin link /path/to/herdr-switchboard         # install this checkout for manual testing
 herdr server reload-config                   # after touching keybindings/config
-herdr plugin config-dir ghq                  # where the runtime config.toml lives
+herdr plugin config-dir switchboard          # where the runtime config.toml lives
 ```
 
 There is no test runner for the bash layer beyond `tests/manifest_spec.sh`. Changes to overlay
@@ -43,7 +43,7 @@ layout, keybindings, or herdr CLI calls need manual exercise in a real herdr ses
    (via `HERDR_PLUGIN_ACTION_ID`) to a pane id (`picker` / `git` / `get` overlays, `changelog`
    popup) and its placement, captures the **origin pane id and cwd** before the pane steals focus,
    and passes them forward as
-   `GHQ_ORIGIN_PANE_ID` / `GHQ_ORIGIN_CWD` on `herdr plugin pane open`. The `git` action opens the
+   `SWITCHBOARD_ORIGIN_PANE_ID` / `SWITCHBOARD_ORIGIN_CWD` on `herdr plugin pane open`. The `git` action opens the
    dedicated `git` pane; that pane acts on a **cwd**, not a pane id.
 2. `bin/picker.sh` resolves a versioned, checksummed release binary for managed installs and
    falls back to Cargo for offline/linked checkouts. Its Bash typing-cat owns first-run feedback;
@@ -54,7 +54,7 @@ layout, keybindings, or herdr CLI calls need manual exercise in a real herdr ses
    dispatches the accepted action. Interactive accepts (clone prompt, remove confirmation, `ghq
 get -u` output) deliberately run on the torn-down terminal, not inside the TUI.
 
-**Why the origin pane matters:** `split` and `pane` targets act on the captured `GHQ_ORIGIN_PANE_ID`.
+**Why the origin pane matters:** `split` and `pane` targets act on the captured `SWITCHBOARD_ORIGIN_PANE_ID`.
 The overlay pane is _not_ the user's pane. Never guess or infer a pane/workspace/agent id — every id
 must come from `herdr agent list`, `herdr workspace list`, or the captured origin.
 
@@ -72,7 +72,7 @@ must come from `herdr agent list`, `herdr workspace list`, or the captured origi
 - `splash.rs` — one static ASCII cat frame, drawn entirely with terminal cells. The `--git` mode
   draws it and `exec`s tuicr over it, because tuicr can take 0.9–1.7s to read a large diff before
   its own first frame. No animation, no floor, nothing to cancel — all that is left of `startup.rs`
-- `trace.rs` — opt-in perf tracing behind `GHQ_TRACE`, appended to `$GHQ_TRACE_FILE` or
+- `trace.rs` — opt-in perf tracing behind `SWITCHBOARD_TRACE`, appended to `$SWITCHBOARD_TRACE_FILE` or
   `state_dir()/trace.log`. **Never stdout/stderr**: the TUI owns the terminal for its whole life
 - `runner.rs` — the `CommandRunner` trait (`SystemRunner` in prod, `MockRunner` in tests) every
   herdr/ghq/git call routes through, which is what makes the IO edge testable
@@ -97,9 +97,9 @@ must come from `herdr agent list`, `herdr workspace list`, or the captured origi
   `parse_menu_conf`). `on_key` stays IO-free by returning a `Step`: the caller runs the fetch and
   hands the rows back through `show_list`
 - `action.rs` — `Accept` enum → herdr CLI verbs, plus `run_review` (`exec`s `bin/review.sh`)
-- `history.rs` — recency state at `$XDG_STATE_HOME/herdr-ghq/recent.tsv`, atomic write, cap 200
+- `history.rs` — recency state at `$XDG_STATE_HOME/herdr-switchboard/recent.tsv`, atomic write, cap 200
 - `settings.rs` — the `Settings` overlay: the `SETTINGS` form, its cycle rings, and `write_setting`,
-  a flat-config writer that preserves comments and hand-added keys. Opened with `⌥,` and drawn as a
+  a namespaced-config writer that preserves comments and hand-added keys. Opened with `⌥,` and drawn as a
   floating two-column card **over** the picker (like the `⌥c` changelog), not a separate pane; the
   picker embeds it as `App::settings` and routes keys to `Settings::on_key` while it is shown. Edits
   are **drafts** (`values` vs the `saved` baseline): cycling stages a value, `a` calls `apply`
@@ -109,7 +109,7 @@ must come from `herdr agent list`, `herdr workspace list`, or the captured origi
   (inline markdown, hanging-indent wrap, `← installed` marker from `CARGO_PKG_VERSION`). `parse` +
   `render` are shared with the picker's `⌥c` popup, so both surfaces stay identical
 - `update.rs` — the `--update-check` mode plus the cache the picker reads
-  (`$XDG_STATE_HOME/herdr-ghq/update.tsv`, `checked_at<TAB>latest`, 24h TTL)
+  (`$XDG_STATE_HOME/herdr-switchboard/update.tsv`, `checked_at<TAB>latest`, 24h TTL)
 
 **Sort vs. search:** fuzzy score always wins while a query is present; `SortMode` (recent/name/kind)
 only orders the resting, no-query list. Both paths honour the `GroupFilter`. Ties break on load
@@ -140,16 +140,16 @@ order so the list stays stable.
   it cannot fully resolve, and `--theme` on a mismatched name takes the whole review path down —
   so `bin/review.sh` never passes `--theme` and `ensure_tuicr` only checks the binary exists.
 - **The bash layer delegates open + config to the Rust binary; it no longer mirrors them.** The
-  clone flow (`bin/get.sh`) opens a repo with `herdr-ghq-switcher open --target … --path … --origin …
-  --label …` and reads settings with `herdr-ghq-switcher config get <key> [default]`, so the herdr
-  open verbs (`src/action.rs::open_target`) and the flat-config reader (`Config::load`) live in one
+  clone flow (`bin/get.sh`) opens a repo with `herdr-switchboard open --target … --path … --origin …
+  --label …` and reads settings with `herdr-switchboard config get <key> [default]`, so the herdr
+  open verbs (`src/action.rs::open_target`) and typed config reader (`Config::load`) live in one
   place. `bin/lib.sh` keeps `ensure_built` (build-on-demand, shared by the picker and clone flow),
   `toml_get` (used only by `configure_notifications`, the pre-build notification path that must not
   depend on a cargo build), and the pane-context/JSON helpers. The old bash `open_repo`/`focus_*`/
   `theme_color`/`hex_rgb` are gone. **A change to how a target opens now lands only in `action.rs`.**
 - **Config parsing is intentionally flat.** `Config::load` (`src/data.rs`) is the canonical
   hand-rolled line parser — one `key = value` per line, no sections, no nesting — and bash reads
-  settings through it via `herdr-ghq-switcher config get`. `toml_get` (`bin/lib.sh`) survives only
+  settings through it via `herdr-switchboard config get`. `toml_get` (`bin/lib.sh`) survives only
   for `configure_notifications`, which runs before the binary is guaranteed built; it must stay
   format-compatible. Do not add a TOML crate or nested keys without changing `Config::load`, the
   writer in `src/settings.rs` (`write_setting`, which preserves comments and hand-added keys), and
@@ -199,7 +199,7 @@ order so the list stays stable.
   Rust layer uses `serde_json` (`data.rs`, `preview.rs`). It is not a documented requirement, so a
   new jq call would be a new hard dependency on a machine that may not have it — and a silent one,
   since a missing jq fails the same way a wrong filter does: empty output, no error.
-- **`GHQ_FORCE_TARGET` overrides `default_target` for Enter, repos only.** `bin/action.sh` exports it
+- **`SWITCHBOARD_FORCE_TARGET` overrides `default_target` for Enter, repos only.** `bin/action.sh` exports it
   for the `open-workspace` / `open-tab` / `open-split` hot-path actions; `src/action.rs`
   (`forced_target` + `resolve_default_target`) resolves it once in `main` and passes it to
   `dispatch`. Enter on an **agent** or **workspace** still focuses that entry — forcing a target

@@ -17,11 +17,13 @@ fn is_open_target(t: &str) -> bool {
     matches!(t, "workspace" | "tab" | "split" | "pane")
 }
 
-/// `GHQ_FORCE_TARGET`, set by `bin/action.sh` for the hot-path actions
+/// `SWITCHBOARD_FORCE_TARGET`, set by `bin/action.sh` for the hot-path actions
 /// (`open-workspace` / `open-tab` / `open-split`) so a dedicated key always
 /// lands the repo in one place regardless of `default_target`.
 pub fn forced_target() -> Option<String> {
-    env::var("GHQ_FORCE_TARGET").ok().filter(|s| !s.is_empty())
+    env::var("SWITCHBOARD_FORCE_TARGET")
+        .ok()
+        .filter(|s| !s.is_empty())
 }
 
 /// Where Enter opens a repo: a forced target wins, then `default_target`.
@@ -130,7 +132,7 @@ fn herdr(runner: &dyn CommandRunner, args: &[&str]) -> Result<()> {
 }
 
 /// The `open` subcommand's worker. `bin/get.sh` (the clone flow) calls
-/// `herdr-ghq-switcher open …` instead of re-implementing the herdr verbs in
+/// `herdr-switchboard open …` instead of re-implementing the herdr verbs in
 /// bash, so a change to how a target opens lands in exactly one place. Split
 /// geometry comes from `cfg`, the same as the picker's own opens.
 pub fn open_target(
@@ -474,10 +476,10 @@ mod tests {
     }
 
     /// The env var is the whole contract with `bin/action.sh`. Sole test that
-    /// touches `GHQ_FORCE_TARGET`, so the process-global set/remove is safe.
+    /// touches `SWITCHBOARD_FORCE_TARGET`, so the process-global set/remove is safe.
     #[test]
     fn forced_target_reads_the_env_var_action_sh_sets() {
-        env::set_var("GHQ_FORCE_TARGET", "tab");
+        env::set_var("SWITCHBOARD_FORCE_TARGET", "tab");
         assert_eq!(forced_target().as_deref(), Some("tab"));
         assert_eq!(
             resolve_default_target(forced_target().as_deref(), "workspace"),
@@ -485,17 +487,17 @@ mod tests {
         );
 
         // `menu` opens the pane without the var: the config must win.
-        env::remove_var("GHQ_FORCE_TARGET");
+        env::remove_var("SWITCHBOARD_FORCE_TARGET");
         assert_eq!(forced_target(), None);
         assert_eq!(
             resolve_default_target(forced_target().as_deref(), "workspace"),
             "workspace"
         );
 
-        // action.sh passes `--env GHQ_FORCE_TARGET=` when force_target is empty.
-        env::set_var("GHQ_FORCE_TARGET", "");
+        // action.sh passes `--env SWITCHBOARD_FORCE_TARGET=` when force_target is empty.
+        env::set_var("SWITCHBOARD_FORCE_TARGET", "");
         assert_eq!(forced_target(), None);
-        env::remove_var("GHQ_FORCE_TARGET");
+        env::remove_var("SWITCHBOARD_FORCE_TARGET");
     }
 
     #[test]

@@ -14,7 +14,7 @@ set -euo pipefail
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-readonly REPO_URL="https://github.com/crafts69guy/herdr-ghq"
+readonly REPO_URL="https://github.com/crafts69guy/herdr-switchboard"
 readonly CHANGELOG="$ROOT/CHANGELOG.md"
 readonly MANIFEST="$ROOT/herdr-plugin.toml"
 readonly CARGO_TOML="$ROOT/Cargo.toml"

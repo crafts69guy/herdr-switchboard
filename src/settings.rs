@@ -22,15 +22,39 @@ use std::fs;
 use std::path::PathBuf;
 
 use anyhow::Result;
-use crossterm::event::{KeyCode, KeyEvent};
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
+use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Tabs};
 use ratatui::Frame;
 
 use crate::data::{Config, Theme};
 use crate::tui::{self, Pill};
+
+/// Standalone settings action. Projects also embeds this same form, so both
+/// entry points preserve the draft/apply behavior and namespaced writer.
+pub fn main(cfg: Config, theme: Theme) -> Result<()> {
+    let title = theme
+        .resolve(&cfg.common.title_color)
+        .unwrap_or_else(|| theme.or("peach", Color::Yellow));
+    let mut settings = Settings::new(&cfg);
+    settings.open();
+    let mut terminal = crate::init_terminal();
+    let outcome: Result<()> = (|| {
+        while settings.show {
+            terminal.draw(|frame| draw(frame, frame.area(), &theme, title, &settings))?;
+            if let Event::Key(key) = event::read()? {
+                if key.kind == KeyEventKind::Press {
+                    settings.on_key(key);
+                }
+            }
+        }
+        Ok(())
+    })();
+    crate::restore_terminal();
+    outcome
+}
 
 /// How Enter changes a setting.
 enum Cycle {
@@ -217,6 +241,27 @@ const SETTINGS: &[Setting] = &[
         hint: "base for review branch (blank = auto-detect)",
         cycle: Cycle::Prompt,
     },
+    Setting {
+        group: "Catalog",
+        key: "history_limit",
+        default: "5000",
+        hint: "maximum imported command records",
+        cycle: Cycle::Prompt,
+    },
+    Setting {
+        group: "Catalog",
+        key: "command_sort",
+        default: "frecency",
+        hint: "command resting order",
+        cycle: Cycle::Ring(&["frecency", "recent", "frequency", "alphabetical"]),
+    },
+    Setting {
+        group: "Monitor",
+        key: "refresh_interval_ms",
+        default: "2000",
+        hint: "listener refresh interval (minimum 250ms)",
+        cycle: Cycle::Prompt,
+    },
 ];
 
 /// The next value in a ring. An unknown current value restarts at the first.
@@ -228,50 +273,88 @@ fn next_in(ring: &[&str], current: &str) -> String {
     }
 }
 
-/// Replace `key`'s line in the flat config, or append one. Comments, unknown keys,
-/// and ordering survive — this file is hand-edited too. Keeps the flat
-/// `key = "value"` output shape the original bash writer used.
+/// Replace a typed setting in its namespaced table while preserving comments and
+/// unknown keys through `toml_edit`.
+#[cfg(test)]
 fn write_setting(path: &PathBuf, key: &str, value: &str) -> Result<()> {
+    let mut doc = load_document(path)?;
+    set_document_value(&mut doc, key, value)?;
+    write_document(path, doc)
+}
+
+fn load_document(path: &PathBuf) -> Result<toml_edit::DocumentMut> {
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir)?;
     }
     let existing = fs::read_to_string(path).unwrap_or_default();
+    let migrated = if existing
+        .lines()
+        .any(|line| line.trim_start().starts_with('['))
+    {
+        existing
+    } else {
+        // Config::parse owns the legacy semantics. Serializing its typed result is
+        // the one-time conversion; subsequent edits preserve its TOML document.
+        toml::to_string_pretty(&Config::parse(&existing)?)?
+    };
+    Ok(migrated.parse::<toml_edit::DocumentMut>()?)
+}
 
-    let mut out = String::with_capacity(existing.len() + 32);
-    let mut replaced = false;
-    for line in existing.lines() {
-        let is_key = line
-            .trim_start()
-            .strip_prefix(key)
-            .map(|rest| rest.trim_start().starts_with('='))
-            .unwrap_or(false);
-        if is_key && !replaced {
-            out.push_str(&format!("{key} = \"{value}\"\n"));
-            replaced = true;
-        } else {
-            out.push_str(line);
-            out.push('\n');
-        }
+fn set_document_value(doc: &mut toml_edit::DocumentMut, key: &str, value: &str) -> Result<()> {
+    let (section, field) = setting_path(key);
+    if is_bool_setting(key) {
+        doc[section][field] = toml_edit::value(value == "true");
+    } else if matches!(key, "history_limit" | "refresh_interval_ms") {
+        doc[section][field] = toml_edit::value(value.parse::<i64>()?);
+    } else {
+        doc[section][field] = toml_edit::value(value);
     }
-    if !replaced {
-        out.push_str(&format!("{key} = \"{value}\"\n"));
-    }
+    Ok(())
+}
 
+fn write_document(path: &PathBuf, doc: toml_edit::DocumentMut) -> Result<()> {
+    let out = doc.to_string();
+    Config::parse(&out)?;
     let tmp = path.with_extension("tmp");
     fs::write(&tmp, out)?;
     fs::rename(&tmp, path)?;
     Ok(())
 }
 
-fn config_path() -> PathBuf {
-    let dir = std::env::var("HERDR_PLUGIN_CONFIG_DIR").unwrap_or_default();
-    if dir.is_empty() {
-        // Same fallback used when herdr does not hand us a config dir.
-        let root = std::env::var("HERDR_PLUGIN_ROOT").unwrap_or_else(|_| ".".into());
-        PathBuf::from(root).join(".config").join("config.toml")
-    } else {
-        PathBuf::from(dir).join("config.toml")
+fn setting_path(key: &str) -> (&'static str, &str) {
+    match key {
+        "keymode"
+        | "notifications"
+        | "notification_position"
+        | "notification_sound"
+        | "title_color"
+        | "transparency"
+        | "update_check" => ("common", key),
+        "clone_source" => ("clone", "source"),
+        "open_after_clone" => ("clone", "open_after"),
+        "base_branch" => ("git", key),
+        "history_limit" => ("commands", key),
+        "command_sort" => ("commands", "sort"),
+        "refresh_interval_ms" => ("ports", key),
+        _ => ("projects", key),
     }
+}
+
+fn is_bool_setting(key: &str) -> bool {
+    matches!(
+        key,
+        "notifications"
+            | "update_check"
+            | "include_agents"
+            | "include_workspaces"
+            | "include_worktrees"
+            | "preview_readme"
+            | "open_after_clone"
+    )
+}
+
+fn config_path() -> PathBuf {
+    crate::config::config_path()
 }
 
 /// The settings form, embedded in the picker as a floating overlay (like the `⌥c`
@@ -290,6 +373,7 @@ pub struct Settings {
     /// the unsaved state.
     saved: Vec<String>,
     sel: usize,
+    tab: usize,
     /// `Some` while typing a `Cycle::Prompt` value.
     editing: Option<String>,
     path: PathBuf,
@@ -307,6 +391,7 @@ impl Settings {
             saved: values.clone(),
             values,
             sel: 0,
+            tab: 1,
             editing: None,
             path: config_path(),
             error: None,
@@ -316,7 +401,7 @@ impl Settings {
     /// Open the overlay at the top of the form. Values already match `saved` (a close
     /// applies or discards), so there is nothing to reset but the cursor.
     pub fn open(&mut self) {
-        self.sel = 0;
+        self.select_first_in_tab();
         self.editing = None;
         self.error = None;
         self.show = true;
@@ -342,13 +427,18 @@ impl Settings {
         if !self.dirty() {
             return false;
         }
-        for (i, setting) in SETTINGS.iter().enumerate() {
-            if self.values[i] != self.saved[i] {
-                if let Err(e) = write_setting(&self.path, setting.key, &self.values[i]) {
-                    self.error = Some(format!("could not save {}: {e}", setting.key));
-                    return false;
+        let result = (|| -> Result<()> {
+            let mut doc = load_document(&self.path)?;
+            for (i, setting) in SETTINGS.iter().enumerate() {
+                if self.values[i] != self.saved[i] {
+                    set_document_value(&mut doc, setting.key, &self.values[i])?;
                 }
             }
+            write_document(&self.path, doc)
+        })();
+        if let Err(error) = result {
+            self.error = Some(format!("could not save settings: {error}"));
+            return false;
         }
         self.saved = self.values.clone();
         self.error = None;
@@ -391,14 +481,22 @@ impl Settings {
                 self.show = false;
             }
             KeyCode::Char('a') => return self.apply(),
-            KeyCode::Down | KeyCode::Char('j') => {
-                self.sel = (self.sel + 1) % SETTINGS.len();
+            KeyCode::Tab => {
+                self.tab = (self.tab + 1) % TABS.len();
+                self.select_first_in_tab();
             }
-            KeyCode::Up | KeyCode::Char('k') => {
-                self.sel = (self.sel + SETTINGS.len() - 1) % SETTINGS.len();
+            KeyCode::BackTab => {
+                self.tab = (self.tab + TABS.len() - 1) % TABS.len();
+                self.select_first_in_tab();
             }
-            KeyCode::Home => self.sel = 0,
-            KeyCode::End => self.sel = SETTINGS.len() - 1,
+            KeyCode::Down | KeyCode::Char('j') => self.move_in_tab(1),
+            KeyCode::Up | KeyCode::Char('k') => self.move_in_tab(-1),
+            KeyCode::Home => self.select_first_in_tab(),
+            KeyCode::End => {
+                if let Some(index) = self.indices_in_tab().last().copied() {
+                    self.sel = index;
+                }
+            }
             KeyCode::Enter => match &SETTINGS[self.sel].cycle {
                 Cycle::Ring(ring) => {
                     let next = next_in(ring, &self.values[self.sel]);
@@ -410,13 +508,58 @@ impl Settings {
         }
         false
     }
+
+    fn indices_in_tab(&self) -> Vec<usize> {
+        SETTINGS
+            .iter()
+            .enumerate()
+            .filter_map(|(index, setting)| (setting_tab(setting.key) == self.tab).then_some(index))
+            .collect()
+    }
+
+    fn select_first_in_tab(&mut self) {
+        if let Some(index) = self.indices_in_tab().first().copied() {
+            self.sel = index;
+        }
+    }
+
+    fn move_in_tab(&mut self, delta: isize) {
+        let indices = self.indices_in_tab();
+        if indices.is_empty() {
+            return;
+        }
+        let position = indices
+            .iter()
+            .position(|index| *index == self.sel)
+            .unwrap_or(0);
+        self.sel = indices[(position as isize + delta).rem_euclid(indices.len() as isize) as usize];
+    }
+}
+
+const TABS: [&str; 4] = ["Common", "Projects", "Commands", "Ports"];
+
+fn setting_tab(key: &str) -> usize {
+    match setting_path(key).0 {
+        "common" => 0,
+        "commands" => 2,
+        "ports" => 3,
+        _ => 1,
+    }
 }
 
 /// Which section headings fill the left column; the rest go right. Kept in display
 /// order within each column, so navigating down walks the left column top-to-bottom
 /// and then continues into the right.
 const LEFT_GROUPS: &[&str] = &["Open", "Sources", "Keys", "Preview"];
-const RIGHT_GROUPS: &[&str] = &["Appearance", "Clone", "Git", "Updates", "Notifications"];
+const RIGHT_GROUPS: &[&str] = &[
+    "Appearance",
+    "Clone",
+    "Git",
+    "Updates",
+    "Notifications",
+    "Catalog",
+    "Monitor",
+];
 
 const NAME_W: usize = 21; // widest key ("notification_position")
 const PILL_W: usize = 12; // widest value ("bottom-right")
@@ -427,7 +570,7 @@ const COL_W: usize = 2 + NAME_W + 1 + (PILL_W + 2);
 /// One column's lines: a title-coloured heading when the group changes, then a
 /// `marker · key · value-pill` row per setting whose group belongs to this column.
 fn column(s: &Settings, theme: &Theme, title: Color, groups: &[&str]) -> Vec<Line<'static>> {
-    let ink = theme.or("panel_bg", Color::Rgb(16, 18, 20));
+    let ink = theme.or("panel_bg", Color::Black);
     let text = theme.or("text", Color::Reset);
     let sub = theme.or("subtext0", Color::Gray);
     let accent = theme.or("accent", Color::Cyan);
@@ -436,7 +579,7 @@ fn column(s: &Settings, theme: &Theme, title: Color, groups: &[&str]) -> Vec<Lin
     let mut lines: Vec<Line> = Vec::new();
     let mut last_group = "";
     for (i, setting) in SETTINGS.iter().enumerate() {
-        if !groups.contains(&setting.group) {
+        if !groups.contains(&setting.group) || setting_tab(setting.key) != s.tab {
             continue;
         }
         if setting.group != last_group {
@@ -488,7 +631,7 @@ fn column(s: &Settings, theme: &Theme, title: Color, groups: &[&str]) -> Vec<Lin
 /// Draw the settings card centred in `area`, over whatever is behind it. The picker
 /// owns `theme`/`title`, so the overlay matches the rest of its surfaces.
 pub fn draw(f: &mut Frame, area: Rect, theme: &Theme, title: Color, s: &Settings) {
-    let ink = theme.or("panel_bg", Color::Rgb(16, 18, 20));
+    let ink = theme.or("panel_bg", Color::Black);
     let sub = theme.or("subtext0", Color::Gray);
     let border = theme.or("accent", Color::Cyan);
 
@@ -501,7 +644,7 @@ pub fn draw(f: &mut Frame, area: Rect, theme: &Theme, title: Color, s: &Settings
 
     let want_w = (2 * COL_W + 4) as u16; // two columns + inner margin + border
     let w = want_w.min(area.width.saturating_sub(2));
-    let want_h = body_h + 2 /* border */ + 2 /* hint + pills */;
+    let want_h = body_h + 2 /* border */ + 3 /* tabs + hint + pills */;
     let h = want_h.min(area.height.saturating_sub(1)).max(6);
     let popup = Rect::new(
         area.x + (area.width.saturating_sub(w)) / 2,
@@ -517,7 +660,7 @@ pub fn draw(f: &mut Frame, area: Rect, theme: &Theme, title: Color, s: &Settings
         .border_style(Style::default().fg(border))
         .style(Style::default().bg(ink))
         .title(Span::styled(
-            " 󰒓 Ghq Settings ",
+            " 󰒓 Switchboard Settings ",
             Style::default().fg(title).add_modifier(Modifier::BOLD),
         ))
         .title(
@@ -537,15 +680,25 @@ pub fn draw(f: &mut Frame, area: Rect, theme: &Theme, title: Color, s: &Settings
     f.render_widget(block, popup);
 
     let rows = Layout::vertical([
+        Constraint::Length(1),
         Constraint::Min(1),
         Constraint::Length(1),
         Constraint::Length(1),
     ])
     .split(inner);
 
+    f.render_widget(
+        Tabs::new(TABS)
+            .select(s.tab)
+            .style(Style::default().fg(sub))
+            .highlight_style(Style::default().fg(title).add_modifier(Modifier::BOLD))
+            .divider(" · "),
+        rows[0],
+    );
+
     let cols = Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
         .horizontal_margin(1)
-        .split(rows[0]);
+        .split(rows[1]);
     f.render_widget(Paragraph::new(left), cols[0]);
     f.render_widget(Paragraph::new(right), cols[1]);
 
@@ -555,15 +708,15 @@ pub fn draw(f: &mut Frame, area: Rect, theme: &Theme, title: Color, s: &Settings
             format!(" {}", SETTINGS[s.sel].hint),
             Style::default().fg(sub),
         ))),
-        rows[1],
+        rows[2],
     );
 
-    draw_bar(f, s, rows[2], theme);
+    draw_bar(f, s, rows[3], theme);
 }
 
 /// The picker's coloured-pill command bar, with this form's verbs.
 fn draw_bar(f: &mut Frame, s: &Settings, area: Rect, theme: &Theme) {
-    let ink = theme.or("panel_bg", Color::Rgb(16, 18, 20));
+    let ink = theme.or("panel_bg", Color::Black);
 
     if let Some(err) = &s.error {
         let red = theme.or("red", Color::Red);
@@ -632,7 +785,8 @@ mod tests {
         // Both columns' headings, the first setting's value, and the selected row's
         // hint all render inside the floating card.
         assert!(screen.contains("Open"), "{screen}");
-        assert!(screen.contains("Appearance"), "{screen}"); // the right column
+        assert!(screen.contains("Projects"), "{screen}"); // active package tab
+        assert!(screen.contains("Clone"), "{screen}"); // the right column
         assert!(screen.contains("default_target"), "{screen}");
         assert!(screen.contains("workspace"), "{screen}");
         assert!(screen.contains("where Enter opens a repo"), "{screen}");
@@ -649,23 +803,22 @@ mod tests {
     }
 
     #[test]
-    fn write_replaces_in_place_and_keeps_the_rest() {
+    fn write_replaces_namespaced_value_and_keeps_comments_and_unknown_keys() {
         let dir = std::env::temp_dir().join(format!("ghq-set-{}", std::process::id()));
         let path = dir.join("config.toml");
         fs::create_dir_all(&dir).unwrap();
         fs::write(
             &path,
-            "# a comment\nsort = \"name\"\nunknown_key = \"keep\"\n",
+            "# a comment\n[projects]\nsort = \"name\"\nunknown_key = \"keep\"\n",
         )
         .unwrap();
 
         write_setting(&path, "sort", "recent").unwrap();
         let text = fs::read_to_string(&path).unwrap();
 
-        assert_eq!(
-            text,
-            "# a comment\nsort = \"recent\"\nunknown_key = \"keep\"\n"
-        );
+        assert!(text.contains("# a comment"));
+        assert!(text.contains("sort = \"recent\""));
+        assert!(text.contains("unknown_key = \"keep\""));
         fs::remove_dir_all(&dir).ok();
     }
 
@@ -674,15 +827,27 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("ghq-app-{}", std::process::id()));
         let path = dir.join("config.toml");
         fs::create_dir_all(&dir).unwrap();
-        fs::write(&path, "sort = \"name\"\n").unwrap();
+        fs::write(&path, "[projects]\nsort = \"name\"\n").unwrap();
 
         write_setting(&path, "label", "path").unwrap();
 
-        assert_eq!(
-            fs::read_to_string(&path).unwrap(),
-            "sort = \"name\"\nlabel = \"path\"\n"
-        );
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(text.contains("sort = \"name\""));
+        assert!(text.contains("label = \"path\""));
         fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn invalid_numeric_setting_is_rejected_without_changing_file() {
+        let dir = std::env::temp_dir().join(format!("switchboard-invalid-{}", std::process::id()));
+        let path = dir.join("config.toml");
+        fs::create_dir_all(&dir).unwrap();
+        let original = toml::to_string_pretty(&Config::default()).unwrap();
+        fs::write(&path, &original).unwrap();
+
+        assert!(write_setting(&path, "refresh_interval_ms", "1").is_err());
+        assert_eq!(fs::read_to_string(&path).unwrap(), original);
+        fs::remove_dir_all(dir).ok();
     }
 
     #[test]
@@ -735,7 +900,7 @@ mod tests {
         assert!(!s.dirty(), "apply must adopt the draft as the baseline");
         let text = fs::read_to_string(&path).unwrap();
         assert!(
-            text.contains("default_target = \"tab\""),
+            text.contains("[projects]") && text.contains("default_target = \"tab\""),
             "apply must persist the change: {text:?}"
         );
         // Applying again with nothing staged writes nothing and asks for no reload.

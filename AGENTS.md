@@ -29,7 +29,7 @@ Do not commit generated `target/` artifacts.
   confirmation prompt, so an agent cannot run it — ask the maintainer to.
 - `cargo fmt --check` verifies Rust formatting.
 - `cargo clippy --all-targets -- -D warnings` treats lint findings as failures.
-- `herdr plugin link /path/to/herdr-ghq` installs the checkout for manual testing;
+- `herdr plugin link /path/to/herdr-switchboard` installs the checkout for manual testing;
   reload configuration with `herdr server reload-config`.
 
 ## Coding Style & Naming Conventions

@@ -4,10 +4,10 @@
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs;
-use std::path::PathBuf;
 
 use ratatui::style::Color;
 
+pub use crate::config::Config;
 use crate::runner::CommandRunner;
 
 // --- theme -----------------------------------------------------------------
@@ -90,61 +90,6 @@ fn parse_hex(raw: &str) -> Option<Color> {
     let g = u8::from_str_radix(&s[2..4], 16).ok()?;
     let b = u8::from_str_radix(&s[4..6], 16).ok()?;
     Some(Color::Rgb(r, g, b))
-}
-
-// --- plugin config ---------------------------------------------------------
-
-/// Flat `key = value` config from the plugin's config dir.
-/// The default is empty, which is what an unconfigured plugin has: every
-/// `get`/`bool` then answers with the caller's own default.
-#[derive(Clone, Default)]
-pub struct Config {
-    map: HashMap<String, String>,
-}
-
-impl Config {
-    pub fn load() -> Self {
-        let dir = env::var("HERDR_PLUGIN_CONFIG_DIR").unwrap_or_default();
-        let mut map = HashMap::new();
-        if !dir.is_empty() {
-            if let Ok(text) = fs::read_to_string(PathBuf::from(dir).join("config.toml")) {
-                for line in text.lines() {
-                    let t = line.trim();
-                    if t.is_empty() || t.starts_with('#') || t.starts_with('[') {
-                        continue;
-                    }
-                    if let Some((k, v)) = t.split_once('=') {
-                        let v = v.trim();
-                        let v = v.split_once('#').map(|(a, _)| a.trim()).unwrap_or(v);
-                        map.insert(k.trim().to_string(), v.trim_matches('"').to_string());
-                    }
-                }
-            }
-        }
-        Config { map }
-    }
-
-    pub fn get(&self, key: &str, default: &str) -> String {
-        match self.map.get(key) {
-            Some(v) if !v.is_empty() => v.clone(),
-            _ => default.to_string(),
-        }
-    }
-
-    pub fn bool(&self, key: &str, default: bool) -> bool {
-        self.get(key, if default { "true" } else { "false" }) == "true"
-    }
-
-    /// Build a config from key/value pairs, for tests that want a specific flag.
-    #[cfg(test)]
-    pub fn from_pairs(pairs: &[(&str, &str)]) -> Self {
-        Config {
-            map: pairs
-                .iter()
-                .map(|(k, v)| (k.to_string(), v.to_string()))
-                .collect(),
-        }
-    }
 }
 
 // --- entries ---------------------------------------------------------------

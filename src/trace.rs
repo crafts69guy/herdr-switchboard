@@ -1,9 +1,9 @@
-//! Opt-in perf tracing, inert unless `GHQ_TRACE` is set.
+//! Opt-in perf tracing, inert unless `SWITCHBOARD_TRACE` is set.
 //!
 //! The picker owns the terminal for its whole life, so a trace line must never
 //! reach stdout or stderr — it would print into the middle of the TUI and, worse,
 //! only on the runs you were measuring. Every line is appended to a file instead:
-//! `$GHQ_TRACE_FILE`, or `trace.log` inside [`crate::state::state_dir`].
+//! `$SWITCHBOARD_TRACE_FILE`, or `trace.log` inside [`crate::state::state_dir`].
 //!
 //! Format is one tab-separated line per event, so `awk` reads it without help:
 //!
@@ -31,10 +31,10 @@ static SINK: OnceLock<Option<PathBuf>> = OnceLock::new();
 pub fn init() {
     START.get_or_init(Instant::now);
     SINK.get_or_init(|| {
-        if !std::env::var("GHQ_TRACE").is_ok_and(|v| !v.is_empty()) {
+        if !std::env::var("SWITCHBOARD_TRACE").is_ok_and(|v| !v.is_empty()) {
             return None;
         }
-        std::env::var("GHQ_TRACE_FILE")
+        std::env::var("SWITCHBOARD_TRACE_FILE")
             .ok()
             .filter(|s| !s.is_empty())
             .map(PathBuf::from)

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# Shared helpers for the herdr-ghq plugin. Callers enable strict mode
+# Shared helpers for the herdr-switchboard plugin. Callers enable strict mode
 # (set -euo pipefail) before sourcing this file. The reusable pieces here —
 # config parsing, pane-context resolution, theme colors, notifications — follow
 # the same contract as the sibling git-hub plugin so the two feel like one
@@ -12,7 +12,7 @@ NOTIFICATION_POSITION="top-right"
 NOTIFICATION_SOUND="auto"
 
 log() {
-  printf 'herdr-ghq: %s\n' "$*" >&2
+  printf 'herdr-switchboard: %s\n' "$*" >&2
 }
 
 die() {
@@ -148,7 +148,7 @@ sha256_file() {
 binary_version_matches() {
   local actual
   actual="$("$1" --version 2>/dev/null)" || return 1
-  [[ "$actual" == "herdr-ghq-switcher $2" ]]
+  [[ "$actual" == "herdr-switchboard $2" ]]
 }
 
 download_prebuilt() (
@@ -158,10 +158,10 @@ download_prebuilt() (
   command -v curl >/dev/null 2>&1 || return 1
   command -v tar >/dev/null 2>&1 || return 1
 
-  local asset="herdr-ghq-switcher-v${version}-${target}.tar.gz"
-  local base="${HERDR_GHQ_RELEASE_URL:-https://github.com/crafts69guy/herdr-ghq/releases/download/v${version}}"
+  local asset="herdr-switchboard-v${version}-${target}.tar.gz"
+  local base="${SWITCHBOARD_RELEASE_URL:-https://github.com/crafts69guy/herdr-switchboard/releases/download/v${version}}"
   local tmp
-  tmp="$(mktemp -d "${TMPDIR:-/tmp}/herdr-ghq.XXXXXX")"
+  tmp="$(mktemp -d "${TMPDIR:-/tmp}/herdr-switchboard.XXXXXX")"
   trap 'rm -rf -- "$tmp"' EXIT
 
   curl -fsSL "$base/$asset" -o "$tmp/$asset"
@@ -174,10 +174,10 @@ download_prebuilt() (
 
   mkdir -p "$tmp/unpack" "$(dirname -- "$output")"
   tar -xzf "$tmp/$asset" -C "$tmp/unpack"
-  [[ -f "$tmp/unpack/herdr-ghq-switcher" ]] || return 1
-  chmod 755 "$tmp/unpack/herdr-ghq-switcher"
-  binary_version_matches "$tmp/unpack/herdr-ghq-switcher" "$version" || return 1
-  cp "$tmp/unpack/herdr-ghq-switcher" "$output.tmp.$$"
+  [[ -f "$tmp/unpack/herdr-switchboard" ]] || return 1
+  chmod 755 "$tmp/unpack/herdr-switchboard"
+  binary_version_matches "$tmp/unpack/herdr-switchboard" "$version" || return 1
+  cp "$tmp/unpack/herdr-switchboard" "$output.tmp.$$"
   chmod 755 "$output.tmp.$$"
   mv -f "$output.tmp.$$" "$output"
 )
@@ -189,13 +189,13 @@ ensure_built() (
   local root="${HERDR_PLUGIN_ROOT:-$(cd -- "$SCRIPT_DIR/.." && pwd)}"
   local version target="" bin log managed="true"
   version="$(plugin_version "$root")"
-  [[ -n "$version" ]] || die "Ghq's plugin version is unreadable." "missing version in herdr-plugin.toml"
+  [[ -n "$version" ]] || die "Switchboard's plugin version is unreadable." "missing version in herdr-plugin.toml"
   target="$(host_target || true)"
   if [[ -d "$root/.git" ]]; then
     managed="false"
-    bin="$root/target/release/herdr-ghq-switcher"
+    bin="$root/target/release/herdr-switchboard"
   else
-    bin="$root/target/release/herdr-ghq-switcher-v${version}-${target:-local}"
+    bin="$root/target/release/herdr-switchboard-v${version}-${target:-local}"
   fi
   export PATH="$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
   if [[ -x "$bin" ]] && binary_version_matches "$bin" "$version"; then
@@ -204,11 +204,11 @@ ensure_built() (
   fi
 
   mkdir -p "$root/target/release"
-  log="$(mktemp "${TMPDIR:-/tmp}/herdr-ghq-bootstrap.XXXXXX")"
+  log="$(mktemp "${TMPDIR:-/tmp}/herdr-switchboard-bootstrap.XXXXXX")"
   trap 'rm -f -- "$log"' EXIT
 
   if [[ -n "$target" && "$managed" == "true" ]]; then
-    if run_with_splash "Fetching Ghq for ${target}…" "$log" \
+    if run_with_splash "Fetching Switchboard for ${target}…" "$log" \
       download_prebuilt "$version" "$target" "$bin"; then
       printf '%s\n' "$bin"
       return
@@ -220,21 +220,21 @@ ensure_built() (
 
   command -v cargo >/dev/null 2>&1 || {
     [[ -s "$log" ]] && sed 's/^/  /' "$log" >&2
-    die "Ghq needs a release binary or Rust (cargo). Check your network, or install Rust." "prebuilt unavailable and cargo not found"
+    die "Switchboard needs a release binary or Rust (cargo). Check your network, or install Rust." "prebuilt unavailable and cargo not found"
   }
-  if run_with_splash "Building Ghq locally…" "$log" \
+  if run_with_splash "Building Switchboard locally…" "$log" \
     cargo build --release --manifest-path "$root/Cargo.toml"; then
     :
   else
     local build_status=$?
     [[ "$build_status" -eq 130 ]] && return 130
     sed 's/^/  /' "$log" >&2
-    die "Ghq could not build the switcher. Check the pane for cargo errors." "cargo build failed"
+    die "Switchboard could not build the switcher. Check the pane for cargo errors." "cargo build failed"
   fi
-  binary_version_matches "$root/target/release/herdr-ghq-switcher" "$version" ||
+  binary_version_matches "$root/target/release/herdr-switchboard" "$version" ||
     die "The locally built switcher has the wrong version." "cargo output version does not match herdr-plugin.toml"
-  if [[ "$bin" != "$root/target/release/herdr-ghq-switcher" ]]; then
-    cp "$root/target/release/herdr-ghq-switcher" "$bin.tmp.$$"
+  if [[ "$bin" != "$root/target/release/herdr-switchboard" ]]; then
+    cp "$root/target/release/herdr-switchboard" "$bin.tmp.$$"
     chmod 755 "$bin.tmp.$$"
     mv -f "$bin.tmp.$$" "$bin"
   fi
@@ -254,66 +254,26 @@ ensure_tuicr() {
     die "tuicr is required for review — brew install tuicr." "tuicr not found on PATH"
 }
 
-# Read a scalar from the plugin's intentionally flat config.toml. Quoted strings,
-# booleans, and bare values are supported; nested TOML is deliberately out of scope.
-toml_get() {
-  local key="$1"
-  local file="$2"
-  local default_value="${3-}"
-  local value=""
-
-  if [[ -f "$file" ]]; then
-    value="$(awk -v wanted="$key" '
-      /^[[:space:]]*#/ || /^[[:space:]]*$/ || /^[[:space:]]*\[/ { next }
-      {
-        line = $0
-        sub(/^[[:space:]]*/, "", line)
-        split(line, parts, "=")
-        name = parts[1]
-        sub(/[[:space:]]*$/, "", name)
-        if (name != wanted) next
-
-        sub(/^[^=]*=[[:space:]]*/, "", line)
-        if (line ~ /^"/) {
-          sub(/^"/, "", line)
-          sub(/"[[:space:]]*(#.*)?$/, "", line)
-        } else {
-          sub(/[[:space:]]*#.*$/, "", line)
-          sub(/[[:space:]]*$/, "", line)
-        }
-        print line
-        exit
-      }
-    ' "$file")"
-  fi
-
-  if [[ -n "$value" ]]; then
-    printf '%s\n' "$value"
-  else
-    printf '%s\n' "$default_value"
-  fi
-}
-
-# Load the notification policy once a caller knows its plugin config path.
+# Load notification policy through the typed Rust config reader.
 # Keep defaults active until both values validate so malformed notification
 # config can still be reported to the user.
 configure_notifications() {
-  local file="$1"
+  local binary="$1"
   local allow_invalid="${2:-false}"
   local enabled position sound
 
-  enabled="$(toml_get notifications "$file" true)"
-  position="$(toml_get notification_position "$file" top-right)"
-  sound="$(toml_get notification_sound "$file" auto)"
+  enabled="$("$binary" config get notifications true)"
+  position="$("$binary" config get notification_position top-right)"
+  sound="$("$binary" config get notification_sound auto)"
 
   case "$enabled" in
     true | false) ;;
     *)
       if [[ "$allow_invalid" == "true" ]]; then
-        log "invalid notifications '$enabled' in $file; using true until Settings repairs it"
+        log "invalid notifications '$enabled'; using true until Settings repairs it"
         enabled=true
       else
-        die "Invalid notifications setting. Use true or false." "invalid notifications '$enabled' in $file"
+        die "Invalid notifications setting. Use true or false." "invalid notifications '$enabled'"
       fi
       ;;
   esac
@@ -322,12 +282,12 @@ configure_notifications() {
     '' | top-left | top-right | bottom-left | bottom-right) ;;
     *)
       if [[ "$allow_invalid" == "true" ]]; then
-        log "invalid notification_position '$position' in $file; using top-right until Settings repairs it"
+        log "invalid notification_position '$position'; using top-right until Settings repairs it"
         position=top-right
       else
         die \
           "Invalid notification_position setting. Check the plugin config." \
-          "invalid notification_position '$position' in $file"
+          "invalid notification_position '$position'"
       fi
       ;;
   esac
@@ -336,12 +296,12 @@ configure_notifications() {
     auto | none | done | request) ;;
     *)
       if [[ "$allow_invalid" == "true" ]]; then
-        log "invalid notification_sound '$sound' in $file; using auto until Settings repairs it"
+        log "invalid notification_sound '$sound'; using auto until Settings repairs it"
         sound=auto
       else
         die \
           "Invalid notification_sound setting. Use auto, none, done, or request." \
-          "invalid notification_sound '$sound' in $file"
+          "invalid notification_sound '$sound'"
       fi
       ;;
   esac
@@ -466,8 +426,7 @@ notify() {
   # neutral. A caller omits it for a plain toast. `notification_sound = auto` honours
   # this; any other config value forces one sound for every toast.
   local event_sound="${2:-none}"
-  local command sound
-  local response shown reason attempt
+  local sound
 
   [[ "$NOTIFICATIONS_ENABLED" == "true" ]] || return 0
 
@@ -477,33 +436,12 @@ notify() {
     sound="$NOTIFICATION_SOUND"
   fi
 
-  command=("$(herdr_bin)" notification show "Ghq" --body "$body" --sound "$sound")
-  if [[ -n "$NOTIFICATION_POSITION" ]]; then
-    command+=(--position "$NOTIFICATION_POSITION")
-  fi
-
-  # A successful API request can still return shown=false. Retry once during
-  # transient popup teardown/focus transitions, then preserve the reason in
-  # plugin logs without changing the original action's exit status.
-  for attempt in 1 2; do
-    if ! response="$("${command[@]}" 2>/dev/null)"; then
+  if [[ -n "${SWITCHBOARD_BIN:-}" && -x "$SWITCHBOARD_BIN" ]]; then
+    "$SWITCHBOARD_BIN" notify "$body" "$sound" >/dev/null 2>&1 ||
       log "notification unavailable: $body"
-      return 0
-    fi
-
-    shown="$(printf '%s\n' "$response" | json_bool_value shown)"
-    reason="$(printf '%s\n' "$response" | json_string_value reason)"
-    if [[ "$shown" != "false" ]]; then
-      return 0
-    fi
-    if [[ "$attempt" -eq 1 && ("$reason" == "busy" || "$reason" == "no_foreground_client") ]]; then
-      sleep 0.1
-      continue
-    fi
-
-    log "notification not shown (${reason:-unknown}): $body"
-    return 0
-  done
+  else
+    log "notification skipped before the typed config reader was available: $body"
+  fi
 }
 
 # --- ghq helpers ------------------------------------------------------------
@@ -531,5 +469,5 @@ repo_label() {
 
 # Focusing a workspace/agent and opening a repo at a target now live only in the
 # Rust switcher (src/action.rs). The picker calls them directly; the clone flow
-# reaches them through `herdr-ghq-switcher open` (see ensure_built), so the herdr
+# reaches them through `herdr-switchboard open` (see ensure_built), so the herdr
 # verbs are no longer mirrored here.

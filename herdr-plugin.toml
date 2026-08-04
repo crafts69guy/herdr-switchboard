@@ -1,14 +1,42 @@
-id = "ghq"
-name = "Ghq"
+id = "switchboard"
+name = "Switchboard"
 version = "0.10.0"
 min_herdr_version = "0.7.4"
-description = "A unified herdr switcher: fuzzy-jump across running agents, open workspaces, ghq repositories, and linked worktrees in one themed picker — open repos/worktrees in a new workspace/tab/split/pane, plus clone, update, remove, and a separate git menu pane (tuicr review + lazygit)."
+description = "A colorful Herdr command palette with searchable Projects, Commands, and Ports pickers plus Git, Clone, Settings, Changelog, and Update utilities."
 platforms = ["macos", "linux"]
 
 [[actions]]
 id = "menu"
-title = "Project Switcher"
+title = "Switchboard Menu"
+description = "Open the central menu for every Switchboard picker and utility."
+contexts = ["global", "pane"]
+command = ["bash", "bin/action.sh"]
+
+[[actions]]
+id = "projects"
+title = "Projects"
 description = "Open the switcher over running agents, open workspaces, ghq repositories, and linked worktrees."
+contexts = ["global", "pane"]
+command = ["bash", "bin/action.sh"]
+
+[[actions]]
+id = "commands"
+title = "Commands"
+description = "Search shell history and presets, then fill or run the exact command."
+contexts = ["global", "pane"]
+command = ["bash", "bin/action.sh"]
+
+[[actions]]
+id = "ports"
+title = "Ports"
+description = "Inspect live TCP listeners and safely act on their owner processes."
+contexts = ["global", "pane"]
+command = ["bash", "bin/action.sh"]
+
+[[actions]]
+id = "settings"
+title = "Switchboard Settings"
+description = "Configure the common, projects, commands, and ports modes."
 contexts = ["global", "pane"]
 command = ["bash", "bin/action.sh"]
 
@@ -20,22 +48,22 @@ contexts = ["global", "pane"]
 command = ["bash", "bin/action.sh"]
 
 [[actions]]
-id = "get"
+id = "clone"
 title = "Clone Repository"
 description = "Clone a repository with ghq get (from clipboard or a prompt), then open it."
 contexts = ["global", "pane"]
 command = ["bash", "bin/action.sh"]
 
 [[actions]]
-id = "update-plugin"
-title = "Update Ghq"
+id = "update"
+title = "Update Switchboard"
 description = "Install the newest tagged version of this plugin. Refuses to touch a linked checkout."
 contexts = ["global", "pane"]
 command = ["bash", "bin/action.sh"]
 
 [[actions]]
 id = "changelog"
-title = "Ghq Changelog"
+title = "Switchboard Changelog"
 description = "Read what changed in this plugin, including the version you have installed."
 contexts = ["global", "pane"]
 command = ["bash", "bin/action.sh"]
@@ -64,10 +92,38 @@ contexts = ["global", "pane"]
 command = ["bash", "bin/action.sh"]
 
 [[panes]]
-id = "picker"
+id = "menu"
+title = "Switchboard"
+placement = "popup"
+width = 76
+height = 24
+command = ["bash", "-c", "exec bash \"$HERDR_PLUGIN_ROOT/bin/picker.sh\" --menu"]
+
+[[panes]]
+id = "projects"
 title = "󰊢"
 placement = "overlay"
 command = ["bash", "-c", "exec bash \"$HERDR_PLUGIN_ROOT/bin/picker.sh\""]
+
+[[panes]]
+id = "commands"
+title = "Commands"
+placement = "overlay"
+command = ["bash", "-c", "exec bash \"$HERDR_PLUGIN_ROOT/bin/picker.sh\" --commands"]
+
+[[panes]]
+id = "ports"
+title = "Ports"
+placement = "overlay"
+command = ["bash", "-c", "exec bash \"$HERDR_PLUGIN_ROOT/bin/picker.sh\" --ports"]
+
+[[panes]]
+id = "settings"
+title = "Switchboard Settings"
+placement = "popup"
+width = 100
+height = 32
+command = ["bash", "-c", "exec bash \"$HERDR_PLUGIN_ROOT/bin/picker.sh\" --settings"]
 
 [[panes]]
 id = "git"
@@ -76,20 +132,20 @@ placement = "overlay"
 command = ["bash", "-c", "exec bash \"$HERDR_PLUGIN_ROOT/bin/git.sh\""]
 
 [[panes]]
-id = "get"
+id = "clone"
 title = "Clone Repository"
 placement = "overlay"
 command = ["bash", "-c", "exec bash \"$HERDR_PLUGIN_ROOT/bin/get.sh\""]
 
 [[panes]]
-id = "update-plugin"
-title = "Update Ghq"
+id = "update"
+title = "Update Switchboard"
 placement = "overlay"
 command = ["bash", "-c", "exec bash \"$HERDR_PLUGIN_ROOT/bin/update-plugin.sh\""]
 
 [[panes]]
 id = "changelog"
-title = "Ghq Changelog"
+title = "Switchboard Changelog"
 placement = "popup"
 width = 88
 height = 28

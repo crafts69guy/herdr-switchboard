@@ -56,7 +56,7 @@ assert_refused() {
 
 # A linked development checkout: the case that must never be installed over.
 assert_refused "local source" \
-  '{"result":{"plugins":[{"plugin_root":"/home/dev/herdr-ghq","source":{"kind":"local"}}]}}'
+  '{"result":{"plugins":[{"plugin_root":"/home/dev/herdr-switchboard","source":{"kind":"local"}}]}}'
 
 # Nothing readable at all.
 assert_refused "empty response" ''
@@ -78,11 +78,11 @@ assert_refused "pretty-printed source" \
   '{"result": {"plugins": [{"source": {"kind": "github"}}]}}'
 
 # The one case that proceeds: an unambiguous managed install.
-github='{"result":{"plugins":[{"plugin_root":"'"$tmp/nocargo"'","version":"0.5.0","source":{"kind":"github","owner":"crafts69guy","repo":"herdr-ghq","managed_path":"'"$tmp/nocargo"'"}}]}}'
+github='{"result":{"plugins":[{"plugin_root":"'"$tmp/nocargo"'","version":"0.5.0","source":{"kind":"github","owner":"crafts69guy","repo":"herdr-switchboard","managed_path":"'"$tmp/nocargo"'"}}]}}'
 result="$(run_with "$github")"
 [[ "$result" == "installed" ]] ||
   fail "github source: expected an install, but the guard refused"
-grep -Fq 'install crafts69guy/herdr-ghq' "$tmp/install.log" ||
+grep -Fq 'install crafts69guy/herdr-switchboard' "$tmp/install.log" ||
   fail "github source: installed the wrong repo: $(cat "$tmp/install.log")"
 
 printf 'update_guard_spec: ok\n'

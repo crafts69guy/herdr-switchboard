@@ -25,7 +25,7 @@ use anyhow::Result;
 use crate::data::Config;
 use crate::state::{now, state_file};
 
-const REPO: &str = "https://github.com/crafts69guy/herdr-ghq";
+const REPO: &str = "https://github.com/crafts69guy/herdr-switchboard";
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// One check a day. The plugin does not move fast enough to justify more, and this is
 /// the only outbound request it makes.
@@ -130,7 +130,7 @@ pub fn spawn_refresh_if_stale(cfg: &Config) {
         .spawn();
 }
 
-/// Entry point for `herdr-ghq-switcher --update-check`: fetch, cache, exit. No UI.
+/// Entry point for `herdr-switchboard --update-check`: fetch, cache, exit. No UI.
 pub fn main() -> Result<()> {
     if let Some(latest) = fetch_latest() {
         write_cache(&latest)?;

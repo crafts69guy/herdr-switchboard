@@ -1,12 +1,12 @@
 [package]
-name = "herdr-ghq-switcher"
+name = "herdr-switchboard"
 version = "0.10.0"
 edition = "2021"
-description = "Unified herdr switcher TUI: fuzzy-jump across agents, workspaces, ghq repos, and worktrees."
+description = "Colorful Herdr command palette for projects, command history, and local TCP ports."
 license = "MIT"
 
 [[bin]]
-name = "herdr-ghq-switcher"
+name = "herdr-switchboard"
 path = "src/main.rs"
 
 [dependencies]
@@ -16,6 +16,13 @@ serde_json = "1"
 nucleo-matcher = "0.3"
 ansi-to-tui = "7"
 anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+toml = "0.9"
+toml_edit = { version = "0.23", features = ["serde"] }
+regex = "1"
+sha2 = "0.10"
+listeners = "0.6"
+sysinfo = { version = "0.39", default-features = false, features = ["system", "user"] }
 
 # Favour a fast first-run build (the wrapper builds on demand) over a maximally
 # small binary; still strip symbols to keep it lean.

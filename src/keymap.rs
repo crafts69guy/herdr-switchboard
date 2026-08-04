@@ -1,5 +1,5 @@
 //! The picker's keymap: an ordered `chord → action` table per mode, built from
-//! defaults and overridden by the flat config, with a LazyVim-flavoured modal
+//! defaults and overridden by the Projects keymap, with a LazyVim-flavoured modal
 //! layer and a `␣` leader for the manage verbs.
 //!
 //! Shape follows a Telescope/LazyVim picker: you open **typing** (Insert), and

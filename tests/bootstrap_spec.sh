@@ -23,22 +23,22 @@ tmp="$(mktemp -d)"
 trap 'rm -rf -- "$tmp"' EXIT
 version="9.8.7"
 target="$(host_target)"
-asset="herdr-ghq-switcher-v${version}-${target}.tar.gz"
+asset="herdr-switchboard-v${version}-${target}.tar.gz"
 mkdir -p "$tmp/release/payload" "$tmp/plugin"
-printf '#!/usr/bin/env bash\nprintf "herdr-ghq-switcher 9.8.7\\n"\n' >"$tmp/release/payload/herdr-ghq-switcher"
-chmod 755 "$tmp/release/payload/herdr-ghq-switcher"
-tar -C "$tmp/release/payload" -czf "$tmp/release/$asset" herdr-ghq-switcher
+printf '#!/usr/bin/env bash\nprintf "herdr-switchboard 9.8.7\\n"\n' >"$tmp/release/payload/herdr-switchboard"
+chmod 755 "$tmp/release/payload/herdr-switchboard"
+tar -C "$tmp/release/payload" -czf "$tmp/release/$asset" herdr-switchboard
 hash="$(sha256_file "$tmp/release/$asset")"
 printf '%s  %s\n' "$hash" "$asset" >"$tmp/release/SHA256SUMS"
 
 output="$tmp/plugin/target/release/switcher"
-HERDR_GHQ_RELEASE_URL="file://$tmp/release" \
+SWITCHBOARD_RELEASE_URL="file://$tmp/release" \
   download_prebuilt "$version" "$target" "$output"
 [[ -x "$output" ]] || fail "verified release binary was not installed"
-[[ "$($output --version)" == "herdr-ghq-switcher 9.8.7" ]] || fail "installed the wrong binary"
+[[ "$($output --version)" == "herdr-switchboard 9.8.7" ]] || fail "installed the wrong binary"
 
 printf 'bad  %s\n' "$asset" >"$tmp/release/SHA256SUMS"
-if HERDR_GHQ_RELEASE_URL="file://$tmp/release" \
+if SWITCHBOARD_RELEASE_URL="file://$tmp/release" \
   download_prebuilt "$version" "$target" "$tmp/plugin/rejected"; then
   fail "checksum mismatch must be rejected"
 fi
@@ -61,16 +61,16 @@ printf '%s\n' \
   'done' \
   'root="$(dirname -- "$manifest")"' \
   'mkdir -p "$root/target/release"' \
-  'printf '\''#!/usr/bin/env bash\nprintf "herdr-ghq-switcher 1.2.3\\n"\n'\'' >"$root/target/release/herdr-ghq-switcher"' \
-  'chmod 755 "$root/target/release/herdr-ghq-switcher"' >"$tools/cargo"
+  'printf '\''#!/usr/bin/env bash\nprintf "herdr-switchboard 1.2.3\\n"\n'\'' >"$root/target/release/herdr-switchboard"' \
+  'chmod 755 "$root/target/release/herdr-switchboard"' >"$tools/cargo"
 chmod 755 "$tools/cargo"
 fallback_bin="$(
   HOME="$tmp/home" \
     HERDR_PLUGIN_ROOT="$fallback" \
-    HERDR_GHQ_RELEASE_URL="file://$tmp/missing" \
+    SWITCHBOARD_RELEASE_URL="file://$tmp/missing" \
     ensure_built
 )"
 [[ -x "$fallback_bin" ]] || fail "Cargo fallback did not install a versioned binary"
-[[ "$($fallback_bin --version)" == "herdr-ghq-switcher 1.2.3" ]] || fail "Cargo fallback binary is wrong"
+[[ "$($fallback_bin --version)" == "herdr-switchboard 1.2.3" ]] || fail "Cargo fallback binary is wrong"
 
 printf 'bootstrap_spec: ok\n'

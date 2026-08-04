@@ -49,19 +49,19 @@ jobs:
       - name: Verify embedded version
         run: |
           expected="${GITHUB_REF_NAME#v}"
-          actual="$("target/${{ matrix.target }}/release/herdr-ghq-switcher" --version)"
-          test "$actual" = "herdr-ghq-switcher $expected"
+          actual="$("target/${{ matrix.target }}/release/herdr-switchboard" --version)"
+          test "$actual" = "herdr-switchboard $expected"
 
       - name: Package binary
         shell: bash
         run: |
-          asset="herdr-ghq-switcher-${GITHUB_REF_NAME}-${{ matrix.target }}.tar.gz"
-          tar -C "target/${{ matrix.target }}/release" -czf "$asset" herdr-ghq-switcher
+          asset="herdr-switchboard-${GITHUB_REF_NAME}-${{ matrix.target }}.tar.gz"
+          tar -C "target/${{ matrix.target }}/release" -czf "$asset" herdr-switchboard
 
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.target }}
-          path: herdr-ghq-switcher-${{ github.ref_name }}-${{ matrix.target }}.tar.gz
+          path: herdr-switchboard-${{ github.ref_name }}-${{ matrix.target }}.tar.gz
           if-no-files-found: error
 
   publish:
@@ -80,7 +80,7 @@ jobs:
         shell: bash
         run: |
           cd dist
-          sha256sum herdr-ghq-switcher-*.tar.gz >SHA256SUMS
+          sha256sum herdr-switchboard-*.tar.gz >SHA256SUMS
           cd ..
           version="${GITHUB_REF_NAME#v}"
           awk -v want="## [$version]" '
@@ -95,5 +95,5 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: >-
           gh release create "$GITHUB_REF_NAME"
-          dist/herdr-ghq-switcher-*.tar.gz dist/SHA256SUMS
+          dist/herdr-switchboard-*.tar.gz dist/SHA256SUMS
           --verify-tag --title "$GITHUB_REF_NAME" --notes-file release-notes.md

@@ -883,7 +883,7 @@ mod tests {
     fn workspace_card_shows_agents_and_repos_for_its_own_panes() {
         let get = r#"{"result":{"workspace":{"label":"work","agent_status":"blocked","number":2,"pane_count":2,"tab_count":1,"focused":true}}}"#;
         let panes = r#"{"result":{"panes":[
-            {"workspace_id":"ws-1","agent":"claude","agent_status":"blocked","terminal_title_stripped":"Improve preview UI","cwd":"/tmp/herdr-ghq","focused":true},
+            {"workspace_id":"ws-1","agent":"claude","agent_status":"blocked","terminal_title_stripped":"Improve preview UI","cwd":"/tmp/herdr-switchboard","focused":true},
             {"workspace_id":"ws-OTHER","agent":"codex","agent_status":"idle","terminal_title_stripped":"elsewhere entirely","cwd":"/tmp/other-repo"}
         ]}}"#;
         let runner = MockRunner::new()
@@ -912,7 +912,7 @@ mod tests {
         // Its own pane's agent, task, repo, and branch all surface.
         assert!(out.contains("claude"), "{out}");
         assert!(out.contains("Improve preview UI"), "{out}");
-        assert!(out.contains("herdr-ghq"), "{out}");
+        assert!(out.contains("herdr-switchboard"), "{out}");
         assert!(out.contains("main"), "{out}");
         // A pane from another workspace never leaks in.
         assert!(

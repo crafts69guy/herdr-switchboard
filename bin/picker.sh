@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Picker entrypoint: launch the herdr-ghq-switcher TUI (Rust). The binary is
+# Picker entrypoint: launch the herdr-switchboard TUI (Rust). The binary is
 # built on demand the first time — a herdr overlay pane hosts the whole thing,
 # so agents/workspaces/repos are read live and the accept key opens/focuses.
 set -euo pipefail

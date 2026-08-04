@@ -611,7 +611,7 @@ fn is_repo(runner: &dyn CommandRunner, dir: &str) -> bool {
 }
 
 /// The repo the menu acts on: the pane's own cwd, which herdr sets from the pane
-/// `Prefix + g` was pressed in. `GHQ_ORIGIN_CWD` is the fallback for the case
+/// `Prefix + g` was pressed in. `SWITCHBOARD_ORIGIN_CWD` is the fallback for the case
 /// where the pane started somewhere else — it is a hint, not an authority, so it
 /// is only taken when it is a repo and the cwd is not.
 fn repo_cwd(runner: &dyn CommandRunner) -> Option<String> {
@@ -621,7 +621,7 @@ fn repo_cwd(runner: &dyn CommandRunner) -> Option<String> {
     if is_repo(runner, &cwd) {
         return Some(cwd);
     }
-    env::var("GHQ_ORIGIN_CWD")
+    env::var("SWITCHBOARD_ORIGIN_CWD")
         .ok()
         .filter(|s| !s.is_empty() && is_repo(runner, s))
 }
@@ -637,14 +637,14 @@ fn read_menu_conf() -> Vec<Custom> {
         .unwrap_or_default()
 }
 
-/// Entry point for `herdr-ghq-switcher --git` — the entire `Prefix + g` pane.
+/// Entry point for `herdr-switchboard --git` — the entire `Prefix + g` pane.
 ///
 /// Deliberately narrow: no `load_all`, no preview worker, no update cache, no
 /// recency file. The only IO before the first frame is the git reads the menu
 /// needs to label itself.
 pub fn main() -> Result<()> {
     let runner = SystemRunner;
-    let cfg = Config::load();
+    let cfg = Config::try_load()?;
     let theme = Theme::load();
     let title = theme
         .resolve(&cfg.get("title_color", "peach"))
@@ -653,7 +653,7 @@ pub fn main() -> Result<()> {
     // Not a repo: say so in one line and let the pane close, rather than opening
     // a menu whose every row would fail.
     let Some(cwd) = repo_cwd(&runner) else {
-        println!("Ghq git menu: this pane is not inside a git repository.");
+        println!("Switchboard git menu: this pane is not inside a git repository.");
         return Ok(());
     };
     let label = std::path::Path::new(&cwd)
@@ -1006,7 +1006,7 @@ const DATE_COL: usize = 14;
 
 /// Widest an id may draw in a list row. A PR number is two characters, but a
 /// tuicr session slug is a whole revset —
-/// `herdr-ghq@main/staged-and-unstaged/4e27385` — and unclipped it eats the row
+/// `herdr-switchboard@main/staged-and-unstaged/4e27385` — and unclipped it eats the row
 /// until the label has nothing left. The pinned header still shows the id at the
 /// card's full width, so nothing is only visible here.
 const ID_COL: usize = 26;
@@ -1554,7 +1554,8 @@ z|Y|pull|git pull
         g.show_list(
             ListKind::Reviews,
             vec![Row {
-                id: "herdr-ghq@main/staged-and-unstaged-and-commits/4e27385..06e9955".into(),
+                id: "herdr-switchboard@main/staged-and-unstaged-and-commits/4e27385..06e9955"
+                    .into(),
                 label: "the anchor".into(),
                 meta: "2026-08-03".into(),
                 detail: "2 comments".into(),

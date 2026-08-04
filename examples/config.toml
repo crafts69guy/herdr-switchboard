@@ -1,92 +1,55 @@
-# Sample herdr-ghq plugin config. Copy to the plugin's config dir:
-#   cp examples/config.toml "$(herdr plugin config-dir ghq)/config.toml"
-# Every value is optional; the defaults shown here apply when a key is absent.
-# The file is intentionally flat — one "key = value" per line, no sections.
+# Switchboard config: $(herdr plugin config-dir switchboard)/config.toml
+# Every key is optional. Settings edits these same namespaced tables.
 
-# Where Enter opens the highlighted repo: workspace | tab | split | pane.
-# (pane = cd the pane you launched the picker from.)
-default_target = "workspace"
-
-# Split target geometry (used by the ctrl-s key and default_target = split).
-split_direction = "right"   # right | down
-split_ratio = "0.5"         # 0.1–0.9
-
-# Workspace / tab label style: repo (basename) | owner-repo | path.
-label = "repo"
-
-# Unified switcher sources. The picker blends these with repos.
-include_agents = "true"       # running herdr agents (enter = jump to them)
-include_workspaces = "true"   # open herdr workspaces (enter = switch to them)
-include_worktrees = "true"    # linked Git worktrees (open + Git menu; no update/remove)
-
-# Active group when the picker opens, and immediately after this setting is applied.
-# An unavailable or empty group falls back to All.
-default_tab = "all"           # all | agents | workspaces | repos | worktrees
-
-# Resting list order (no query). Cycle live with alt-s; Tab narrows to a group.
-sort = "recent"               # recent (latest opened) | name | kind
-
-# Which mode the picker opens in. Normal mode is always one Esc away either way;
-# this only sets the start. insert = type-to-filter (default); normal = Vim-first
-# (bare hjkl/gg/G move, i or / to filter, ␣ leads the manage verbs).
-keymode = "insert"            # insert | normal
-
-# Box title colour: a [theme.custom] slot name (accent, peach, mauve, teal, …)
-# or a literal #rrggbb.
+[common]
+keymode = "insert" # insert | normal
 title_color = "peach"
+transparency = "auto"
+update_check = true
+notifications = true
+notification_position = "top-right"
+notification_sound = "auto" # auto | none | done | request
 
-# Preview pane. The command footer is always full-width, so position is purely
-# taste: right (side-by-side, default), down, up, or left.
-preview = "enabled"              # enabled | disabled
-preview_position = "right"       # right | down | up | left
-preview_size = "60%"             # preview share of the body (switcher : preview = 4 : 6)
-preview_readme = "true"          # include a README excerpt
+[projects]
+default_target = "workspace" # workspace | tab | split | pane
+split_direction = "right"
+split_ratio = "0.5"
+label = "repo"
+include_agents = true
+include_workspaces = true
+include_worktrees = true
+default_tab = "all"
+sort = "recent"
+preview = "enabled"
+preview_position = "right"
+preview_size = "60%"
+preview_readme = true
 
-# Clone flow (ghq get).
-clone_source = "clipboard"  # clipboard (seed the prompt) | prompt
-open_after_clone = "true"
+[commands]
+history_limit = 5000
+sort = "frecency" # frecency | recent | frequency | alphabetical
+# Rust regexes applied before a command enters the catalog.
+history_exclude = ["(?i)private[_-]?key"]
 
-# Popup background: auto follows the terminal; disabled paints an opaque panel.
-transparency = "auto"       # auto | enabled | disabled
+[[commands.presets]]
+label = "Run tests"
+command = "cargo test"
+cwd = "origin" # origin or an absolute directory
 
-# Git menu (the ghq.git action, meant for prefix+g — it opens a pane of its own, not
-# an overlay on the switcher). Reviews run in tuicr (brew install tuicr); staging
-# opens lazygit. Leave base_branch blank to auto-detect
-# (main | master | origin/main | origin/master); set it to pin a base for
-# "review branch", e.g. "develop".
+[ports]
+refresh_interval_ms = 2000 # minimum 250
+
+[clone]
+source = "clipboard"
+open_after = true
+
+[git]
 base_branch = ""
-# Extra rows for the git menu live in a sibling file, menu.conf, one per line:
-#   key|icon|label|shell command      (e.g.  p||push|git push)
-# Blank lines and #-comments are skipped; a built-in mnemonic wins over a custom one.
 
-# Ask GitHub once a day whether a newer version is tagged, and show it in the
-# switcher's command bar. Never installs anything. The check runs in a detached
-# process, not in the TUI, and fails silently when offline. Set to "false" for no
-# outbound requests at all.
-update_check = "true"
+# Picker-specific remaps. Projects keeps its full existing action vocabulary;
+# Commands and Ports use the action ids printed in their footer.
+[keys.commands]
+# copy = "ctrl-y"
 
-# herdr notifications.
-notifications = "true"
-notification_position = "top-right"  # top-left | top-right | bottom-left | bottom-right
-# auto plays a sound that fits the event (done on success, request on failure); or force
-# one sound for every toast.
-notification_sound = "auto"          # auto | none | done | request
-
-# --- Key bindings (optional) -------------------------------------------------
-# Rebind any picker action with `keys.<action> = "chord[,chord…]"`. A chord is
-# a key with optional `ctrl-` / `alt-` / `shift-` prefixes: e.g. "ctrl-y",
-# "alt-p", "shift-tab", "enter", "esc", "space", "g". Listing chords replaces the
-# action's defaults. These apply in both Insert and Normal mode.
-#
-# Action names:
-#   quit help changelog next_group prev_group down up page_down page_up top
-#   bottom toggle_preview preview_down preview_up cycle_sort clear_query
-#   delete_word insert_mode normal_mode open clone update_plugin settings
-#   workspace tab split pane update remove
-# (the git menu is not a picker action: it is its own pane, on prefix+g.)
-#
-# Insert-mode defaults already free ^u/^w for readline (clear line / delete
-# word) and put the opens on ^t (tab) / ^v (split) / ^o (cd). Examples:
-# keys.tab = "ctrl-y"             # open in a new tab on ^y instead of ^t
-# keys.split = "ctrl-x"          # split on ^x instead of ^v
-# keys.down = "ctrl-j,ctrl-n"     # multiple chords for one action
+[keys.ports]
+# workspace = "ctrl-w"

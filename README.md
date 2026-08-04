@@ -1,14 +1,14 @@
-# herdr-ghq
+# herdr-switchboard
 
 ![herdr 0.7.4+](https://img.shields.io/badge/herdr-0.7.4%2B-lightgrey)
 ![ghq required](https://img.shields.io/badge/ghq-required-green)
 ![platform macOS | Linux](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-blue)
 ![license MIT](https://img.shields.io/badge/license-MIT-green)
 
-A [herdr](https://herdr.dev) plugin that puts your running **agents**, open **workspaces**,
-every [`ghq`](https://github.com/x-motemen/ghq) **repository**, and its linked Git
-**worktrees** in one fuzzy switcher — and makes `enter` do the right thing for whatever
-you land on.
+A colorful [herdr](https://herdr.dev) command palette with three searchable pickers:
+**Projects** for agents/workspaces/ghq repos/worktrees, **Commands** for exact shell history and
+presets, and **Ports** for live local TCP listeners. Open the central menu or bind each picker
+directly.
 
 Where `ghq list | fzf | cd` can only change a directory, this uses herdr as a multiplexer:
 jump to a live agent, switch workspaces, or open a repo/worktree exactly where you want it —
@@ -21,11 +21,11 @@ fzf required.
 > change between releases, sometimes without a migration path. It also tracks herdr's own
 > fast-moving CLI/socket API and may break as herdr evolves. Expect rough edges,
 > pin a version if you need stability, and please
-> [report issues](https://github.com/crafts69guy/herdr-ghq/issues). The one destructive
-> action (`ctrl-x` remove) asks you to type the repo name to confirm — but back up
-> anything you can't afford to lose.
+> [report issues](https://github.com/crafts69guy/herdr-switchboard/issues). The one destructive
+> destructive actions always require typed confirmation: repository removal asks for
+> the repo name, while Port TERM/KILL asks for the signal word and revalidates process identity.
 
-![The herdr-ghq switcher: a fuzzy list with live preview and the `?` keybindings popup open](docs/switcher.png)
+![The herdr-switchboard switcher: a fuzzy list with live preview and the `?` keybindings popup open](docs/switcher.png)
 
 ## Requirements
 
@@ -42,7 +42,7 @@ fzf required.
 ## Install
 
 ```sh
-herdr plugin install crafts69guy/herdr-ghq
+herdr plugin install crafts69guy/herdr-switchboard
 ```
 
 Bind a key in `~/.config/herdr/config.toml` (see [`examples/keybindings.toml`](examples/keybindings.toml)):
@@ -51,8 +51,8 @@ Bind a key in `~/.config/herdr/config.toml` (see [`examples/keybindings.toml`](e
 [[keys.command]]
 key = "prefix+space"
 type = "plugin_action"
-command = "ghq.menu"
-description = "Project switcher (ghq)"
+command = "switchboard.menu"
+description = "Switchboard menu"
 ```
 
 Reload, then press `prefix+space`:
@@ -100,15 +100,16 @@ on unshifted keys — `t` tab, `v` split, `o` cd, `w` workspace, `p` toggle prev
 elsewhere); a **click** selects an entry, filters on a group tab, or runs a command-bar pill.
 
 Sorting defaults to `recent`, so repos you opened last float to the top; opens are recorded
-in `${XDG_STATE_HOME:-~/.local/state}/herdr-ghq/recent.tsv`. While you type, fuzzy score
+in `${XDG_STATE_HOME:-~/.local/state}/herdr-switchboard/recent.tsv`. While you type, fuzzy score
 orders the list — sort only applies to the resting, no-query list.
 
 **Remapping.** Every binding is a `chord → action` entry you can change in `config.toml`:
 
 ```toml
-keys.tab = "ctrl-y"              # cycle groups on ^y instead of Tab
-keys.split = "ctrl-x"            # split on ^x instead of ^v
-keys.down = "ctrl-j,ctrl-n"     # one action, several chords
+[keys.projects]
+tab = "ctrl-y"              # cycle groups on ^y instead of Tab
+split = "ctrl-x"            # split on ^x instead of ^v
+down = "ctrl-j,ctrl-n"      # one action, several chords
 ```
 
 A chord is a key with optional `ctrl-` / `alt-` / `shift-` prefixes. The full list of action
@@ -120,20 +121,42 @@ Insert. Normal mode is always one `esc` away either way.
 
 ## Actions
 
-Bind any of these the same way as `ghq.menu`:
+Bind any of these as a Herdr `plugin_action`:
 
 | Action                                                   | Does                                                           |
 | -------------------------------------------------------- | -------------------------------------------------------------- |
-| `ghq.menu`                                               | the switcher                                                   |
-| `ghq.git`                                                | the git menu for the current repo, in its own pane (bind to `prefix+g`) |
-| `ghq.get`                                                | the clone flow                                                 |
-| `ghq.changelog`                                          | what changed, with your installed version marked               |
-| `ghq.update-plugin`                                      | install a newer version (refuses to touch a `link`ed checkout) |
-| `ghq.open-workspace` · `ghq.open-tab` · `ghq.open-split` | the switcher with `enter`'s repo target forced                 |
+| `switchboard.menu`                                               | searchable central menu                                        |
+| `switchboard.projects`                                           | Projects: agents, workspaces, repos and worktrees               |
+| `switchboard.commands`                                           | Commands: shell history and configured presets                  |
+| `switchboard.ports`                                              | Ports: live listeners, owner process and safe actions           |
+| `switchboard.settings`                                           | package settings (`Common / Projects / Commands / Ports`)       |
+| `switchboard.git`                                                | the git menu for the current repo, in its own pane (bind to `prefix+g`) |
+| `switchboard.clone`                                              | the clone flow                                                 |
+| `switchboard.changelog`                                          | what changed, with your installed version marked               |
+| `switchboard.update`                                             | install a newer version (refuses to touch a `link`ed checkout) |
+| `switchboard.open-workspace` · `switchboard.open-tab` · `switchboard.open-split` | the switcher with `enter`'s repo target forced                 |
+
+### Commands
+
+Commands merges zsh, Bash, or fish history with `[commands].presets`, deduplicating by the exact
+command text. It excludes common credential patterns before persistence; add Rust regexes through
+`history_exclude`. Forgotten commands are fingerprinted in a denylist so the next shell import does
+not bring them back. `alt-s` cycles frecency/recent/frequency/alphabetical ordering. Enter fills the origin pane, `ctrl-enter` runs there, `alt-enter` runs from the
+most recent historical cwd, `ctrl-y` copies, and `ctrl-x` forgets. Multiline execution requires a
+typed confirmation and the full command is never included in notifications.
+
+### Ports
+
+Ports refreshes native TCP listener data off the input loop and groups IPv4/IPv6 addresses for the
+same PID and port. Search fields include `port:`, `address:`, `pid:`, `process:`/`proc:`, `cwd:`,
+`repo:` and `user:`; quoted values and negated filters are supported. Enter copies
+`localhost:PORT`, `ctrl-enter`/`alt-enter` open HTTP/HTTPS, and `ctrl-w` opens the process cwd as a
+workspace. TERM (`ctrl-x`) and KILL (`alt-x`) each require confirmation, ownership, and a fresh
+PID + process-start identity check; Switchboard never signals a parent or process group.
 
 ## Git menu
 
-The git menu is its **own herdr pane**, opened by the `ghq.git` action — bind it to `prefix+g`.
+The git menu is its **own herdr pane**, opened by the `switchboard.git` action — bind it to `prefix+g`.
 It acts on the repo the pane you launched from is sitting in, and it loads nothing else: no
 agents, no workspaces, no repository index, no preview. That is the whole point of it being a
 separate pane rather than an overlay on the switcher.
@@ -170,9 +193,10 @@ Add your own rows in `menu.conf` (`key|icon|label|shell command`) beside `config
 
 ## Configuration
 
-Settings live in a flat `config.toml` in the plugin's config dir (`herdr plugin config-dir ghq`).
-Edit it directly, copy [`examples/config.toml`](examples/config.toml), or press `⌥,` in the
-switcher — a floating form you walk with `↑`/`↓`, where `enter` cycles each value. Edits are
+Settings live in namespaced TOML in the plugin config dir (`herdr plugin config-dir switchboard`).
+Edit it directly, copy [`examples/config.toml`](examples/config.toml), use
+`switchboard.settings`, or press `⌥,` in Projects. Tab/shift-tab switches
+`Common / Projects / Commands / Ports`; `↑`/`↓` moves and `enter` changes a value. Edits are
 drafts: a `●` marks each changed row, `a` applies them all to `config.toml`, and `esc` discards
 them. Applying takes effect in the running switcher — the list re-sorts, sources and preview
 reload, colours and key rebinds update on the spot; no relaunch or server reload needed.
@@ -187,7 +211,7 @@ Every key is documented in `examples/config.toml`. The ones you're most likely t
 | `include_worktrees`                     | list linked Git worktrees (`true` by default)                               |
 | `sort`                                  | `recent` (default) · `name` · `kind`                                        |
 | `keymode`                               | start mode: `insert` (default) · `normal` (Vim-first)                       |
-| `keys.<action>`                         | rebind a key, e.g. `keys.tab = "ctrl-y"` (see below)                        |
+| `[keys.projects]` / `[keys.commands]` / `[keys.ports]` | picker-specific keymaps                                  |
 | `label`                                 | workspace/tab label: `repo` · `owner-repo` · `path`                         |
 | `preview` / `preview_readme`            | the preview pane                                                            |
 | `clone_source`                          | seed the clone prompt from the `clipboard` (default) or start blank         |
@@ -203,6 +227,11 @@ captioned rules. Repos and worktrees show branch · clean/dirty · last commit, 
 and a README excerpt rendered as markdown; agents show what they are doing and their recent
 output, in the agent's own colours; workspaces list their tabs, each with its live status.
 Long cards scroll with `alt-j` / `alt-k`.
+
+On the first launch after upgrading from `ghq`, Switchboard converts flat settings into namespaced
+tables and moves the plugin state to `herdr-switchboard`. The migration validates its destination
+before removing the old files. The old binding `ghq.menu` intentionally maps to
+`switchboard.projects`; `switchboard.menu` is the new central menu.
 
 `update_check` only ever shows `↑ v0.6.0` in the command bar — it never installs anything.
 Set it to `false` to disable that daily check. A managed install can still contact GitHub once
@@ -239,15 +268,15 @@ is still bash (`bin/get.sh`).
 
 ### Measuring it
 
-Set `GHQ_TRACE=1` and every launch appends tab-separated timings to
-`$XDG_STATE_HOME/herdr-ghq/trace.log` (or `$GHQ_TRACE_FILE`). Nothing is ever written to
+Set `SWITCHBOARD_TRACE=1` and every launch appends tab-separated timings to
+`$XDG_STATE_HOME/herdr-switchboard/trace.log` (or `$SWITCHBOARD_TRACE_FILE`). Nothing is ever written to
 stdout or stderr — the TUI owns the terminal for its whole life.
 
 ```sh
-GHQ_TRACE=1 herdr plugin run ghq menu
-awk -F'\t' '$2 == "frame.first_list" { print $1 }' ~/.local/state/herdr-ghq/trace.log
+SWITCHBOARD_TRACE=1 herdr plugin run ghq menu
+awk -F'\t' '$2 == "frame.first_list" { print $1 }' ~/.local/state/herdr-switchboard/trace.log
 awk -F'\t' '$2 == "preview.render" { n++; t += $3 } END { print t / n }' \
-  ~/.local/state/herdr-ghq/trace.log
+  ~/.local/state/herdr-switchboard/trace.log
 ```
 
 The budgets the current code is held to: first list < 100 ms, keystroke-to-frame < 16 ms,
@@ -258,8 +287,8 @@ preview render < 50 ms mean and < 70 ms at the tail.
 Issues and pull requests are welcome. Start here:
 
 ```sh
-git clone https://github.com/crafts69guy/herdr-ghq
-cd herdr-ghq
+git clone https://github.com/crafts69guy/herdr-switchboard
+cd herdr-switchboard
 herdr plugin link "$PWD"        # install this checkout
 herdr server reload-config
 ```
@@ -294,9 +323,9 @@ the safety rules around herdr ids and destructive flows.
 
 ## Changelog
 
-Run `ghq.changelog` to read it in a popup with your installed version marked, or see
+Run `switchboard.changelog` to read it in a popup with your installed version marked, or see
 [`CHANGELOG.md`](CHANGELOG.md). Releases are tagged `vX.Y.Z`; to update, re-run the install
-command (it re-fetches the ref) or use the `ghq.update-plugin` action. Watch the repository
+command (it re-fetches the ref) or use the `switchboard.update` action. Watch the repository
 (Watch → Custom → Releases) to hear about new versions.
 
 ## License

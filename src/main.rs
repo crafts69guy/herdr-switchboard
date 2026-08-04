@@ -1,14 +1,21 @@
-//! herdr-ghq-switcher — a unified herdr switcher TUI (agents, workspaces, ghq
+//! herdr-switchboard — a unified herdr switcher TUI (agents, workspaces, ghq
 //! repos) with fuzzy search, a live preview, and a full-width command bar.
 
 mod action;
 mod changelog;
+mod commands;
+mod config;
 mod data;
 mod git;
 mod history;
 mod keymap;
 mod markdown;
+mod menu;
+mod notify;
+mod picker;
+mod ports;
 mod preview;
+mod query;
 mod runner;
 mod settings;
 mod source;
@@ -908,7 +915,7 @@ pub(crate) fn restore_terminal() {
     ratatui::restore();
 }
 
-/// `herdr-ghq-switcher open --target T --path P --origin O --label L` — the
+/// `herdr-switchboard open --target T --path P --origin O --label L` — the
 /// clone flow (`bin/get.sh`) delegates here so the herdr open verbs live only in
 /// Rust rather than being mirrored in bash.
 fn cli_open(args: &[String]) -> Result<()> {
@@ -925,18 +932,18 @@ fn cli_open(args: &[String]) -> Result<()> {
             _ => {}
         }
     }
-    let cfg = Config::load();
+    let cfg = Config::try_load()?;
     action::open_target(&runner::SystemRunner, &target, &path, &origin, &label, &cfg)
 }
 
-/// `herdr-ghq-switcher config get KEY [DEFAULT]` — the one flat-config reader,
+/// `herdr-switchboard config get KEY [DEFAULT]` — the compatibility scalar reader,
 /// so bash reads a setting through the same parser the TUI uses.
 fn cli_config(args: &[String]) -> Result<()> {
     match args.first().map(String::as_str) {
         Some("get") => {
             let key = args.get(1).map(String::as_str).unwrap_or("");
             let default = args.get(2).map(String::as_str).unwrap_or("");
-            println!("{}", Config::load().get(key, default));
+            println!("{}", Config::try_load()?.get(key, default));
             Ok(())
         }
         _ => Err(anyhow::anyhow!("usage: config get <key> [default]")),
@@ -945,33 +952,37 @@ fn cli_config(args: &[String]) -> Result<()> {
 
 fn main() -> Result<()> {
     // First statement on purpose: it fixes the zero point every other trace mark
-    // is measured from. Inert unless GHQ_TRACE is set.
+    // is measured from. Inert unless SWITCHBOARD_TRACE is set.
     trace::init();
     // One binary, many modes. bin/changelog.sh execs us with --changelog for the
     // standalone changelog pane; the clone flow execs `open`/`config` so the herdr
-    // verbs and the flat-config reader live only here, not mirrored in bash. Settings
-    // is not a mode: it is an in-picker overlay (see settings::Settings).
+    // verbs and the compatibility config reader live only here, not mirrored in bash.
     let args: Vec<String> = env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("--version") => {
-            println!("herdr-ghq-switcher {}", env!("CARGO_PKG_VERSION"));
+            println!("herdr-switchboard {}", env!("CARGO_PKG_VERSION"));
             return Ok(());
         }
         Some("--changelog") => return changelog::main(),
         Some("--update-check") => return update::main(),
         Some("--git") => return git::main(),
+        Some("--menu") => return menu::main(Config::try_load()?, Theme::load()),
+        Some("--commands") => return commands::main(Config::try_load()?, Theme::load()),
+        Some("--ports") => return ports::main(Config::try_load()?, Theme::load()),
+        Some("--settings") => return settings::main(Config::try_load()?, Theme::load()),
         Some("open") => return cli_open(&args[1..]),
         Some("config") => return cli_config(&args[1..]),
+        Some("notify") => return notify::cli(&args[1..], &Config::try_load()?),
         _ => {}
     }
 
     let runner = runner::SystemRunner;
-    let cfg = Config::load();
+    let cfg = Config::try_load()?;
     let theme = Theme::load();
     let script_dir = env::var("HERDR_PLUGIN_ROOT")
         .map(|r| format!("{r}/bin"))
         .unwrap_or_else(|_| ".".into());
-    let origin = env::var("GHQ_ORIGIN_PANE_ID").unwrap_or_default();
+    let origin = env::var("SWITCHBOARD_ORIGIN_PANE_ID").unwrap_or_default();
 
     // Hands the network to a detached child and returns immediately; the badge it
     // enables shows up on a later launch. Nothing below waits on it.
@@ -1204,7 +1215,7 @@ mod tests {
         handle_key(&mut app, key(KeyCode::Char(','), KeyModifiers::ALT));
         assert!(app.settings.show);
         let screen = rendered(&mut app, 120, 40);
-        assert!(screen.contains("Ghq Settings"), "{screen}");
+        assert!(screen.contains("Switchboard Settings"), "{screen}");
         assert!(screen.contains("default_target"), "{screen}");
         assert!(
             screen.contains("Search"),

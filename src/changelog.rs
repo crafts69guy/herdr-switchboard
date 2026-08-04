@@ -101,9 +101,9 @@ pub fn changelog_text() -> Result<String> {
     fs::read_to_string(&path).map_err(|e| anyhow::anyhow!("could not read {}: {e}", path.display()))
 }
 
-/// Entry point for `herdr-ghq-switcher --changelog`.
+/// Entry point for `herdr-switchboard --changelog`.
 pub fn main() -> Result<()> {
-    let cfg = Config::load();
+    let cfg = Config::try_load()?;
     let theme = Theme::load();
     let title_color = theme
         .resolve(&cfg.get("title_color", "peach"))

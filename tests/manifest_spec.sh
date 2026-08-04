@@ -36,15 +36,17 @@ assert_rooted_pane_command() {
     fail "$script must be launched through HERDR_PLUGIN_ROOT"
 }
 
-assert_rooted_pane_command picker.sh
+# Picker panes may pass a mode flag, but must still resolve through the plugin root.
+grep -Fq 'exec bash \"$HERDR_PLUGIN_ROOT/bin/picker.sh\"' "$MANIFEST" ||
+  fail "picker panes must be launched through HERDR_PLUGIN_ROOT"
 assert_rooted_pane_command git.sh
 assert_rooted_pane_command get.sh
 assert_rooted_pane_command changelog.sh
 assert_rooted_pane_command update-plugin.sh
 
-# Every declared action dispatches through bin/action.sh. Settings is deliberately
-# absent: it is an in-picker overlay (⌥,), not a herdr action.
-for action in menu git get changelog update-plugin open-workspace open-tab open-split; do
+# Every public surface has a direct action; the menu is an additional route, not
+# a replacement for the hot picker bindings.
+for action in menu projects commands ports settings git clone changelog update open-workspace open-tab open-split; do
   grep -Fq "id = \"$action\"" "$MANIFEST" || fail "action '$action' is not declared"
 done
 
@@ -52,6 +54,13 @@ done
 # loading agents, workspaces, and repos on the way to a review.
 grep -Eq '^  git\) entrypoint="git" ;;$' "$ROOT/bin/action.sh" ||
   fail "the git action must open the dedicated git pane"
+
+# Central handoff must close the menu before opening its target; otherwise the
+# new overlay becomes a child of the popup it is replacing.
+close_line="$(grep -n 'plugin pane close.*SWITCHBOARD_HANDOFF_PANE_ID' "$ROOT/bin/action.sh" | cut -d: -f1)"
+open_line="$(grep -n 'if ! "${command\[@\]}"' "$ROOT/bin/action.sh" | cut -d: -f1)"
+[[ -n "$close_line" && -n "$open_line" && "$close_line" -lt "$open_line" ]] ||
+  fail "central menu handoff must close before target open"
 
 # The pane script must resolve from an unrelated working directory.
 foreign_cwd="$(mktemp -d)"

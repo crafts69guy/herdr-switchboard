@@ -9,22 +9,21 @@ source "$SCRIPT_DIR/lib.sh"
 
 PLUGIN_ROOT="${HERDR_PLUGIN_ROOT:-$(cd -- "$SCRIPT_DIR/.." && pwd)}"
 CONFIG_DIR="${HERDR_PLUGIN_CONFIG_DIR:-$PLUGIN_ROOT/.config}"
-CONFIG_FILE="$CONFIG_DIR/config.toml"
-
-configure_notifications "$CONFIG_FILE" true
 
 command -v ghq >/dev/null 2>&1 || die "ghq is required — brew install ghq." "ghq not found on PATH"
 
-# The switcher binary is the single reader of the flat config and the single
+# The switcher binary is the single reader of namespaced config and the single
 # implementation of the open verbs — the clone flow delegates to both rather
 # than mirroring them here. `config get` reads from HERDR_PLUGIN_CONFIG_DIR.
 export HERDR_PLUGIN_CONFIG_DIR="$CONFIG_DIR"
-GHQ_BIN="$(ensure_built)"
+SWITCHBOARD_BIN="$(ensure_built)"
+export SWITCHBOARD_BIN
+configure_notifications "$SWITCHBOARD_BIN" true
 
-clone_source="$("$GHQ_BIN" config get clone_source clipboard)"
-open_after="$("$GHQ_BIN" config get open_after_clone true)"
-default_target="$("$GHQ_BIN" config get default_target workspace)"
-label_mode="$("$GHQ_BIN" config get label repo)"
+clone_source="$("$SWITCHBOARD_BIN" config get clone_source clipboard)"
+open_after="$("$SWITCHBOARD_BIN" config get open_after_clone true)"
+default_target="$("$SWITCHBOARD_BIN" config get default_target workspace)"
+label_mode="$("$SWITCHBOARD_BIN" config get label repo)"
 
 ROOT="$(ghq_root)"
 [[ -n "$ROOT" ]] || die "ghq root is not configured." "ghq root returned empty"
@@ -72,7 +71,7 @@ before="$(ghq list --full-path 2>/dev/null | sort)"
 
 printf '\n'
 if ! ghq get -- "$url"; then
-  notify "Clone failed for $url — check the pane." request
+  notify "Clone failed — check the pane." request
   printf '\n\033[2mpress any key to close\033[0m'
   read -rsn1 _ || true
   exit 1
@@ -89,7 +88,7 @@ if [[ -z "$newpath" ]]; then
 fi
 
 if [[ -z "$newpath" || ! -d "$newpath" ]]; then
-  notify "Cloned, but Ghq could not resolve the path to open." request
+  notify "Cloned, but Switchboard could not resolve the path to open." request
   log "could not resolve cloned path for '$url'"
   exit 0
 fi
@@ -102,12 +101,12 @@ if [[ "$open_after" == "true" ]]; then
     workspace | tab | split | pane) ;;
     *) default_target="workspace" ;;
   esac
-  "$GHQ_BIN" open \
+  "$SWITCHBOARD_BIN" open \
     --target "$default_target" \
     --path "$newpath" \
-    --origin "${GHQ_ORIGIN_PANE_ID:-}" \
+    --origin "${SWITCHBOARD_ORIGIN_PANE_ID:-}" \
     --label "$label" ||
-    die "Ghq could not open $label after cloning." "open $default_target failed for $newpath"
+    die "Switchboard could not open $label after cloning." "open $default_target failed for $newpath"
 else
   notify "Cloned $label." done
   printf '\n\033[2mpress any key to close\033[0m'

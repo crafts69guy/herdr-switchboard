@@ -7,6 +7,32 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Breaking
+
+- Renamed the package, binary, plugin id, release assets, runtime environment variables, and state
+  directory from **herdr-ghq / `ghq`** to **herdr-switchboard / `switchboard`**. Existing flat
+  configuration and state are migrated once, validated, and then removed; no legacy alias or backup
+  is retained. Change `ghq.menu` bindings to `switchboard.projects`.
+
+### Added
+
+- Added the searchable `switchboard.menu` central menu and direct actions
+  `switchboard.projects`, `switchboard.commands`, `switchboard.ports`, and
+  `switchboard.settings`, so every picker can have its own Herdr key binding.
+- Added a Commands picker that merges shell history, presets, and Switchboard selection history;
+  supports quoted/negated field filters; excludes likely secrets; and can fill, run, copy, or forget
+  an exact command. Multiline execution requires typed confirmation.
+- Added a native Ports picker for live TCP listeners with process metadata, automatic refresh,
+  URL/copy/workspace actions, and identity-checked TERM/KILL confirmations.
+- Added four package Settings tabs (`Common / Projects / Commands / Ports`) and semantic Herdr
+  notifications for command-delivery and listener-signal outcomes.
+
+### Changed
+
+- Configuration is typed, namespaced TOML. Commands and Ports share a colorful picker engine with
+  stable selection, mode-specific remaps, inline filter diagnostics, mouse support, preview, and a
+  live command bar.
+
 ## [0.10.0] - 2026-08-03
 
 This release **replaces `hunk` with [`tuicr`](https://github.com/agavra/tuicr)** and moves the git
@@ -457,21 +483,21 @@ tuicr's own colours.
   open it in a new workspace, tab, split, or the current pane, plus clone (`ghq get`),
   update, remove, and a handoff to the git-hub menu.
 
-[Unreleased]: https://github.com/crafts69guy/herdr-ghq/compare/v0.10.0...HEAD
-[0.10.0]: https://github.com/crafts69guy/herdr-ghq/compare/v0.9.0...v0.10.0
-[0.9.0]: https://github.com/crafts69guy/herdr-ghq/compare/v0.8.0...v0.9.0
-[0.8.0]: https://github.com/crafts69guy/herdr-ghq/compare/v0.7.0...v0.8.0
-[0.7.0]: https://github.com/crafts69guy/herdr-ghq/compare/v0.6.0...v0.7.0
-[0.6.0]: https://github.com/crafts69guy/herdr-ghq/compare/v0.5.0...v0.6.0
-[0.5.0]: https://github.com/crafts69guy/herdr-ghq/compare/v0.4.0...v0.5.0
-[0.4.0]: https://github.com/crafts69guy/herdr-ghq/compare/v0.3.4...v0.4.0
-[0.3.4]: https://github.com/crafts69guy/herdr-ghq/compare/v0.3.3...v0.3.4
-[0.3.3]: https://github.com/crafts69guy/herdr-ghq/compare/v0.3.2...v0.3.3
-[0.3.2]: https://github.com/crafts69guy/herdr-ghq/compare/v0.3.1...v0.3.2
-[0.3.1]: https://github.com/crafts69guy/herdr-ghq/compare/v0.3.0...v0.3.1
-[0.3.0]: https://github.com/crafts69guy/herdr-ghq/compare/v0.2.3...v0.3.0
-[0.2.3]: https://github.com/crafts69guy/herdr-ghq/compare/v0.2.2...v0.2.3
-[0.2.2]: https://github.com/crafts69guy/herdr-ghq/compare/v0.2.1...v0.2.2
-[0.2.1]: https://github.com/crafts69guy/herdr-ghq/compare/v0.2.0...v0.2.1
-[0.2.0]: https://github.com/crafts69guy/herdr-ghq/compare/v0.1.0...v0.2.0
-[0.1.0]: https://github.com/crafts69guy/herdr-ghq/releases/tag/v0.1.0
+[Unreleased]: https://github.com/crafts69guy/herdr-switchboard/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/crafts69guy/herdr-switchboard/compare/v0.9.0...v0.10.0
+[0.9.0]: https://github.com/crafts69guy/herdr-switchboard/compare/v0.8.0...v0.9.0
+[0.8.0]: https://github.com/crafts69guy/herdr-switchboard/compare/v0.7.0...v0.8.0
+[0.7.0]: https://github.com/crafts69guy/herdr-switchboard/compare/v0.6.0...v0.7.0
+[0.6.0]: https://github.com/crafts69guy/herdr-switchboard/compare/v0.5.0...v0.6.0
+[0.5.0]: https://github.com/crafts69guy/herdr-switchboard/compare/v0.4.0...v0.5.0
+[0.4.0]: https://github.com/crafts69guy/herdr-switchboard/compare/v0.3.4...v0.4.0
+[0.3.4]: https://github.com/crafts69guy/herdr-switchboard/compare/v0.3.3...v0.3.4
+[0.3.3]: https://github.com/crafts69guy/herdr-switchboard/compare/v0.3.2...v0.3.3
+[0.3.2]: https://github.com/crafts69guy/herdr-switchboard/compare/v0.3.1...v0.3.2
+[0.3.1]: https://github.com/crafts69guy/herdr-switchboard/compare/v0.3.0...v0.3.1
+[0.3.0]: https://github.com/crafts69guy/herdr-switchboard/compare/v0.2.3...v0.3.0
+[0.2.3]: https://github.com/crafts69guy/herdr-switchboard/compare/v0.2.2...v0.2.3
+[0.2.2]: https://github.com/crafts69guy/herdr-switchboard/compare/v0.2.1...v0.2.2
+[0.2.1]: https://github.com/crafts69guy/herdr-switchboard/compare/v0.2.0...v0.2.1
+[0.2.0]: https://github.com/crafts69guy/herdr-switchboard/compare/v0.1.0...v0.2.0
+[0.1.0]: https://github.com/crafts69guy/herdr-switchboard/releases/tag/v0.1.0

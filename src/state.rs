@@ -10,8 +10,8 @@ use std::env;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// The plugin's state directory: `$XDG_STATE_HOME/herdr-ghq`, falling back to
-/// `~/.local/state/herdr-ghq`. `None` when neither var is set — callers then
+/// The plugin's state directory: `$XDG_STATE_HOME/herdr-switchboard`, falling back to
+/// `~/.local/state/herdr-switchboard`. `None` when neither var is set — callers then
 /// skip the file entirely, which is the "no history / no cache" degrade.
 pub fn state_dir() -> Option<PathBuf> {
     let base = env::var("XDG_STATE_HOME")
@@ -23,7 +23,7 @@ pub fn state_dir() -> Option<PathBuf> {
                 .ok()
                 .map(|h| PathBuf::from(h).join(".local/state"))
         })?;
-    Some(base.join("herdr-ghq"))
+    Some(base.join("herdr-switchboard"))
 }
 
 /// A file inside [`state_dir`], or `None` when there is no state dir.

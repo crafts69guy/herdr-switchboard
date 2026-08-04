@@ -6,47 +6,59 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/lib.sh"
 
 ACTION_ID="${HERDR_PLUGIN_ACTION_ID:-}"
-[[ -n "$ACTION_ID" ]] || die "Ghq could not determine which action to run." "HERDR_PLUGIN_ACTION_ID is not set"
+[[ -n "$ACTION_ID" ]] || die "Switchboard could not determine which action to run." "HERDR_PLUGIN_ACTION_ID is not set"
 
 # Map each action to the overlay pane it opens and, for the hot-path actions,
 # the Enter target the picker should force.
 entrypoint=""
 force_target=""
 case "$ACTION_ID" in
-  menu) entrypoint="picker" ;;
+  menu) entrypoint="menu" ;;
+  projects) entrypoint="projects" ;;
+  commands) entrypoint="commands" ;;
+  ports) entrypoint="ports" ;;
+  settings) entrypoint="settings" ;;
   git) entrypoint="git" ;;
-  open-workspace) entrypoint="picker"; force_target="workspace" ;;
-  open-tab) entrypoint="picker"; force_target="tab" ;;
-  open-split) entrypoint="picker"; force_target="split" ;;
-  get) entrypoint="get" ;;
+  open-workspace) entrypoint="projects"; force_target="workspace" ;;
+  open-tab) entrypoint="projects"; force_target="tab" ;;
+  open-split) entrypoint="projects"; force_target="split" ;;
+  clone) entrypoint="clone" ;;
   changelog) entrypoint="changelog" ;;
-  update-plugin) entrypoint="update-plugin" ;;
-  *) die "Ghq received an unsupported action. Check plugin logs." "unknown plugin action '$ACTION_ID'" ;;
+  update) entrypoint="update" ;;
+  *) die "Switchboard received an unsupported action. Check plugin logs." "unknown plugin action '$ACTION_ID'" ;;
 esac
 
-command -v ghq >/dev/null 2>&1 || die "ghq is required — brew install ghq." "ghq not found on PATH"
+case "$entrypoint" in
+  projects|git|clone) command -v ghq >/dev/null 2>&1 || die "ghq is required — brew install ghq." "ghq not found on PATH" ;;
+esac
 
-pane_id="$(context_pane_id)"
-cwd=""
+pane_id="${SWITCHBOARD_ORIGIN_PANE_ID:-$(context_pane_id)}"
+cwd="${SWITCHBOARD_ORIGIN_CWD:-}"
 
 # The picker is a full overlay. The changelog is a fixed-size popup — it scrolls, so
 # height is comfort rather than a fit. (Settings is not a pane: it is an in-picker
 # floating overlay, opened with ⌥, from the switcher.)
 placement=(--placement overlay)
 case "$entrypoint" in
+  menu) placement=(--placement popup --width 76 --height 24) ;;
+  settings) placement=(--placement popup --width 100 --height 32) ;;
   changelog) placement=(--placement popup --width 88 --height 28) ;;
 esac
 
-command=("$(herdr_bin)" plugin pane open --plugin ghq --entrypoint "$entrypoint" "${placement[@]}")
-if cwd="$(active_cwd "$pane_id")"; then
-  command+=(--cwd "$cwd" --env "GHQ_ORIGIN_CWD=$cwd")
+command=("$(herdr_bin)" plugin pane open --plugin switchboard --entrypoint "$entrypoint" "${placement[@]}")
+if [[ -n "$cwd" ]] || cwd="$(active_cwd "$pane_id")"; then
+  command+=(--cwd "$cwd" --env "SWITCHBOARD_ORIGIN_CWD=$cwd")
 fi
 if [[ -n "$pane_id" ]]; then
-  command+=(--env "GHQ_ORIGIN_PANE_ID=$pane_id")
+  command+=(--env "SWITCHBOARD_ORIGIN_PANE_ID=$pane_id")
 fi
 if [[ -n "$force_target" ]]; then
-  command+=(--env "GHQ_FORCE_TARGET=$force_target")
+  command+=(--env "SWITCHBOARD_FORCE_TARGET=$force_target")
+fi
+if [[ -n "${SWITCHBOARD_HANDOFF_PANE_ID:-}" ]]; then
+  "$(herdr_bin)" plugin pane close "$SWITCHBOARD_HANDOFF_PANE_ID" >/dev/null 2>&1 ||
+    die "Switchboard could not close its menu pane." "menu handoff close failed"
 fi
 if ! "${command[@]}"; then
-  die "Ghq could not open the $entrypoint pane. Check plugin logs." "herdr failed to open the ghq $entrypoint pane"
+  die "Switchboard could not open the $entrypoint pane. Check plugin logs." "herdr failed to open the switchboard $entrypoint pane"
 fi

@@ -25,7 +25,7 @@ pub struct LoadCtx<'a> {
 /// One switchable source of entries.
 pub trait Source {
     fn kind(&self) -> Kind;
-    /// Whether this source is turned on, per the flat config.
+    /// Whether this source is turned on by Projects configuration.
     fn enabled(&self, cfg: &Config) -> bool;
     fn load(&self, ctx: &LoadCtx) -> Vec<Entry>;
 }

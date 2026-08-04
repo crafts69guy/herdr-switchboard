@@ -10,7 +10,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=bin/lib.sh
 source "$SCRIPT_DIR/lib.sh"
 
-REPO="crafts69guy/herdr-ghq"
+REPO="crafts69guy/herdr-switchboard"
 
 pause() {
   printf '\n\033[2mpress any key to close\033[0m'
@@ -28,7 +28,7 @@ pause() {
 # it is optional for this plugin, and the launcher path must not depend on it.
 source_kind() {
   local json
-  json="$("$(herdr_bin)" plugin list --plugin ghq --json 2>/dev/null)" || return 1
+  json="$("$(herdr_bin)" plugin list --plugin switchboard --json 2>/dev/null)" || return 1
   # Anchored to the source object, so an unrelated "kind" elsewhere cannot answer for it.
   printf '%s' "$json" |
     grep -o '"source":{"kind":"[^"]*"' |
@@ -37,21 +37,21 @@ source_kind() {
 }
 
 plugin_field() {
-  "$(herdr_bin)" plugin list --plugin ghq --json 2>/dev/null | json_string_value "$1"
+  "$(herdr_bin)" plugin list --plugin switchboard --json 2>/dev/null | json_string_value "$1"
 }
 
 kind="$(source_kind || true)"
 
 if [[ "$kind" != "github" ]]; then
   root="$(plugin_field plugin_root || true)"
-  printf '\033[1mGhq is not a managed install.\033[0m\n\n'
+  printf '\033[1mSwitchboard is not a managed install.\033[0m\n\n'
   if [[ "$kind" == "local" ]]; then
     printf 'It is linked from a checkout you control:\n\n  \033[36m%s\033[0m\n\n' "${root:-unknown}"
     printf 'Updating would overwrite that working tree, so this stops here. Pull it\n'
     printf 'yourself, and relink to let herdr re-read the manifest:\n\n'
     printf '  \033[2mgit -C %s pull\033[0m\n' "${root:-<checkout>}"
     printf '  \033[2mcargo build --release --manifest-path %s/Cargo.toml\033[0m\n' "${root:-<checkout>}"
-    printf '  \033[2mherdr plugin unlink ghq && herdr plugin link %s\033[0m\n' "${root:-<checkout>}"
+  printf '  \033[2mherdr plugin unlink switchboard && herdr plugin link %s\033[0m\n' "${root:-<checkout>}"
   else
     printf 'herdr reports its source as \033[33m%s\033[0m, which this cannot update safely.\n' "${kind:-unreadable}"
     printf 'Install it from GitHub to get updates:\n\n  \033[2mherdr plugin install %s\033[0m\n' "$REPO"
@@ -60,10 +60,10 @@ if [[ "$kind" != "github" ]]; then
   exit 0
 fi
 
-printf '\033[1mUpdating Ghq\033[0m from \033[36m%s\033[0m\n\n' "$REPO"
+printf '\033[1mUpdating Switchboard\033[0m from \033[36m%s\033[0m\n\n' "$REPO"
 
 if ! "$(herdr_bin)" plugin install "$REPO" --yes; then
-  die "Ghq could not be updated. Check the pane for details." "herdr plugin install $REPO failed"
+  die "Switchboard could not be updated. Check the pane for details." "herdr plugin install $REPO failed"
 fi
 
 # Prepare the versioned release binary while this update pane is already open. The
@@ -73,6 +73,9 @@ root="$(plugin_field plugin_root || true)"
 if [[ -n "$root" && -f "$root/Cargo.toml" ]]; then
   if ! HERDR_PLUGIN_ROOT="$root" bash "$root/bin/picker.sh" --prepare; then
     log "binary preparation failed; the next switcher open will retry"
+  else
+    SWITCHBOARD_BIN="$(HERDR_PLUGIN_ROOT="$root" ensure_built)"
+    export SWITCHBOARD_BIN
   fi
 fi
 

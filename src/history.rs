@@ -12,8 +12,8 @@ use crate::state::{now, state_file};
 /// Keep at most this many entries; oldest are dropped on write.
 const CAP: usize = 200;
 
-/// Location of the recency file: `$XDG_STATE_HOME/herdr-ghq/recent.tsv`,
-/// falling back to `~/.local/state/herdr-ghq/recent.tsv`.
+/// Location of the recency file: `$XDG_STATE_HOME/herdr-switchboard/recent.tsv`,
+/// falling back to `~/.local/state/herdr-switchboard/recent.tsv`.
 fn path() -> Option<PathBuf> {
     state_file("recent.tsv")
 }

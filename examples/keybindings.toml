@@ -7,33 +7,38 @@
 [[keys.command]]
 key = "prefix+space"
 type = "plugin_action"
-command = "ghq.menu"
-description = "Project switcher (ghq)"
+command = "switchboard.menu"
+description = "Switchboard menu"
+
+# Direct pickers skip the central menu. Bind any or all of them.
+# command = "switchboard.projects"
+# command = "switchboard.commands"
+# command = "switchboard.ports"
 
 # Optional: open the git menu (tuicr review + lazygit) for the current repo, in
 # its own pane. This is the only way to reach it — the switcher has no git key.
 # [[keys.command]]
 # key = "prefix+g"
 # type = "plugin_action"
-# command = "ghq.git"
-# description = "Git menu (ghq)"
+# command = "switchboard.git"
+# description = "Git menu"
 
 # Optional: a dedicated clone key.
 # [[keys.command]]
 # key = "prefix+alt+p"
 # type = "plugin_action"
-# command = "ghq.get"
+# command = "switchboard.clone"
 # description = "Clone a repository (ghq get)"
 
 # Optional hot-path bindings — pick a repo with Enter forced to one target:
 # [[keys.command]]
 # key = "prefix+alt+t"
 # type = "plugin_action"
-# command = "ghq.open-tab"
+# command = "switchboard.open-tab"
 # description = "Open a repo in a new tab"
 
 # [[keys.command]]
 # key = "prefix+alt+s"
 # type = "plugin_action"
-# command = "ghq.open-split"
+# command = "switchboard.open-split"
 # description = "Open a repo in a split"
