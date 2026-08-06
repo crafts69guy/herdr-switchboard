@@ -113,6 +113,12 @@ must come from `herdr agent list`, `herdr workspace list`, or the captured origi
 - `changelog.rs` — the `--changelog` mode: parses `$HERDR_PLUGIN_ROOT/CHANGELOG.md` and renders it
   (inline markdown, hanging-indent wrap, `← installed` marker from `CARGO_PKG_VERSION`). `parse` +
   `render` are shared with the picker's `⌥c` popup, so both surfaces stay identical
+- `zen.rs` — the whole zen feature: the enter/leave state machine, the `--zen` `PickerMode`, and
+  the `zen toggle|on|off` CLI verb. Pure geometry (`gutter_ratios`, `anchor_between`) and the
+  state-file codec are separated from the herdr calls so both are testable without a running
+  herdr; every herdr call goes through `CommandRunner`
+- `socket.rs` — **the only** code that talks to herdr's unix socket instead of the CLI, and only
+  because `pane.graphics.set`/`.clear` have no CLI subcommand. Everything in it fails soft
 - `update.rs` — the `--update-check` mode plus the cache the picker reads
   (`$XDG_STATE_HOME/herdr-switchboard/update.tsv`, `checked_at<TAB>latest`, 24h TTL)
 
@@ -227,6 +233,29 @@ order so the list stays stable.
   `dispatch`. Enter on an **agent** or **workspace** still focuses that entry — forcing a target
   only changes where a _repo_ lands, matching the manifest's "Pick a repo; Enter opens it in…".
   Invalid values on either the env var or the config degrade to `workspace` instead of erroring.
+- **Zen cannot be built on `herdr pane zoom`, and this was measured.** Splitting a zoomed tab
+  **silently cancels the zoom** (`zoomed` flips to `false` the moment a gutter appears), and
+  `pane layout` on a zoomed tab reports the *underlying* rects rather than the rendered ones, so
+  gutters sized from it land wrong. Zen therefore `pane move --new-tab`s the target instead —
+  which preserves its `terminal_id`, so the process survives — and **never touches another pane**.
+  Do not "simplify" zen back to zoom: it silently produces a tab with an uncentred pane and two
+  stray shells. Two further counter-intuitive facts the centring depends on: `pane split` can only
+  place a new pane **right or down**, and `--ratio R` gives `R` to the **existing** pane, not the
+  new one — hence the swap in step 3 of `zen::enter`.
+- **`layout.apply` is destructive — never call it.** It looks like the natural way to restore a
+  tab's layout, and given a tree of existing `pane_id`s it does **not** re-parent them: it builds
+  a *new* tab full of *new* panes and discards the originals, processes and all (measured against
+  0.8.0 — it silently replaced three live panes with fresh shells). Its sibling `layout.export` is
+  read-only and safe, and is what `zen::sibling_anchor` reads. This is why zen's restore is
+  `pane move` + `pane swap`, and why a deeply nested tab restores approximately: there is no
+  non-destructive verb for "insert at this point in the tree". `Anchor::exact` carries that fact
+  and the exit notifies rather than silently rearranging.
+- **`socket.rs` is a deliberate exception to the `CommandRunner` rule, not a precedent.**
+  `pane.graphics.*` is absent from `herdr pane --help` and reachable only over the socket, so the
+  gutter scrim has no CLI path. Everything else must keep shelling out through `CommandRunner`,
+  which is what keeps the IO edge mockable. herdr composites the scrim **opaque** regardless of the
+  alpha byte, so there is no translucency knob to add — and the scrim is painted over *parked
+  gutters*, never over live panes, because a pane that redraws would punch through it.
 - **Version sync:** `Cargo.toml` and `herdr-plugin.toml` versions must match; `tests/manifest_spec.sh`
   enforces it. `bin/release.sh` bumps both, so bump through it rather than by hand.
 - **The changelog is the release notes.** Every user-facing change adds a line to

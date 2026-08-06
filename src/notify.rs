@@ -31,6 +31,17 @@ impl Notifier {
         }
     }
 
+    /// A notifier that never sends. Tests exercising a code path that reports to
+    /// the user must not shell out to a real `herdr notification show`.
+    #[cfg(test)]
+    pub fn silent() -> Self {
+        Self {
+            enabled: false,
+            position: String::new(),
+            sound: String::new(),
+        }
+    }
+
     pub fn send(&self, event: Event, subject: Option<&str>) {
         let Some(args) = self.args(event, subject) else {
             return;

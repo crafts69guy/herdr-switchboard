@@ -75,6 +75,22 @@ description = "Read what changed in this plugin, including the version you have 
 contexts = ["global", "pane"]
 command = ["bash", "bin/action.sh"]
 
+[[actions]]
+id = "zen"
+title = "Zen"
+description = "Pick a pane; it moves to a tab of its own, centred between two dimmed gutters."
+contexts = ["global", "pane"]
+command = ["bash", "bin/action.sh"]
+
+# The only action that opens no pane: it acts on the pane you pressed it in, so
+# a dedicated key toggles zen without a picker ever appearing.
+[[actions]]
+id = "zen-toggle"
+title = "Toggle Zen"
+description = "Put the current pane in zen, or bring it back if it is already there."
+contexts = ["global", "pane"]
+command = ["bash", "bin/action.sh"]
+
 # Optional hot-path actions: open the picker with the Enter target forced, so a
 # dedicated key always lands the chosen repo in a workspace / tab / split.
 [[actions]]
@@ -131,6 +147,12 @@ id = "ports"
 title = "󰛳"
 placement = "overlay"
 command = ["bash", "-c", "exec bash \"$HERDR_PLUGIN_ROOT/bin/picker.sh\" --ports"]
+
+[[panes]]
+id = "zen"
+title = "󰄄"
+placement = "overlay"
+command = ["bash", "-c", "exec bash \"$HERDR_PLUGIN_ROOT/bin/picker.sh\" --zen"]
 
 [[panes]]
 id = "settings"

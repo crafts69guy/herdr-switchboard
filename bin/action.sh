@@ -20,6 +20,8 @@ case "$ACTION_ID" in
   ports) entrypoint="ports" ;;
   settings) entrypoint="settings" ;;
   git) entrypoint="git" ;;
+  zen) entrypoint="zen" ;;
+  zen-toggle) entrypoint="zen-toggle" ;;
   open-workspace) entrypoint="projects"; force_target="workspace" ;;
   open-tab) entrypoint="projects"; force_target="tab" ;;
   open-split) entrypoint="projects"; force_target="split" ;;
@@ -35,6 +37,16 @@ esac
 
 pane_id="${SWITCHBOARD_ORIGIN_PANE_ID:-$(context_pane_id)}"
 cwd="${SWITCHBOARD_ORIGIN_CWD:-}"
+
+# zen-toggle is the one action that opens no pane. It acts on the pane the key
+# was pressed in and exits, so none of the pane plumbing below applies — and it
+# must not open an overlay, because an overlay would steal the focus that zen is
+# about to hand to the pane it moves.
+if [[ "$entrypoint" == "zen-toggle" ]]; then
+  [[ -n "$pane_id" ]] ||
+    die "Switchboard could not tell which pane to zen." "no origin pane id for zen-toggle"
+  exec "$(ensure_built)" zen toggle --pane "$pane_id"
+fi
 
 wait_for_handoff_parent() {
   local parent_pid="${SWITCHBOARD_HANDOFF_PARENT_PID:-}"

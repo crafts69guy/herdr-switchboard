@@ -19,6 +19,7 @@ mod preview;
 mod query;
 mod runner;
 mod settings;
+mod socket;
 mod source;
 mod splash;
 mod state;
@@ -26,6 +27,7 @@ mod trace;
 mod tui;
 mod ui;
 mod update;
+mod zen;
 
 use std::cmp::Reverse;
 use std::collections::HashMap;
@@ -1006,8 +1008,10 @@ fn main() -> Result<()> {
         Some("--commands") => return commands::main(Config::try_load()?, Theme::load()),
         Some("--ports") => return ports::main(Config::try_load()?, Theme::load()),
         Some("--settings") => return settings::main(Config::try_load()?, Theme::load()),
+        Some("--zen") => return zen::main(Config::try_load()?, Theme::load()),
         Some("open") => return cli_open(&args[1..]),
         Some("config") => return cli_config(&args[1..]),
+        Some("zen") => return zen::cli(&runner::SystemRunner, &args[1..], &Config::try_load()?),
         Some("notify") => return notify::cli(&args[1..], &Config::try_load()?),
         _ => {}
     }

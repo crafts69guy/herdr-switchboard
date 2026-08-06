@@ -83,6 +83,15 @@ const ROUTES: &[Route] = &[
         key_label: "⌥o",
     },
     Route {
+        id: "zen",
+        group: "Pickers",
+        title: "Zen",
+        detail: "give one pane the screen, centred and flanked",
+        color: "mauve",
+        mnemonic: 'z',
+        key_label: "⌥z",
+    },
+    Route {
         id: "git",
         group: "Utilities",
         title: "Git",

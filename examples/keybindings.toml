@@ -31,6 +31,15 @@ description = "Switchboard menu"
 # command = "switchboard.git"
 # description = "Git menu"
 
+# Optional: zen mode. `zen-toggle` acts on the pane you press it in and opens no
+# picker, which is what makes it worth a dedicated key; `switchboard.zen` opens a
+# picker to zen some other pane.
+# [[keys.command]]
+# key = "prefix+z"
+# type = "plugin_action"
+# command = "switchboard.zen-toggle"
+# description = "Toggle zen on this pane"
+
 # Optional: a dedicated clone key.
 # [[keys.command]]
 # key = "prefix+alt+p"

@@ -132,6 +132,8 @@ Bind any of these as a Herdr `plugin_action`:
 | `switchboard.ports`                                              | Ports: live listeners, owner process and safe actions           |
 | `switchboard.settings`                                           | package settings (`Common / Projects / Commands / Ports`)       |
 | `switchboard.git`                                                | the git menu for the current repo, in its own pane (bind to `prefix+g`) |
+| `switchboard.zen-toggle`                                         | put **this** pane in zen, or bring it back (opens no picker; bind to `prefix+z`) |
+| `switchboard.zen`                                                | Zen: pick which pane to zen                                     |
 | `switchboard.clone`                                              | the clone flow                                                 |
 | `switchboard.changelog`                                          | what changed, with your installed version marked               |
 | `switchboard.update`                                             | install a newer version (refuses to touch a `link`ed checkout) |
@@ -172,6 +174,31 @@ same PID and port. Search fields include `port:`, `address:`, `pid:`, `process:`
 `localhost:PORT`, `ctrl-enter`/`alt-enter` open HTTP/HTTPS, and `ctrl-w` opens the process cwd as a
 workspace. TERM (`ctrl-x`) and KILL (`alt-x`) each require confirmation, ownership, and a fresh
 PID + process-start identity check; Switchboard never signals a parent or process group.
+
+### Zen
+
+Zen gives one pane the screen: it moves into a tab of its own, centred at `zen_width` (70% by
+default) between two dimmed gutters, and toggling again puts it back beside the pane it came from.
+`switchboard.zen-toggle` acts on the pane you press it in and never opens a picker, which is what
+makes it worth a dedicated key; `switchboard.zen` (`⌥z` in the central menu) opens a picker so you
+can zen some *other* pane, and `ctrl-x` there leaves zen.
+
+Only the zen'd pane ever moves — its neighbours keep running, untouched, in the original tab, and
+the pane's own process survives the move. Herdr has no pane opacity or dim-inactive setting, so the
+gutters are dimmed by painting over them through Herdr's graphics API. That needs
+`[experimental] kitty_graphics = true` in Herdr's own config; without it the gutters are blank
+rather than dark and nothing errors. Set `zen_scrim = false` if you would rather they stayed plain.
+
+Leaving zen puts every pane back. In a two-pane tab — and wherever the zen'd pane's neighbour was
+a single pane rather than a nested group — the original layout is reproduced exactly. In a tab
+whose splits nest more deeply, Herdr 0.8.0 offers no way to re-insert a pane at an arbitrary point
+in the split tree, so the pane returns beside its nearest former neighbour and the nesting can
+differ; Switchboard says so with a notification rather than rearranging your tab quietly. Nothing
+is ever lost or restarted.
+
+Zen is deliberately not built on `herdr pane zoom`: splitting a zoomed tab silently cancels the
+zoom, so gutters and zoom cannot coexist. If you want plain fullscreen with no centring, Herdr's
+own `prefix+z` already does it.
 
 ## Git menu
 
@@ -236,6 +263,7 @@ Every key is documented in `examples/config.toml`. The ones you're most likely t
 | `clone_source`                          | seed the clone prompt from the `clipboard` (default) or start blank         |
 | `base_branch`                           | base for the git menu's branch review (blank = auto-detect)                 |
 | `split_direction` / `split_ratio`       | geometry for split targets                                                  |
+| `zen_width` / `zen_scrim` / `zen_scrim_color` | zen's centred width (20–95), and whether/what colour the gutters are dimmed |
 | `update_check`                          | ask GitHub once a day whether a newer version is tagged (`true` by default) |
 | `notifications` / `notification_position` | herdr toasts, and which corner they land in                               |
 | `notification_sound`                    | `auto` (per-event, default) · `none` · `done` · `request`                   |

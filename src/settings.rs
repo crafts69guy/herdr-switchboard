@@ -262,6 +262,27 @@ const SETTINGS: &[Setting] = &[
         hint: "listener refresh interval (minimum 250ms)",
         cycle: Cycle::Prompt,
     },
+    Setting {
+        group: "Zen",
+        key: "zen_width",
+        default: "70",
+        hint: "zen'd pane's share of the tab (20-95%)",
+        cycle: Cycle::Ring(&["60", "70", "80", "90"]),
+    },
+    Setting {
+        group: "Zen",
+        key: "zen_scrim",
+        default: "true",
+        hint: "dim the zen gutters",
+        cycle: Cycle::Ring(BOOL),
+    },
+    Setting {
+        group: "Zen",
+        key: "zen_scrim_color",
+        default: "#11111b",
+        hint: "gutter colour (#rrggbb; herdr paints it opaque)",
+        cycle: Cycle::Prompt,
+    },
 ];
 
 /// The next value in a ring. An unknown current value restarts at the first.
@@ -297,7 +318,7 @@ fn set_document_value(doc: &mut toml_edit::DocumentMut, key: &str, value: &str) 
     }
     if is_bool_setting(key) {
         doc[section][field] = toml_edit::value(value == "true");
-    } else if matches!(key, "history_limit" | "refresh_interval_ms") {
+    } else if matches!(key, "history_limit" | "refresh_interval_ms" | "zen_width") {
         doc[section][field] = toml_edit::value(value.parse::<i64>()?);
     } else {
         doc[section][field] = toml_edit::value(value);
@@ -329,6 +350,9 @@ fn setting_path(key: &str) -> (&'static str, &str) {
         "history_limit" => ("commands", key),
         "command_sort" => ("commands", "sort"),
         "refresh_interval_ms" => ("ports", key),
+        "zen_width" => ("zen", "width"),
+        "zen_scrim" => ("zen", "scrim"),
+        "zen_scrim_color" => ("zen", "scrim_color"),
         _ => ("projects", key),
     }
 }
@@ -343,6 +367,7 @@ fn is_bool_setting(key: &str) -> bool {
             | "include_worktrees"
             | "preview_readme"
             | "open_after_clone"
+            | "zen_scrim"
     )
 }
 
@@ -533,7 +558,7 @@ const TABS: [&str; 4] = ["Common", "Projects", "Commands", "Ports"];
 
 fn setting_tab(key: &str) -> usize {
     match setting_path(key).0 {
-        "common" => 0,
+        "common" | "zen" => 0,
         "commands" => 2,
         "ports" => 3,
         _ => 1,
@@ -552,6 +577,7 @@ const RIGHT_GROUPS: &[&str] = &[
     "Notifications",
     "Catalog",
     "Monitor",
+    "Zen",
 ];
 
 const NAME_W: usize = 21; // widest key ("notification_position")

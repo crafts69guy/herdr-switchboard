@@ -46,6 +46,16 @@ open_after = true
 [git]
 base_branch = ""
 
+[zen]
+# The zen'd pane's share of the tab; the rest is split evenly into two gutters.
+width = 70
+# Dim the gutters. Needs `[experimental] kitty_graphics = true` in herdr's own
+# config — without it the gutters stay blank rather than dark, and nothing errors.
+scrim = true
+# Herdr composites the scrim opaquely, so this is the colour the gutters become,
+# not a tint over what is under them.
+scrim_color = "#11111b"
+
 # Picker-specific remaps. Projects keeps its full existing action vocabulary;
 # Commands and Ports use the action ids printed in their footer.
 [keys.agents]
@@ -58,3 +68,7 @@ base_branch = ""
 
 [keys.ports]
 # workspace = "ctrl-w"
+
+[keys.zen]
+# zen = "enter"
+# exit = "ctrl-x"

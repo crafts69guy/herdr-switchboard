@@ -9,6 +9,16 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Zen mode.** `switchboard.zen-toggle` gives the current pane the screen: it moves to a tab of
+  its own, centred at `zen.width` (default 70%) between two dimmed gutters, and toggling again
+  puts it back where it was. `switchboard.zen` opens a picker to zen any pane instead of the
+  current one. The gutters are dimmed by painting over them through Herdr's graphics API, which
+  needs `[experimental] kitty_graphics = true`; without it the gutters are simply blank. Tune it
+  with `zen.width`, `zen.scrim`, and `zen.scrim_color`, or from the settings overlay. Neighbouring
+  panes are never touched — only the zen'd pane moves, and its running process survives the move.
+  Leaving zen restores a two-pane tab exactly; a more deeply nested tab gets every pane back beside
+  its former neighbour, with a notification when the split nesting could not be reproduced.
+
 - **An AI Agents picker.** Bind `switchboard.agents` or open it from the central menu to list the
   AI integrations installed in Herdr. `enter` starts the selected AI in the origin pane, `ctrl-t`
   starts it in a new tab, and `alt-w` starts it in a new workspace; failed starts clean up any

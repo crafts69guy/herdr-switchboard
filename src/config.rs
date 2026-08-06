@@ -18,6 +18,7 @@ pub struct Config {
     pub ports: Ports,
     pub clone: CloneFlow,
     pub git: Git,
+    pub zen: Zen,
     #[serde(default)]
     pub keys: HashMap<String, HashMap<String, String>>,
     #[serde(skip)]
@@ -80,6 +81,28 @@ pub struct CloneFlow {
 #[serde(default)]
 pub struct Git {
     pub base_branch: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default)]
+pub struct Zen {
+    /// The zen'd pane's share of the tab, as a percentage. The rest is split
+    /// evenly between the two gutters.
+    pub width: u16,
+    pub scrim: bool,
+    /// `#rrggbb`. herdr composites the scrim opaquely, so this is the colour the
+    /// gutters actually become, not a tint over them.
+    pub scrim_color: String,
+}
+
+impl Default for Zen {
+    fn default() -> Self {
+        Self {
+            width: 70,
+            scrim: true,
+            scrim_color: "#11111b".into(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -228,6 +251,10 @@ impl Config {
             matches!(self.common.keymode.as_str(), "insert" | "normal"),
             "common.keymode must be insert or normal"
         );
+        anyhow::ensure!(
+            (20..=95).contains(&self.zen.width),
+            "zen.width must be between 20 and 95"
+        );
         Ok(())
     }
 
@@ -271,6 +298,9 @@ impl Config {
                 "refresh_interval_ms",
                 self.ports.refresh_interval_ms.to_string(),
             ),
+            ("zen_width", self.zen.width.to_string()),
+            ("zen_scrim", self.zen.scrim.to_string()),
+            ("zen_scrim_color", self.zen.scrim_color.clone()),
         ];
         self.values.extend(
             pairs
