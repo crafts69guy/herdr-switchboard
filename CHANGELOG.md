@@ -17,6 +17,11 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Opening AI Agents or another popup from the Central Menu now waits for the menu popup to close,
+  so Herdr no longer rejects the replacement as `popup already open`.
+- The AI Agents picker now closes immediately after a selection while startup readiness is checked
+  in the background; failed starts still clean up new tabs or workspaces and report the error with
+  a notification.
 - Linked development checkouts now rebuild their release binary when Rust sources or Cargo metadata
   are newer, instead of silently running an old same-version binary after source changes.
 

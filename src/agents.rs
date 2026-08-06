@@ -7,6 +7,8 @@
 
 use std::collections::{HashMap, HashSet};
 use std::env;
+use std::fs::{self, File, OpenOptions};
+use std::path::Path;
 
 use anyhow::{anyhow, Context, Result};
 use crossterm::event::{KeyCode, KeyModifiers};
@@ -14,6 +16,7 @@ use serde_json::Value;
 
 use crate::config::Config;
 use crate::data::Theme;
+use crate::notify::{Event as NotifyEvent, Notifier};
 use crate::picker::{self, ActionOutcome, ActionSpec, PickerItem, PickerMode};
 use crate::query::{Document, FieldSchema};
 use crate::runner::{CommandRunner, SystemRunner};
@@ -50,6 +53,38 @@ struct AgentsMode {
     origin_cwd: String,
     bindings: HashMap<String, String>,
     integrations: Vec<Integration>,
+}
+
+impl AgentsMode {
+    fn execute_with(
+        &mut self,
+        runner: &dyn CommandRunner,
+        item_id: &str,
+        action: &str,
+    ) -> Result<ActionOutcome> {
+        let integration = self
+            .integrations
+            .iter()
+            .find(|integration| integration.id == item_id)
+            .ok_or_else(|| anyhow!("integration {item_id} is no longer available"))?;
+        let target = match action {
+            "pane" => Target::Pane,
+            "tab" => Target::Tab,
+            "workspace" => Target::Workspace,
+            _ => return Err(anyhow!("unknown agent target {action}")),
+        };
+        schedule_launch(
+            runner,
+            &LaunchRequest {
+                kind: integration.kind.clone(),
+                title: integration.title.clone(),
+                target,
+                origin_pane: self.origin_pane.clone(),
+                origin_cwd: self.origin_cwd.clone(),
+            },
+        )?;
+        Ok(ActionOutcome::Close)
+    }
 }
 
 impl PickerMode for AgentsMode {
@@ -137,26 +172,47 @@ impl PickerMode for AgentsMode {
     }
 
     fn execute(&mut self, item_id: &str, action: &str) -> Result<ActionOutcome> {
-        let integration = self
-            .integrations
-            .iter()
-            .find(|integration| integration.id == item_id)
-            .ok_or_else(|| anyhow!("integration {item_id} is no longer available"))?;
-        let target = match action {
-            "pane" => Target::Pane,
-            "tab" => Target::Tab,
-            "workspace" => Target::Workspace,
-            _ => return Err(anyhow!("unknown agent target {action}")),
-        };
-        launch(
-            &SystemRunner,
-            integration,
-            target,
-            &self.origin_pane,
-            &self.origin_cwd,
-        )?;
-        Ok(ActionOutcome::Close)
+        self.execute_with(&SystemRunner, item_id, action)
     }
+}
+
+pub fn launch_worker(args: &[String], cfg: &Config) -> Result<()> {
+    let lock_path = crate::state::state_file("agent-launch.lock");
+    launch_worker_with(&SystemRunner, args, cfg, lock_path.as_deref())
+}
+
+fn launch_worker_with(
+    runner: &dyn CommandRunner,
+    args: &[String],
+    cfg: &Config,
+    lock_path: Option<&Path>,
+) -> Result<()> {
+    let LaunchRequest {
+        kind,
+        title,
+        target,
+        origin_pane,
+        origin_cwd,
+    } = parse_launch_request(args)?;
+    let integration = Integration {
+        id: kind.clone(),
+        kind,
+        title,
+        status: String::new(),
+        path: String::new(),
+    };
+    let result = launch_with_lock_path(
+        runner,
+        &integration,
+        target,
+        &origin_pane,
+        &origin_cwd,
+        lock_path,
+    );
+    if result.is_err() {
+        Notifier::new(cfg).send(NotifyEvent::AgentLaunchFailed, None);
+    }
+    result
 }
 
 fn load_integrations(runner: &dyn CommandRunner) -> Result<Vec<Integration>> {
@@ -226,6 +282,69 @@ fn display_name(id: &str) -> String {
     }
 }
 
+struct LaunchRequest {
+    kind: String,
+    title: String,
+    target: Target,
+    origin_pane: String,
+    origin_cwd: String,
+}
+
+fn parse_launch_request(args: &[String]) -> Result<LaunchRequest> {
+    anyhow::ensure!(
+        args.len() == 10,
+        "usage: --agent-launch --kind KIND --title TITLE --target pane|tab|workspace --origin-pane PANE --origin-cwd CWD"
+    );
+    anyhow::ensure!(
+        args[0] == "--kind"
+            && args[2] == "--title"
+            && args[4] == "--target"
+            && args[6] == "--origin-pane"
+            && args[8] == "--origin-cwd",
+        "invalid --agent-launch arguments"
+    );
+    let target = match args[5].as_str() {
+        "pane" => Target::Pane,
+        "tab" => Target::Tab,
+        "workspace" => Target::Workspace,
+        value => return Err(anyhow!("invalid agent launch target {value}")),
+    };
+    Ok(LaunchRequest {
+        kind: args[1].clone(),
+        title: args[3].clone(),
+        target,
+        origin_pane: args[7].clone(),
+        origin_cwd: args[9].clone(),
+    })
+}
+
+fn schedule_launch(runner: &dyn CommandRunner, request: &LaunchRequest) -> Result<()> {
+    let executable = env::current_exe().context("could not locate the current executable")?;
+    let target = match request.target {
+        Target::Pane => "pane",
+        Target::Tab => "tab",
+        Target::Workspace => "workspace",
+    };
+    runner
+        .spawn_detached(
+            executable.as_os_str(),
+            &[
+                "--agent-launch",
+                "--kind",
+                &request.kind,
+                "--title",
+                &request.title,
+                "--target",
+                target,
+                "--origin-pane",
+                &request.origin_pane,
+                "--origin-cwd",
+                &request.origin_cwd,
+            ],
+        )
+        .with_context(|| format!("could not schedule {}", request.title))
+}
+
 #[derive(Debug)]
 struct CreatedTarget {
     pane_id: String,
@@ -233,37 +352,74 @@ struct CreatedTarget {
     rollback_id: Option<String>,
 }
 
-fn launch(
+fn launch_with_lock_path(
     runner: &dyn CommandRunner,
     integration: &Integration,
     target: Target,
     origin_pane: &str,
     origin_cwd: &str,
+    lock_path: Option<&Path>,
 ) -> Result<()> {
     let created = prepare_target(runner, target, origin_pane, origin_cwd, &integration.title)?;
-    let name = next_agent_name(runner, &integration.kind);
-    let started = runner.ok(
-        "herdr",
-        &[
-            "agent",
-            "start",
-            &name,
-            "--kind",
-            &integration.kind,
-            "--pane",
-            &created.pane_id,
-        ],
-    );
-    if started {
+    let result = allocate_and_start(runner, integration, &created.pane_id, lock_path);
+    if result.is_ok() {
         return Ok(());
     }
 
     // A tab/workspace was created solely for this launch. Do not leave an empty
-    // focused target behind when Herdr rejects or times out starting the agent.
+    // focused target behind when locking or starting the agent fails.
     if let (Some(kind), Some(id)) = (created.rollback_kind, created.rollback_id.as_deref()) {
         let _ = runner.ok("herdr", &[kind, "close", id]);
     }
-    Err(anyhow!("could not start {}", integration.title))
+    result.with_context(|| format!("could not start {}", integration.title))
+}
+
+fn allocate_and_start(
+    runner: &dyn CommandRunner,
+    integration: &Integration,
+    pane_id: &str,
+    lock_path: Option<&Path>,
+) -> Result<()> {
+    let _lock = lock_path.map(acquire_launch_lock).transpose()?;
+    let name = next_agent_name(runner, &integration.kind);
+    anyhow::ensure!(
+        runner.ok(
+            "herdr",
+            &[
+                "agent",
+                "start",
+                &name,
+                "--kind",
+                &integration.kind,
+                "--pane",
+                pane_id,
+            ],
+        ),
+        "herdr agent start failed"
+    );
+    Ok(())
+}
+
+fn acquire_launch_lock(path: &Path) -> Result<File> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow!("agent launch lock has no parent directory"))?;
+    fs::create_dir_all(parent).with_context(|| {
+        format!(
+            "could not create agent launch state at {}",
+            parent.display()
+        )
+    })?;
+    let file = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(path)
+        .with_context(|| format!("could not open agent launch lock at {}", path.display()))?;
+    file.lock()
+        .with_context(|| format!("could not lock agent launches at {}", path.display()))?;
+    Ok(file)
 }
 
 /// Pick the canonical kind when it is free, then a stable numbered suffix. Herdr
@@ -377,6 +533,14 @@ fn created_from_json(value: &Value, kind: &'static str, id_key: &str) -> Result<
 
 #[cfg(test)]
 mod tests {
+    use std::ffi::OsStr;
+    use std::io;
+    use std::os::unix::process::ExitStatusExt;
+    use std::process::{ExitStatus, Output};
+    use std::sync::{Arc, Barrier, Condvar, Mutex};
+    use std::thread;
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
     use super::*;
     use crate::runner::MockRunner;
 
@@ -392,6 +556,73 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct ConcurrentState {
+        agents: Vec<String>,
+        list_calls: usize,
+    }
+
+    #[derive(Default)]
+    struct ConcurrentRunner {
+        state: Mutex<ConcurrentState>,
+        listed: Condvar,
+    }
+
+    impl ConcurrentRunner {
+        fn agents(&self) -> Vec<String> {
+            self.state.lock().unwrap().agents.clone()
+        }
+    }
+
+    impl CommandRunner for ConcurrentRunner {
+        fn output(&self, _program: &str, args: &[&str]) -> io::Result<Output> {
+            let stdout = if args == ["agent", "list"] {
+                let mut state = self.state.lock().unwrap();
+                let agents = state.agents.clone();
+                state.list_calls += 1;
+                if state.list_calls == 1 {
+                    state = self
+                        .listed
+                        .wait_timeout_while(state, Duration::from_millis(100), |state| {
+                            state.list_calls < 2
+                        })
+                        .unwrap()
+                        .0;
+                } else {
+                    self.listed.notify_all();
+                }
+                drop(state);
+                serde_json::to_vec(&serde_json::json!({
+                    "result": {
+                        "agents": agents
+                            .into_iter()
+                            .map(|agent| serde_json::json!({ "agent": agent }))
+                            .collect::<Vec<_>>()
+                    }
+                }))
+                .unwrap()
+            } else {
+                Vec::new()
+            };
+            Ok(Output {
+                status: ExitStatus::from_raw(0),
+                stdout,
+                stderr: Vec::new(),
+            })
+        }
+
+        fn status(&self, _program: &str, args: &[&str]) -> io::Result<ExitStatus> {
+            if args.starts_with(&["agent", "start"]) {
+                self.state.lock().unwrap().agents.push(args[2].to_string());
+            }
+            Ok(ExitStatus::from_raw(0))
+        }
+
+        fn spawn_detached(&self, _program: &OsStr, _args: &[&str]) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
     #[test]
     fn status_parser_keeps_only_installed_integrations() {
         let integrations = parse_integrations(STATUS);
@@ -404,7 +635,15 @@ mod tests {
     #[test]
     fn pane_launch_starts_the_selected_kind_in_the_origin() {
         let runner = MockRunner::new();
-        launch(&runner, &integration(), Target::Pane, "w1:p1", "/repo").unwrap();
+        launch_with_lock_path(
+            &runner,
+            &integration(),
+            Target::Pane,
+            "w1:p1",
+            "/repo",
+            None,
+        )
+        .unwrap();
         assert_eq!(
             runner.calls(),
             vec![
@@ -415,12 +654,262 @@ mod tests {
     }
 
     #[test]
+    fn concurrent_launches_serialize_name_allocation_through_start() {
+        let runner = Arc::new(ConcurrentRunner::default());
+        let ready = Arc::new(Barrier::new(3));
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = env::temp_dir().join(format!(
+            "herdr-switchboard-agent-lock-{}-{nonce}",
+            std::process::id()
+        ));
+        let lock_path = root.join("agent-launch.lock");
+        let workers: Vec<_> = (0..2)
+            .map(|_| {
+                let runner = Arc::clone(&runner);
+                let ready = Arc::clone(&ready);
+                let lock_path = lock_path.clone();
+                thread::spawn(move || {
+                    ready.wait();
+                    launch_with_lock_path(
+                        runner.as_ref(),
+                        &integration(),
+                        Target::Pane,
+                        "w1:p1",
+                        "/repo",
+                        Some(&lock_path),
+                    )
+                })
+            })
+            .collect();
+
+        ready.wait();
+        for worker in workers {
+            worker.join().unwrap().unwrap();
+        }
+
+        assert_eq!(runner.agents(), ["claude", "claude-2"]);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn lock_path_error_is_returned_and_rolls_back_created_target() {
+        let runner = MockRunner::new().on(
+            "workspace create",
+            r#"{"result":{"root_pane":{"pane_id":"w2:p1"},"workspace":{"workspace_id":"w2"}}}"#,
+        );
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let parent_file = env::temp_dir().join(format!(
+            "herdr-switchboard-agent-lock-error-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::write(&parent_file, b"not a directory").unwrap();
+
+        let error = launch_with_lock_path(
+            &runner,
+            &integration(),
+            Target::Workspace,
+            "w1:p1",
+            "/repo",
+            Some(&parent_file.join("agent-launch.lock")),
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("could not start Claude"));
+        assert_eq!(
+            runner.calls().last().unwrap(),
+            &vec!["herdr", "workspace", "close", "w2"]
+        );
+        std::fs::remove_file(parent_file).unwrap();
+    }
+
+    #[test]
+    fn scheduling_launch_spawns_exactly_one_detached_self_worker() {
+        let runner = MockRunner::new();
+        let executable = env::current_exe().unwrap().to_string_lossy().into_owned();
+        let request = LaunchRequest {
+            kind: "claude".into(),
+            title: "Claude".into(),
+            target: Target::Pane,
+            origin_pane: "w1:p1".into(),
+            origin_cwd: "/repo".into(),
+        };
+
+        schedule_launch(&runner, &request).unwrap();
+
+        assert_eq!(
+            runner.calls(),
+            vec![vec![
+                executable,
+                "--agent-launch".into(),
+                "--kind".into(),
+                "claude".into(),
+                "--title".into(),
+                "Claude".into(),
+                "--target".into(),
+                "pane".into(),
+                "--origin-pane".into(),
+                "w1:p1".into(),
+                "--origin-cwd".into(),
+                "/repo".into(),
+            ]]
+        );
+    }
+
+    #[test]
+    fn selected_agent_only_schedules_the_detached_worker() {
+        let runner = MockRunner::new();
+        let mut mode = AgentsMode {
+            origin_pane: "w1:p1".into(),
+            origin_cwd: "/repo".into(),
+            bindings: HashMap::new(),
+            integrations: vec![integration()],
+        };
+
+        let outcome = mode.execute_with(&runner, "claude", "tab").unwrap();
+
+        assert!(matches!(outcome, ActionOutcome::Close));
+        let calls = runner.calls();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0][1], "--agent-launch");
+        assert!(!calls[0].iter().any(|arg| arg == "herdr"));
+    }
+
+    #[test]
+    fn detached_worker_spawn_failure_is_returned() {
+        let runner = MockRunner::new().failing("--agent-launch");
+        let request = LaunchRequest {
+            kind: "claude".into(),
+            title: "Claude".into(),
+            target: Target::Workspace,
+            origin_pane: "w1:p1".into(),
+            origin_cwd: "/repo".into(),
+        };
+
+        let error = schedule_launch(&runner, &request).unwrap_err();
+
+        assert!(error.to_string().contains("could not schedule Claude"));
+        assert_eq!(runner.calls().len(), 1);
+    }
+
+    #[test]
+    fn worker_argv_parses_every_target_and_empty_origins() {
+        for (target, expected) in [
+            ("pane", Target::Pane),
+            ("tab", Target::Tab),
+            ("workspace", Target::Workspace),
+        ] {
+            let args = vec![
+                "--kind".into(),
+                "claude".into(),
+                "--title".into(),
+                "Claude".into(),
+                "--target".into(),
+                target.into(),
+                "--origin-pane".into(),
+                String::new(),
+                "--origin-cwd".into(),
+                String::new(),
+            ];
+
+            let request = parse_launch_request(&args).unwrap();
+
+            assert_eq!(request.kind, "claude");
+            assert_eq!(request.title, "Claude");
+            assert_eq!(request.target, expected);
+            assert_eq!(request.origin_pane, "");
+            assert_eq!(request.origin_cwd, "");
+        }
+    }
+
+    #[test]
+    fn worker_argv_rejects_missing_unknown_and_invalid_values() {
+        let cases = [
+            vec![],
+            vec!["--kind".into(), "claude".into()],
+            vec![
+                "--kind".into(),
+                "claude".into(),
+                "--unknown".into(),
+                "value".into(),
+                "--target".into(),
+                "pane".into(),
+                "--origin-pane".into(),
+                "w1:p1".into(),
+                "--origin-cwd".into(),
+                "/repo".into(),
+            ],
+            vec![
+                "--kind".into(),
+                "claude".into(),
+                "--title".into(),
+                "Claude".into(),
+                "--target".into(),
+                "split".into(),
+                "--origin-pane".into(),
+                "w1:p1".into(),
+                "--origin-cwd".into(),
+                "/repo".into(),
+            ],
+        ];
+
+        for args in cases {
+            assert!(parse_launch_request(&args).is_err(), "accepted {args:?}");
+        }
+    }
+
+    #[test]
+    fn worker_failure_returns_error_and_rolls_back_created_target() {
+        let runner = MockRunner::new()
+            .on(
+                "workspace create",
+                r#"{"result":{"root_pane":{"pane_id":"w2:p1"},"workspace":{"workspace_id":"w2"}}}"#,
+            )
+            .failing("agent start");
+        let mut cfg = Config::default();
+        cfg.common.notifications = false;
+        let args = vec![
+            "--kind".into(),
+            "claude".into(),
+            "--title".into(),
+            "Claude".into(),
+            "--target".into(),
+            "workspace".into(),
+            "--origin-pane".into(),
+            "w1:p1".into(),
+            "--origin-cwd".into(),
+            "/repo".into(),
+        ];
+
+        let error = launch_worker_with(&runner, &args, &cfg, None).unwrap_err();
+
+        assert!(error.to_string().contains("could not start Claude"));
+        assert_eq!(
+            runner.calls().last().unwrap(),
+            &vec!["herdr", "workspace", "close", "w2"]
+        );
+    }
+
+    #[test]
     fn launch_numbers_a_name_that_is_already_live() {
         let runner = MockRunner::new().on(
             "agent list",
             r#"{"result":{"agents":[{"agent":"claude"},{"agent":"claude-2"}]}}"#,
         );
-        launch(&runner, &integration(), Target::Pane, "w1:p1", "/repo").unwrap();
+        launch_with_lock_path(
+            &runner,
+            &integration(),
+            Target::Pane,
+            "w1:p1",
+            "/repo",
+            None,
+        )
+        .unwrap();
         assert!(runner.calls()[1].contains(&"claude-3".into()));
     }
 
@@ -435,7 +924,8 @@ mod tests {
                 "tab create",
                 r#"{"result":{"root_pane":{"pane_id":"w1:p2"},"tab":{"tab_id":"w1:t2"}}}"#,
             );
-        launch(&runner, &integration(), Target::Tab, "w1:p1", "/repo").unwrap();
+        launch_with_lock_path(&runner, &integration(), Target::Tab, "w1:p1", "/repo", None)
+            .unwrap();
         let calls = runner.calls();
         assert_eq!(calls[0], vec!["herdr", "pane", "get", "w1:p1"]);
         assert_eq!(
@@ -465,8 +955,15 @@ mod tests {
                 r#"{"result":{"root_pane":{"pane_id":"w2:p1"},"workspace":{"workspace_id":"w2"}}}"#,
             )
             .failing("agent start");
-        let error =
-            launch(&runner, &integration(), Target::Workspace, "w1:p1", "/repo").unwrap_err();
+        let error = launch_with_lock_path(
+            &runner,
+            &integration(),
+            Target::Workspace,
+            "w1:p1",
+            "/repo",
+            None,
+        )
+        .unwrap_err();
         assert!(error.to_string().contains("could not start Claude"));
         assert_eq!(
             runner.calls().last().unwrap(),

@@ -30,6 +30,8 @@ mod update;
 use std::cmp::Reverse;
 use std::collections::HashMap;
 use std::env;
+use std::ffi::OsString;
+use std::fmt;
 use std::io::{self, Write};
 use std::os::unix::process::CommandExt;
 use std::process::Command;
@@ -951,6 +953,35 @@ fn cli_config(args: &[String]) -> Result<()> {
     }
 }
 
+#[derive(Debug)]
+struct NonUtf8Argument {
+    index: usize,
+}
+
+impl fmt::Display for NonUtf8Argument {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "command argument {} is not valid UTF-8",
+            self.index
+        )
+    }
+}
+
+impl std::error::Error for NonUtf8Argument {}
+
+fn collect_startup_args(argv: impl IntoIterator<Item = OsString>) -> Result<Vec<String>> {
+    argv.into_iter()
+        .skip(1)
+        .enumerate()
+        .map(|(offset, argument)| {
+            argument
+                .into_string()
+                .map_err(|_| NonUtf8Argument { index: offset + 1 }.into())
+        })
+        .collect()
+}
+
 fn main() -> Result<()> {
     // First statement on purpose: it fixes the zero point every other trace mark
     // is measured from. Inert unless SWITCHBOARD_TRACE is set.
@@ -958,7 +989,7 @@ fn main() -> Result<()> {
     // One binary, many modes. bin/changelog.sh execs us with --changelog for the
     // standalone changelog pane; the clone flow execs `open`/`config` so the herdr
     // verbs and the scalar config reader live only here, not mirrored in bash.
-    let args: Vec<String> = env::args().skip(1).collect();
+    let args = collect_startup_args(env::args_os())?;
     match args.first().map(String::as_str) {
         Some("--version") => {
             println!("herdr-switchboard {}", env!("CARGO_PKG_VERSION"));
@@ -968,6 +999,9 @@ fn main() -> Result<()> {
         Some("--update-check") => return update::main(),
         Some("--git") => return git::main(),
         Some("--menu") => return menu::main(Config::try_load()?, Theme::load()),
+        Some("--agent-launch") => {
+            return agents::launch_worker(&args[1..], &Config::try_load()?);
+        }
         Some("--agents") => return agents::main(Config::try_load()?, Theme::load()),
         Some("--commands") => return commands::main(Config::try_load()?, Theme::load()),
         Some("--ports") => return ports::main(Config::try_load()?, Theme::load()),
@@ -1059,6 +1093,9 @@ fn main() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStringExt;
+
     use super::*;
     use data::Kind;
     use ratatui::style::Color;
@@ -1084,6 +1121,33 @@ mod tests {
             entry(Kind::Repo, "gh/mid", "mid"),
             entry(Kind::Workspace, "ws-1", "work"),
         ]
+    }
+
+    #[test]
+    fn startup_args_skip_non_utf8_executable_name_before_conversion() {
+        let argv = vec![
+            OsString::from_vec(vec![0xff]),
+            OsString::from("--agent-launch"),
+            OsString::from("--kind"),
+            OsString::from("claude"),
+        ];
+
+        let args = collect_startup_args(argv).unwrap();
+
+        assert_eq!(args, ["--agent-launch", "--kind", "claude"]);
+    }
+
+    #[test]
+    fn startup_args_return_typed_error_for_non_utf8_command_argument() {
+        let argv = vec![
+            OsString::from("herdr-switchboard"),
+            OsString::from("--title"),
+            OsString::from_vec(vec![0xff]),
+        ];
+
+        let error = collect_startup_args(argv).unwrap_err();
+
+        assert_eq!(error.downcast_ref::<NonUtf8Argument>().unwrap().index, 2);
     }
 
     #[test]

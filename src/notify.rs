@@ -7,6 +7,7 @@ use crate::config::Config;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Event {
+    AgentLaunchFailed,
     CommandDeliveryFailed,
     TermSucceeded,
     KillSucceeded,
@@ -69,6 +70,9 @@ impl Notifier {
             .map(redact_subject)
             .filter(|value| !value.is_empty());
         let (body, automatic_sound) = match event {
+            Event::AgentLaunchFailed => {
+                ("Could not start the selected AI agent.".into(), "request")
+            }
             Event::CommandDeliveryFailed => (
                 "Could not deliver the selected command to its origin pane.".into(),
                 "request",
@@ -160,11 +164,31 @@ mod tests {
     }
 
     #[test]
+    fn agent_launch_failure_uses_a_safe_semantic_message() {
+        let notifier = Notifier::new(&Config::default());
+        let args = notifier
+            .args(
+                Event::AgentLaunchFailed,
+                Some("Claude /private/repo curl token=secret"),
+            )
+            .unwrap();
+        let rendered = args.join(" ");
+
+        assert!(rendered.contains("Could not start the selected AI agent."));
+        assert!(!rendered.contains("/private/repo"));
+        assert!(!rendered.contains("curl"));
+        assert!(!rendered.contains("secret"));
+    }
+
+    #[test]
     fn disabled_policy_emits_nothing() {
         let mut cfg = Config::default();
         cfg.common.notifications = false;
         assert!(Notifier::new(&cfg)
             .args(Event::SignalFailed, Some(":3000"))
+            .is_none());
+        assert!(Notifier::new(&cfg)
+            .args(Event::AgentLaunchFailed, None)
             .is_none());
     }
 }

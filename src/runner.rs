@@ -13,16 +13,18 @@
 //! tag parsing (already tested), and mocking `git ls-remote` would test nothing
 //! the parser test does not.
 
+use std::ffi::OsStr;
 use std::io;
-use std::process::{Command, ExitStatus, Output};
+use std::os::unix::process::CommandExt;
+use std::process::{Command, ExitStatus, Output, Stdio};
 
-/// Runs external commands. Two shapes cover every caller: [`output`](Self::output)
-/// captures stdout for parsing, [`status`](Self::status) inherits the terminal for
-/// commands whose output the user should see (`ghq get -u`) or that are silent
-/// (`rm`).
+/// Runs external commands. [`output`](Self::output) captures stdout for parsing,
+/// [`status`](Self::status) inherits the terminal, and
+/// [`spawn_detached`](Self::spawn_detached) starts a background worker.
 pub trait CommandRunner {
     fn output(&self, program: &str, args: &[&str]) -> io::Result<Output>;
     fn status(&self, program: &str, args: &[&str]) -> io::Result<ExitStatus>;
+    fn spawn_detached(&self, program: &OsStr, args: &[&str]) -> io::Result<()>;
 
     /// Trimmed stdout when the command exits 0; `None` on spawn failure or a
     /// non-zero exit. The common read path.
@@ -52,6 +54,17 @@ impl CommandRunner for SystemRunner {
     fn status(&self, program: &str, args: &[&str]) -> io::Result<ExitStatus> {
         Command::new(program).args(args).status()
     }
+
+    fn spawn_detached(&self, program: &OsStr, args: &[&str]) -> io::Result<()> {
+        Command::new(program)
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .process_group(0)
+            .spawn()
+            .map(|_| ())
+    }
 }
 
 #[cfg(test)]
@@ -60,6 +73,7 @@ pub use mock::MockRunner;
 #[cfg(test)]
 mod mock {
     use std::cell::RefCell;
+    use std::ffi::OsStr;
     use std::io;
     use std::os::unix::process::ExitStatusExt;
     use std::process::{ExitStatus, Output};
@@ -144,6 +158,15 @@ mod mock {
         fn status(&self, program: &str, args: &[&str]) -> io::Result<ExitStatus> {
             let joined = self.record(program, args);
             Ok(exit(self.succeeds(&joined)))
+        }
+
+        fn spawn_detached(&self, program: &OsStr, args: &[&str]) -> io::Result<()> {
+            let joined = self.record(&program.to_string_lossy(), args);
+            if self.succeeds(&joined) {
+                Ok(())
+            } else {
+                Err(io::Error::other("mock detached spawn failed"))
+            }
         }
     }
 }

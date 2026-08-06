@@ -3,9 +3,9 @@
 
 use std::env;
 use std::os::unix::process::CommandExt;
-use std::process::Command;
+use std::process::{self, Command, Stdio};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use crossterm::event::{KeyCode, KeyModifiers};
 
 use crate::config::Config;
@@ -19,6 +19,20 @@ pub fn main(cfg: Config, theme: Theme) -> Result<()> {
 }
 
 struct MenuMode;
+
+fn handoff_command(root: &str, route_id: &str, origin_pane: &str, parent_pid: u32) -> Command {
+    let mut command = Command::new("bash");
+    command
+        .arg(format!("{root}/bin/action.sh"))
+        .env("HERDR_PLUGIN_ACTION_ID", route_id)
+        .env("SWITCHBOARD_ORIGIN_PANE_ID", origin_pane)
+        .env("SWITCHBOARD_HANDOFF_PARENT_PID", parent_pid.to_string())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .process_group(0);
+    command
+}
 
 #[derive(Clone, Copy)]
 struct Route {
@@ -175,15 +189,15 @@ impl PickerMode for MenuMode {
             "unknown route {route_id}"
         );
         let root = env::var("HERDR_PLUGIN_ROOT").unwrap_or_else(|_| ".".into());
-        let error = Command::new("bash")
-            .arg(format!("{root}/bin/action.sh"))
-            .env("HERDR_PLUGIN_ACTION_ID", route_id)
-            .env(
-                "SWITCHBOARD_HANDOFF_PANE_ID",
-                env::var("HERDR_PANE_ID").unwrap_or_default(),
-            )
-            .exec();
-        Err(error.into())
+        handoff_command(
+            &root,
+            route_id,
+            &env::var("HERDR_PANE_ID").unwrap_or_default(),
+            process::id(),
+        )
+        .spawn()
+        .with_context(|| format!("could not schedule {route_id} handoff"))?;
+        Ok(ActionOutcome::Close)
     }
 }
 
@@ -216,5 +230,31 @@ mod tests {
             ROUTES.len(),
             "route mnemonics must be unique"
         );
+    }
+
+    #[test]
+    fn menu_handoff_runs_detached_after_the_menu_process_exits() {
+        let command = handoff_command("/plugin", "agents", "w1:p1", 42);
+        let args = command
+            .get_args()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        let env = command
+            .get_envs()
+            .filter_map(|(key, value)| {
+                value.map(|value| {
+                    (
+                        key.to_string_lossy().into_owned(),
+                        value.to_string_lossy().into_owned(),
+                    )
+                })
+            })
+            .collect::<std::collections::HashMap<_, _>>();
+
+        assert_eq!(command.get_program(), "bash");
+        assert_eq!(args, ["/plugin/bin/action.sh"]);
+        assert_eq!(env["HERDR_PLUGIN_ACTION_ID"], "agents");
+        assert_eq!(env["SWITCHBOARD_ORIGIN_PANE_ID"], "w1:p1");
+        assert_eq!(env["SWITCHBOARD_HANDOFF_PARENT_PID"], "42");
     }
 }

@@ -59,12 +59,10 @@ grep -Eq '^  agents\) placement=\(--placement popup --width 100 --height 26\) ;;
 grep -Eq '^  git\) entrypoint="git" ;;$' "$ROOT/bin/action.sh" ||
   fail "the git action must open the dedicated git pane"
 
-# Central handoff must close the menu before opening its target; otherwise the
-# new overlay becomes a child of the popup it is replacing.
-close_line="$(grep -n 'plugin pane close.*SWITCHBOARD_HANDOFF_PANE_ID' "$ROOT/bin/action.sh" | cut -d: -f1)"
-open_line="$(grep -n 'if ! "${command\[@\]}"' "$ROOT/bin/action.sh" | cut -d: -f1)"
-[[ -n "$close_line" && -n "$open_line" && "$close_line" -lt "$open_line" ]] ||
-  fail "central menu handoff must close before target open"
+# Exercise popup-to-popup handoff timing with a Herdr stub that rejects the
+# target while the simulated Central Menu process is still alive.
+bash "$ROOT/tests/menu_handoff_spec.sh" ||
+  fail "central menu handoff must wait for the menu popup to exit"
 
 # The pane script must resolve from an unrelated working directory.
 foreign_cwd="$(mktemp -d)"
