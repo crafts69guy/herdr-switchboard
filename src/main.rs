@@ -4,6 +4,7 @@
 mod action;
 mod agents;
 mod changelog;
+mod chrome;
 mod commands;
 mod config;
 mod data;

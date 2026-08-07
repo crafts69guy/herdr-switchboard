@@ -283,6 +283,13 @@ const SETTINGS: &[Setting] = &[
         hint: "gutter colour (#rrggbb; herdr paints it opaque)",
         cycle: Cycle::Prompt,
     },
+    Setting {
+        group: "Zen",
+        key: "zen_chrome",
+        default: "off",
+        hint: "hide herdr chrome while zen'd (panes: borders; full: +tabs/sidebar)",
+        cycle: Cycle::Ring(&["off", "panes", "full"]),
+    },
 ];
 
 /// The next value in a ring. An unknown current value restarts at the first.
@@ -353,6 +360,7 @@ fn setting_path(key: &str) -> (&'static str, &str) {
         "zen_width" => ("zen", "width"),
         "zen_scrim" => ("zen", "scrim"),
         "zen_scrim_color" => ("zen", "scrim_color"),
+        "zen_chrome" => ("zen", "chrome"),
         _ => ("projects", key),
     }
 }

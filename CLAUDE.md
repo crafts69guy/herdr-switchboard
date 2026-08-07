@@ -114,9 +114,13 @@ must come from `herdr agent list`, `herdr workspace list`, or the captured origi
   (inline markdown, hanging-indent wrap, `← installed` marker from `CARGO_PKG_VERSION`). `parse` +
   `render` are shared with the picker's `⌥c` popup, so both surfaces stay identical
 - `zen.rs` — the whole zen feature: the enter/leave state machine, the `--zen` `PickerMode`, and
-  the `zen toggle|on|off` CLI verb. Pure geometry (`gutter_ratios`, `anchor_between`) and the
-  state-file codec are separated from the herdr calls so both are testable without a running
-  herdr; every herdr call goes through `CommandRunner`
+  the `zen toggle|on|off|chrome-restore` CLI verb. Pure geometry (`gutter_ratios`,
+  `anchor_between`) and the state-file codec are separated from the herdr calls so both are
+  testable without a running herdr; every herdr call goes through `CommandRunner`
+- `chrome.rs` — the `zen_chrome` levels (`off`/`panes`/`full`) and **the only code that writes
+  herdr's own `config.toml`**. `plan_overrides`/`apply`/`restore` are pure `toml_edit` functions
+  over a `DocumentMut`; the IO edge is `engage`/`disengage`, and the reload goes through
+  `CommandRunner`
 - `socket.rs` — **the only** code that talks to herdr's unix socket instead of the CLI, and only
   because `pane.graphics.set`/`.clear` have no CLI subcommand. Everything in it fails soft
 - `update.rs` — the `--update-check` mode plus the cache the picker reads
@@ -250,6 +254,19 @@ order so the list stays stable.
   `pane move` + `pane swap`, and why a deeply nested tab restores approximately: there is no
   non-destructive verb for "insert at this point in the tree". `Anchor::exact` carries that fact
   and the exit notifies rather than silently rearranging.
+- **herdr's chrome has no per-pane switch, so `zen_chrome` edits herdr's own config — and that
+  is the only file outside the plugin anything here may write.** The sidebar, tab row, pane
+  borders/gaps and scrollbars are global `[ui]` keys; `herdr pane|tab|server|config --help` and
+  the socket method list have nothing UI-shaped, and `herdr config` has no `set`, so
+  `server reload-config` after a `toml_edit` rewrite is the only lever. Two orderings are load
+  bearing and easy to invert: `enter` **snapshots before it writes** and only then engages (last
+  of the herdr work — a reload while the splits are settling lays the gutters out against a stale
+  frame), and `leave` **restores before it clears**, keeping the snapshot when herdr refuses so
+  `zen chrome-restore` can retry. The snapshot is its own state file (`zen.chrome.tsv`) rather
+  than part of the session record precisely because it must outlive the session. `enter` never
+  re-snapshots over a leftover snapshot: that would record zen's own values as the user's and
+  lose the way home for good. Default is `off`; tests must never use `Level::Full`, the same way
+  they never use the real `SessionStore` path.
 - **`socket.rs` is a deliberate exception to the `CommandRunner` rule, not a precedent.**
   `pane.graphics.*` is absent from `herdr pane --help` and reachable only over the socket, so the
   gutter scrim has no CLI path. Everything else must keep shelling out through `CommandRunner`,

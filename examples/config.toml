@@ -55,6 +55,14 @@ scrim = true
 # Herdr composites the scrim opaquely, so this is the colour the gutters become,
 # not a tint over what is under them.
 scrim_color = "#11111b"
+# How much of herdr's *own* chrome a zen session hides. Herdr has no per-pane or
+# per-tab switch for any of it, so anything but "off" rewrites `[ui]` keys in
+# herdr's own config.toml for the length of the session and puts them back on the
+# way out.
+#   off   — nothing outside this plugin is touched (default)
+#   panes — pane_borders, pane_gaps, pane_scrollbars
+#   full  — also hide_tab_bar_when_single_tab and the sidebar keys
+chrome = "off"
 
 # Picker-specific remaps. Projects keeps its full existing action vocabulary;
 # Commands and Ports use the action ids printed in their footer.

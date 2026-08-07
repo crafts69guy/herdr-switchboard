@@ -93,6 +93,11 @@ pub struct Zen {
     /// `#rrggbb`. herdr composites the scrim opaquely, so this is the colour the
     /// gutters actually become, not a tint over them.
     pub scrim_color: String,
+    /// How much of herdr's own chrome a zen session suppresses: `off`, `panes`
+    /// (borders, gaps, scrollbars) or `full` (also the tab row and the sidebar).
+    /// Anything but `off` rewrites keys in herdr's *own* `config.toml` for the
+    /// length of the session, which is why the default is `off`.
+    pub chrome: String,
 }
 
 impl Default for Zen {
@@ -101,6 +106,7 @@ impl Default for Zen {
             width: 70,
             scrim: true,
             scrim_color: "#11111b".into(),
+            chrome: "off".into(),
         }
     }
 }
@@ -255,6 +261,10 @@ impl Config {
             (20..=95).contains(&self.zen.width),
             "zen.width must be between 20 and 95"
         );
+        anyhow::ensure!(
+            matches!(self.zen.chrome.as_str(), "off" | "panes" | "full"),
+            "zen.chrome must be off, panes or full"
+        );
         Ok(())
     }
 
@@ -301,6 +311,7 @@ impl Config {
             ("zen_width", self.zen.width.to_string()),
             ("zen_scrim", self.zen.scrim.to_string()),
             ("zen_scrim_color", self.zen.scrim_color.clone()),
+            ("zen_chrome", self.zen.chrome.clone()),
         ];
         self.values.extend(
             pairs

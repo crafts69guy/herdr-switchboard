@@ -48,6 +48,7 @@ use anyhow::{bail, Context, Result};
 use crossterm::event::{KeyCode, KeyModifiers};
 use serde_json::Value;
 
+use crate::chrome;
 use crate::config::Config;
 use crate::data::Theme;
 use crate::notify::Notifier;
@@ -64,6 +65,10 @@ const STATE_FILE: &str = "zen.json";
 
 /// The label given to the tab a zen'd pane lives in.
 const ZEN_LABEL: &str = "zen";
+
+/// The stand-in for "this `[ui]` key was not in herdr's config at all" in the
+/// chrome snapshot file.
+const CHROME_ABSENT: &str = "-";
 
 /// A live zen session, reduced to what [`leave`] needs to undo it.
 #[derive(Debug, Clone, PartialEq)]
@@ -236,6 +241,39 @@ fn encode(session: &Session) -> String {
     out
 }
 
+/// The chrome snapshot, one `key<TAB>want<TAB>prior` line each. A prior of `-`
+/// means "the key was absent"; none of the `[ui]` keys zen touches can hold a
+/// bare dash, so the marker cannot collide with a real value.
+fn encode_chrome(overrides: &[chrome::Override]) -> String {
+    overrides
+        .iter()
+        .map(|change| {
+            format!(
+                "{}\t{}\t{}\n",
+                change.key,
+                change.want,
+                change.prior.as_deref().unwrap_or(CHROME_ABSENT)
+            )
+        })
+        .collect()
+}
+
+fn decode_chrome(text: &str) -> Vec<chrome::Override> {
+    text.lines()
+        .filter_map(|line| {
+            let mut parts = line.split('\t');
+            let key = parts.next().filter(|k| !k.is_empty())?.to_string();
+            let want = parts.next()?.to_string();
+            let prior = parts.next().unwrap_or(CHROME_ABSENT);
+            Some(chrome::Override {
+                key,
+                want,
+                prior: (prior != CHROME_ABSENT).then(|| prior.to_string()),
+            })
+        })
+        .collect()
+}
+
 fn decode(text: &str) -> Option<Session> {
     let mut session = Session {
         target: String::new(),
@@ -300,6 +338,42 @@ impl SessionStore {
 
     fn clear(&self) {
         if let Some(path) = &self.0 {
+            fs::remove_file(path).ok();
+        }
+    }
+
+    /// The chrome snapshot's own file, beside the session's.
+    ///
+    /// It is deliberately *not* part of the session record: the two have
+    /// different lifetimes. A session ends the moment the pane is back, but a
+    /// snapshot must outlive a restore herdr refused — that is the only copy of
+    /// what the user's `[ui]` keys used to be, and `zen chrome-restore` is what
+    /// comes looking for it.
+    fn chrome_path(&self) -> Option<PathBuf> {
+        Some(self.0.as_ref()?.with_extension("chrome.tsv"))
+    }
+
+    pub fn load_chrome(&self) -> Vec<chrome::Override> {
+        self.chrome_path()
+            .and_then(|path| fs::read_to_string(path).ok())
+            .map(|text| decode_chrome(&text))
+            .unwrap_or_default()
+    }
+
+    /// Best effort: a snapshot that cannot be written means chrome cannot be
+    /// undone later, so [`enter`] checks the result and rolls the change back
+    /// rather than leaving the user's config altered with no way home.
+    fn save_chrome(&self, overrides: &[chrome::Override]) -> Result<()> {
+        let path = self.chrome_path().context("no state dir for zen")?;
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).ok();
+        }
+        fs::write(&path, encode_chrome(overrides))
+            .with_context(|| format!("write {}", path.display()))
+    }
+
+    fn clear_chrome(&self) {
+        if let Some(path) = self.chrome_path() {
             fs::remove_file(path).ok();
         }
     }
@@ -414,6 +488,7 @@ pub struct ZenConfig {
     pub width: u16,
     pub scrim: bool,
     pub color: [u8; 4],
+    pub chrome: chrome::Level,
 }
 
 impl ZenConfig {
@@ -423,6 +498,7 @@ impl ZenConfig {
             scrim: cfg.bool("zen_scrim", true),
             color: socket::parse_hex(&cfg.get("zen_scrim_color", "#11111b"))
                 .unwrap_or([0x11, 0x11, 0x1b, 0xff]),
+            chrome: chrome::Level::parse(&cfg.get("zen_chrome", "off")),
         }
     }
 }
@@ -432,6 +508,7 @@ pub fn enter<R: CommandRunner>(
     runner: &R,
     target: &str,
     cfg: &ZenConfig,
+    notifier: &Notifier,
     store: &SessionStore,
 ) -> Result<Session> {
     let panes = list_panes(runner);
@@ -501,8 +578,57 @@ pub fn enter<R: CommandRunner>(
         paint_gutters(runner, &session, cfg.color);
     }
 
+    // Chrome comes last of the herdr work: `server reload-config` redraws
+    // everything, and doing it while the splits are still settling is the one
+    // way to have herdr lay the gutters out against a stale frame.
+    //
+    // A snapshot left by an earlier session (herdr crashed mid-zen, say) means
+    // the chrome is *already* suppressed. Re-snapshotting there would record
+    // zen's own values as the user's and lose the way home for good, so the
+    // leftover is kept and nothing is touched.
+    let overrides = if store.load_chrome().is_empty() {
+        suppress_chrome(runner, target, cfg.chrome, notifier)
+    } else {
+        Vec::new()
+    };
+    if !overrides.is_empty() && store.save_chrome(&overrides).is_err() {
+        // No snapshot on disk means no way home, so put the config back now
+        // rather than leaving the user's chrome rewritten indefinitely.
+        chrome::disengage(runner, &overrides);
+    }
+
     store.save(&session)?;
     Ok(session)
+}
+
+/// Hand herdr's chrome to [`chrome::engage`] and check the part of it herdr may
+/// refuse.
+///
+/// `sidebar_start_collapsed` is documented as taking effect on the *next launch*,
+/// so `full` may leave the rail exactly where it was. Rather than assume either
+/// way, measure: the tab's area widens when the sidebar goes. If it did not, say
+/// so — herdr's own `prefix+b` is the answer, and a silent no-op would read as a
+/// broken setting.
+fn suppress_chrome<R: CommandRunner>(
+    runner: &R,
+    target: &str,
+    level: chrome::Level,
+    notifier: &Notifier,
+) -> Vec<chrome::Override> {
+    let before = layout(runner, target).map(|(area, _)| area.width);
+    let overrides = chrome::engage(runner, level);
+    if overrides.is_empty() || level != chrome::Level::Full {
+        return overrides;
+    }
+    let after = layout(runner, target).map(|(area, _)| area.width);
+    if before.is_some() && before == after {
+        notifier.send_message(
+            "Zen hid what herdr will hide live; the sidebar needs prefix+b (herdr applies \
+             sidebar_start_collapsed on its next launch).",
+            "auto",
+        );
+    }
+    overrides
 }
 
 /// Split one gutter off the target and park it so no shell prompt shows through
@@ -561,8 +687,22 @@ pub fn leave<R: CommandRunner>(
     notifier: &Notifier,
     store: &SessionStore,
 ) -> Result<()> {
-    // Delete the record first: from here on the session is over regardless of
-    // which of the following steps herdr refuses.
+    // Give the user's chrome back first, and keep the snapshot when herdr's
+    // config could not be rewritten — it is the only copy of what those `[ui]`
+    // keys used to be, and `zen chrome-restore` is what comes looking for it.
+    let overrides = store.load_chrome();
+    if chrome::disengage(runner, &overrides) {
+        store.clear_chrome();
+    } else {
+        notifier.send_message(
+            "Zen could not put herdr's config back — run `herdr-switchboard zen \
+             chrome-restore` (the original is saved in the plugin's state dir).",
+            "auto",
+        );
+    }
+
+    // Delete the record: from here on the session is over regardless of which
+    // of the following steps herdr refuses.
     store.clear();
 
     let live = list_panes(runner);
@@ -666,14 +806,14 @@ pub fn toggle<R: CommandRunner>(
         }
         Some(_) => {
             store.clear();
-            enter(runner, target, cfg, store).map(|_| ())
+            enter(runner, target, cfg, notifier, store).map(|_| ())
         }
-        None => enter(runner, target, cfg, store).map(|_| ()),
+        None => enter(runner, target, cfg, notifier, store).map(|_| ()),
     }
 }
 
-/// `herdr-switchboard zen toggle|on|off [--pane ID]`, the no-UI entry point
-/// behind the `zen-toggle` plugin action.
+/// `herdr-switchboard zen toggle|on|off|chrome-restore [--pane ID]`, the no-UI
+/// entry point behind the `zen-toggle` plugin action.
 pub fn cli<R: CommandRunner>(runner: &R, args: &[String], cfg: &Config) -> Result<()> {
     let verb = args.first().map(String::as_str).unwrap_or("toggle");
     let pane = args
@@ -698,12 +838,30 @@ pub fn cli<R: CommandRunner>(runner: &R, args: &[String], cfg: &Config) -> Resul
                 if let Some(session) = store.load() {
                     leave(runner, &session, &notifier, &store)?;
                 }
-                enter(runner, &pane, &zen, &store).map(|_| ())
+                enter(runner, &pane, &zen, &notifier, &store).map(|_| ())
             } else {
                 toggle(runner, &pane, &zen, &notifier, &store)
             }
         }
-        other => bail!("unknown zen verb '{other}' (expected toggle, on, or off)"),
+        // The escape hatch for a zen that never got to clean up: herdr killed
+        // mid-session, or a restore herdr refused. Needs no pane and no session.
+        "chrome-restore" => {
+            let overrides = store.load_chrome();
+            if overrides.is_empty() {
+                return Ok(());
+            }
+            anyhow::ensure!(
+                chrome::disengage(runner, &overrides),
+                "could not rewrite {} — the original is saved as {}",
+                chrome::config_path().display(),
+                state::state_file(chrome::BACKUP)
+                    .unwrap_or_default()
+                    .display()
+            );
+            store.clear_chrome();
+            Ok(())
+        }
+        other => bail!("unknown zen verb '{other}' (expected toggle, on, off, or chrome-restore)"),
     }
 }
 
@@ -830,7 +988,13 @@ impl PickerMode for ZenMode {
                 if let Some(session) = self.store.load() {
                     leave(&SystemRunner, &session, &self.notifier, &self.store)?;
                 }
-                enter(&SystemRunner, item_id, &self.cfg, &self.store)?;
+                enter(
+                    &SystemRunner,
+                    item_id,
+                    &self.cfg,
+                    &self.notifier,
+                    &self.store,
+                )?;
             }
             "exit" => {
                 if let Some(session) = self.store.load() {
@@ -1129,6 +1293,53 @@ mod tests {
         assert_eq!(decode("garbage"), None);
     }
 
+    // --- the chrome snapshot -----------------------------------------------
+
+    #[test]
+    fn a_chrome_snapshot_round_trips_including_the_absent_marker() {
+        let overrides = vec![
+            chrome::Override {
+                key: "pane_borders".into(),
+                want: "false".into(),
+                prior: Some("true".into()),
+            },
+            chrome::Override {
+                key: "pane_gaps".into(),
+                want: "false".into(),
+                // Absent from herdr's config: restoring must *remove* the key.
+                prior: None,
+            },
+            chrome::Override {
+                key: "sidebar_collapsed_mode".into(),
+                want: "\"hidden\"".into(),
+                prior: Some("\"compact\"".into()),
+            },
+        ];
+        assert_eq!(decode_chrome(&encode_chrome(&overrides)), overrides);
+    }
+
+    #[test]
+    fn the_chrome_snapshot_outlives_the_session_it_came_from() {
+        // The two records have different lifetimes: clearing the session must
+        // not drop the only copy of the user's `[ui]` values.
+        let store = temp_store();
+        assert!(
+            store.load_chrome().is_empty(),
+            "a fresh store holds nothing"
+        );
+        let overrides = vec![chrome::Override {
+            key: "pane_borders".into(),
+            want: "false".into(),
+            prior: Some("true".into()),
+        }];
+        store.save_chrome(&overrides).unwrap();
+        store.save(&session_of(&[])).unwrap();
+        store.clear();
+        assert_eq!(store.load_chrome(), overrides);
+        store.clear_chrome();
+        assert!(store.load_chrome().is_empty());
+    }
+
     // --- enter ------------------------------------------------------------
 
     fn entering() -> MockRunner {
@@ -1154,13 +1365,23 @@ mod tests {
             width: 70,
             scrim,
             color: [0, 0, 0, 255],
+            // Never `Full` here: a test must not rewrite the developer's own
+            // herdr config, the way it must not delete their live session.
+            chrome: chrome::Level::Off,
         }
     }
 
     #[test]
     fn entering_moves_the_target_out_then_builds_two_gutters_and_swaps() {
         let runner = entering();
-        let session = enter(&runner, "w1:p1", &cfg(false), &temp_store()).unwrap();
+        let session = enter(
+            &runner,
+            "w1:p1",
+            &cfg(false),
+            &Notifier::silent(),
+            &temp_store(),
+        )
+        .unwrap();
 
         assert_eq!(session.zen_tab, "w1:t9");
         assert_eq!(session.origin_tab, "w1:t1");
@@ -1178,9 +1399,31 @@ mod tests {
     }
 
     #[test]
+    fn zen_chrome_off_never_touches_herdrs_config() {
+        // The default. Nothing is written and herdr is never asked to reload,
+        // which is what keeps a plain zen a pane operation and nothing more.
+        let runner = entering();
+        let store = temp_store();
+        enter(&runner, "w1:p1", &cfg(false), &Notifier::silent(), &store).unwrap();
+        let calls: Vec<String> = runner.calls().iter().map(|c| c.join(" ")).collect();
+        assert!(
+            !calls.iter().any(|c| c.contains("reload-config")),
+            "{calls:#?}"
+        );
+        assert!(store.load_chrome().is_empty());
+    }
+
+    #[test]
     fn entering_records_the_way_home_before_the_pane_moves() {
         let runner = entering();
-        let session = enter(&runner, "w1:p1", &cfg(false), &temp_store()).unwrap();
+        let session = enter(
+            &runner,
+            "w1:p1",
+            &cfg(false),
+            &Notifier::silent(),
+            &temp_store(),
+        )
+        .unwrap();
         let anchor = session.anchor.expect("neighbour should have been recorded");
         assert_eq!(anchor.pane, "w1:p2");
         assert_eq!(anchor.split, "right");
@@ -1190,7 +1433,14 @@ mod tests {
     #[test]
     fn entering_parks_each_gutter_so_no_prompt_shows_through() {
         let runner = entering();
-        enter(&runner, "w1:p1", &cfg(false), &temp_store()).unwrap();
+        enter(
+            &runner,
+            "w1:p1",
+            &cfg(false),
+            &Notifier::silent(),
+            &temp_store(),
+        )
+        .unwrap();
         let parked = runner
             .calls()
             .iter()
@@ -1202,7 +1452,14 @@ mod tests {
     #[test]
     fn entering_an_unknown_pane_fails_before_moving_anything() {
         let runner = entering();
-        assert!(enter(&runner, "w1:pZZ", &cfg(false), &temp_store()).is_err());
+        assert!(enter(
+            &runner,
+            "w1:pZZ",
+            &cfg(false),
+            &Notifier::silent(),
+            &temp_store()
+        )
+        .is_err());
         assert!(
             !runner
                 .calls()
@@ -1224,7 +1481,14 @@ mod tests {
                 r#"{"result":{"move_result":{"created_tab":{"tab_id":"w1:t9"}}}}"#,
             )
             .failing("pane split");
-        let session = enter(&runner, "w1:p1", &cfg(false), &temp_store()).unwrap();
+        let session = enter(
+            &runner,
+            "w1:p1",
+            &cfg(false),
+            &Notifier::silent(),
+            &temp_store(),
+        )
+        .unwrap();
         assert!(session.gutters.is_empty());
         assert!(
             !runner

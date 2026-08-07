@@ -9,6 +9,17 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Zen can hide Herdr's own chrome.** The new `zen.chrome` setting (`off` by default, or
+  `panes` / `full`) suppresses the pane borders and gaps, the scrollbar column, the tab row and
+  the sidebar for the length of a zen session. None of those have a per-pane switch, so anything
+  but `off` rewrites the matching `[ui]` keys in Herdr's *own* `config.toml` and reloads Herdr,
+  then restores them exactly on the way out: comments and unmanaged keys survive, keys already at
+  the wanted value are left alone, and your untouched config is copied to
+  `$XDG_STATE_HOME/herdr-switchboard/herdr-config.backup.toml` before the first write. If a
+  restore fails or Herdr is killed mid-session, `herdr-switchboard zen chrome-restore` puts it
+  back. Herdr only applies `sidebar_start_collapsed` on its next launch, so `full` may leave the
+  sidebar in place — zen measures that and says so rather than failing silently.
+
 - **Zen mode.** `switchboard.zen-toggle` gives the current pane the screen: it moves to a tab of
   its own, centred at `zen.width` (default 70%) between two dimmed gutters, and toggling again
   puts it back where it was. `switchboard.zen` opens a picker to zen any pane instead of the

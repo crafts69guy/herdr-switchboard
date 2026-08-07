@@ -196,6 +196,34 @@ in the split tree, so the pane returns beside its nearest former neighbour and t
 differ; Switchboard says so with a notification rather than rearranging your tab quietly. Nothing
 is ever lost or restarted.
 
+#### Hiding Herdr's chrome (`zen_chrome`)
+
+Centring a pane still leaves Herdr's own furniture around it: the sidebar rail, the tab row, the
+borders and gaps drawn around every pane, and the scrollbar column. None of that has a per-pane or
+per-tab switch — they are global `[ui]` keys in **Herdr's own `config.toml`**, and
+`herdr server reload-config` is the only way to change them without restarting. So `zen_chrome`
+rewrites them for the length of a session and puts them back when you leave:
+
+| `zen_chrome` | Writes to Herdr's `[ui]`                                              |
+| ------------ | --------------------------------------------------------------------- |
+| `off`        | nothing — the default; no file outside this plugin is touched          |
+| `panes`      | `pane_borders = false`, `pane_gaps = false`, `pane_scrollbars = false` |
+| `full`       | the above plus `hide_tab_bar_when_single_tab = true`, `sidebar_start_collapsed = true`, `sidebar_collapsed_mode = "hidden"` |
+
+These are global settings, so they affect every workspace while a zen session is live. Before the
+first rewrite, Switchboard copies your untouched config to
+`$XDG_STATE_HOME/herdr-switchboard/herdr-config.backup.toml`. The edit goes through `toml_edit`, so
+comments and every key it does not manage survive, and a key already set to what zen wants is left
+alone — if you keep `pane_borders = false` permanently, zen never moves it.
+
+If Herdr refuses the rewrite on the way out, Switchboard keeps the snapshot instead of dropping it
+and tells you to run `herdr-switchboard zen chrome-restore`, which retries the restore. That same
+command is the cleanup if Herdr is killed mid-session.
+
+One caveat: Herdr applies `sidebar_start_collapsed` **on its next launch**, so `full` may not
+collapse the sidebar in the running session. Switchboard measures whether it moved and notifies you
+if it did not — press Herdr's `prefix+b` to hide the rail for now.
+
 Zen is deliberately not built on `herdr pane zoom`: splitting a zoomed tab silently cancels the
 zoom, so gutters and zoom cannot coexist. If you want plain fullscreen with no centring, Herdr's
 own `prefix+z` already does it.
@@ -264,6 +292,7 @@ Every key is documented in `examples/config.toml`. The ones you're most likely t
 | `base_branch`                           | base for the git menu's branch review (blank = auto-detect)                 |
 | `split_direction` / `split_ratio`       | geometry for split targets                                                  |
 | `zen_width` / `zen_scrim` / `zen_scrim_color` | zen's centred width (20–95), and whether/what colour the gutters are dimmed |
+| `zen_chrome`                            | how much of herdr's own chrome zen hides: `off` (default), `panes`, `full`  |
 | `update_check`                          | ask GitHub once a day whether a newer version is tagged (`true` by default) |
 | `notifications` / `notification_position` | herdr toasts, and which corner they land in                               |
 | `notification_sound`                    | `auto` (per-event, default) · `none` · `done` · `request`                   |
