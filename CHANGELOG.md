@@ -36,6 +36,14 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   tab or workspace Switchboard created. The focused picker opens as a compact centered popup rather
   than a mostly empty full-screen overlay. This requires Herdr 0.8.0 or newer.
 
+### Changed
+
+- **The README is now a concise entry point instead of a monolithic reference.** Quick start,
+  feature discovery, core actions, and namespaced configuration stay on the front page; detailed
+  keybindings, safety behaviour, Zen, Git, configuration, and architecture now live in focused
+  guides under `docs/`. Stale pre-1.0 wording, flat configuration names, dependency scope, popup
+  placement, update-version examples, and contributor checks were corrected at the same time.
+
 ### Fixed
 
 - Opening AI Agents or another popup from the Central Menu now waits for the menu popup to close,
