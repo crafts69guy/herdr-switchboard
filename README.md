@@ -153,7 +153,7 @@ Common settings include:
 | `commands.presets` | Add named commands with an origin or fixed cwd. |
 | `zen.width` / `zen.scrim` | Control the focused pane and its gutters. |
 | `zen.chrome` | Optionally hide Herdr pane chrome during a Zen session. |
-| `usage.providers` | Which AI subscriptions the Usage popup reads, in display order. |
+| `usage.providers` / `usage.timeout_ms` | Which AI subscriptions the Usage popup reads, and how long the networked one may take. |
 | `usage.warn_percent` / `usage.alert_percent` | Where a quota donut turns yellow, then red. |
 
 The plugin reads only its namespaced config; legacy top-level keys are not accepted. See the
@@ -162,7 +162,7 @@ behaviour.
 
 ## Guides
 
-- [Features and safety](docs/features.md) — AI Agents, Commands, Ports, and confirmations.
+- [Features and safety](docs/features.md) — Usage, AI Agents, Commands, Ports, and confirmations.
 - [Keybindings](docs/keybindings.md) — Insert/Normal modes and remapping.
 - [Zen mode](docs/zen.md) — layout restoration, scrims, and `zen.chrome` trade-offs.
 - [Git menu](docs/git-menu.md) — tuicr, pull requests, saved reviews, and lazygit.

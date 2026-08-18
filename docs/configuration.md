@@ -59,6 +59,15 @@ update. `switchboard.update` is the explicit installation action.
 - `clone.source` chooses `clipboard` or an empty prompt; `clone.open_after` controls handoff.
 - `git.base_branch` pins branch review; an empty value enables automatic detection.
 
+### `[usage]`
+
+- `providers` lists the quota providers to show, in display order; drop a name to hide it. Unknown
+  names are ignored, so a config written for a later version still opens.
+- `timeout_ms` bounds the one networked provider (Claude Code). Codex is read from disk and is not
+  affected.
+- `warn_percent` and `alert_percent` are where a window turns yellow, then red. They apply only to
+  windows the provider does not grade itself — Claude ships a severity per limit and that wins.
+
 ### `[zen]`
 
 - `width` is the focused pane's percentage and accepts 20 through 95.

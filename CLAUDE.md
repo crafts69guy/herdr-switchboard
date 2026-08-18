@@ -6,9 +6,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A [herdr](https://herdr.dev) plugin providing a unified switcher over three sources — running
 herdr **agents**, open herdr **workspaces**, and **ghq repos** — in one fuzzy picker. It is a
-Rust TUI (ratatui + nucleo), not an fzf wrapper. The switcher and the changelog viewer are
-modes of the same binary; the settings form is a floating overlay **inside** the switcher
-(⌥,), not a separate mode or pane. The **git menu is a herdr pane of its own** (`Prefix + g` →
+Rust TUI (ratatui + nucleo), not an fzf wrapper. Every surface is a mode of the same binary,
+selected by argv (`--menu`, `--agents`, `--usage`, `--commands`, `--ports`, `--zen`,
+`--changelog`, `--settings`, `--git`; no flag is the switcher); the settings form is **also** a
+floating overlay inside the switcher (⌥,), not only a pane. **`--usage` is the one mode that
+makes a network request and the one that reads a credential** — both fenced, see the constraints
+below; every other mode is strictly offline. The **git menu is a herdr pane of its own** (`Prefix + g` →
 `bin/git.sh` → `--git`), not an overlay on the switcher, and its selection `exec`s a review tool
 over that pane. The clone flow and the review launcher (`bin/review.sh`, which runs
 `tuicr`/`lazygit`) are the only bash that reaches a terminal. The plugin needs no fzf.

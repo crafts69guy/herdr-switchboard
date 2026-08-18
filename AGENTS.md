@@ -2,12 +2,19 @@
 
 ## Project Structure & Module Organization
 
-The Rust TUI lives in `src/`: `main.rs` owns the event loop, while `data.rs`,
-`ui.rs`, `splash.rs`, `preview.rs`, `action.rs`, `history.rs`, `settings.rs`, `git.rs`, and
-`changelog.rs`
-separate data loading, rendering, previews, accepted actions, recency state, the
-in-picker settings overlay, and the changelog viewer. Bash entrypoints in
-`bin/` connect the TUI and the bash clone flow to herdr. Plugin
+The Rust TUI lives in `src/`. `main.rs` owns the Projects event loop and dispatches
+every other mode from its argv; `data.rs`, `source.rs`, `query.rs`, `ui.rs`,
+`preview.rs`, `action.rs`, and `history.rs` carry data loading, the source registry,
+the query language, rendering, previews, accepted actions, and recency state.
+`picker.rs` is the shared engine behind the mode pickers (`menu.rs`, `agents.rs`,
+`commands.rs`, `ports.rs`, `zen.rs`), and `tui.rs` holds the chrome every framed
+surface goes through. `settings.rs`, `changelog.rs`, and `usage.rs` are the popups;
+`git.rs` is its own pane; `chrome.rs`, `socket.rs`, `runner.rs`, `notify.rs`,
+`config.rs`, `keymap.rs`, `markdown.rs`, `state.rs`, `trace.rs`, `splash.rs`, and
+`update.rs` are the supporting edges. `CLAUDE.md` carries the per-module notes and
+the non-obvious constraints — read it before changing any of them.
+
+Bash entrypoints in `bin/` connect the TUI and the bash clone flow to herdr. Plugin
 metadata is defined in `herdr-plugin.toml`; sample user configuration belongs in
 `examples/`, integration checks in `tests/`, and documentation images in `docs/`.
 Do not commit generated `target/` artifacts.
@@ -74,3 +81,19 @@ makes a dedicated `Release vX.Y.Z` commit instead.
 Never hardcode credentials or user-specific paths. Verify real pane, workspace,
 and agent IDs before issuing herdr commands. Preserve typed confirmation for
 repository removal and test destructive flows against disposable repositories.
+
+One surface reads a credential and one makes a network request, and they are the
+same one: the `usage` pane. Two rules hold there and nowhere else.
+
+- **A secret never reaches a command line.** `argv` is readable through `ps` by
+  every process the user owns, for the whole life of the call, so the OAuth token
+  goes to `curl` through stdin as a `--config -` file. That is the only reason
+  `CommandRunner::output_stdin` exists. Do not add a caller without the same
+  justification, and do not "tidy" the header back into a `-H` flag.
+- **Nothing read from a credential file is kept.** `usage.rs` takes the `email`
+  claim out of the Codex ID token and drops everything else in that file; no token
+  is ever logged, traced, drawn, cached, or forwarded. `trace.rs` writes to a file,
+  so anything passed to it is anything written to disk.
+
+Everything else must stay offline: the picker frequently exits in under a second,
+which is why `update.rs` fetches from a detached child rather than in-process.
