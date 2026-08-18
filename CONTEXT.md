@@ -23,6 +23,16 @@ The navigation surface that searches running agents, open workspaces, GHQ reposi
 worktrees.
 _Avoid_: Unified picker, GHQ picker
 
+**Usage Popup**:
+The surface that reports how much of each AI subscription is spent and when it resets.
+_Avoid_: Quota picker, billing
+
+**Quota Window**:
+One rate-limit period of one provider — a five-hour bucket, a weekly bucket — with a used
+percentage and the moment it rolls over. A provider may have several; the popup promotes the one
+closest to running out.
+_Avoid_: Limit, bucket
+
 ## Commands
 
 **Command**:

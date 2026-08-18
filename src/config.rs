@@ -19,6 +19,7 @@ pub struct Config {
     pub clone: CloneFlow,
     pub git: Git,
     pub zen: Zen,
+    pub usage: Usage,
     #[serde(default)]
     pub keys: HashMap<String, HashMap<String, String>>,
     #[serde(skip)]
@@ -107,6 +108,31 @@ impl Default for Zen {
             scrim: true,
             scrim_color: "#11111b".into(),
             chrome: "off".into(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default)]
+pub struct Usage {
+    /// Which quota providers the popup shows, in display order. Dropping a name
+    /// turns it off; an unknown name is ignored rather than fatal, so a config
+    /// written for a later version still opens.
+    pub providers: Vec<String>,
+    /// How long the one networked provider may take before its card gives up.
+    pub timeout_ms: u64,
+    /// The percentages a window turns yellow and then red at.
+    pub warn_percent: u16,
+    pub alert_percent: u16,
+}
+
+impl Default for Usage {
+    fn default() -> Self {
+        Self {
+            providers: vec!["codex".into(), "claude".into()],
+            timeout_ms: 3000,
+            warn_percent: 60,
+            alert_percent: 85,
         }
     }
 }

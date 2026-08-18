@@ -13,6 +13,75 @@ New targets inherit the origin pane's cwd. If startup fails, Switchboard closes 
 it created instead of leaving an empty target behind. Remap these actions under `[keys.agents]` as
 `pane`, `tab`, and `workspace`.
 
+## Usage
+
+The Usage popup answers one question — how much of each AI subscription is spent, and when the
+window resets. Each agent gets a card:
+
+- A **donut** for the window closest to running out, with its percentage in the middle.
+- A **bar per window**, so a plan with a five-hour and a weekly bucket shows both.
+- A **facts block**: which account the numbers belong to, what the session spent, how much of the
+  context window the last turn used, whether credits are on, and whether a limit has actually been
+  hit.
+- A line saying **how old the reading is** and the wall clock the window rolls over at:
+  `as of 12m ago · resets 08:53 Wed`.
+
+That last line matters more than it looks. Codex reports whatever its last session wrote, so on a
+machine that has not run Codex since Tuesday the percentage *is* Tuesday's — and a stale number
+that looks live is the one you would plan around.
+
+Every card uses the same row heights, taken from the busiest one, so two agents with different
+numbers of windows still line up.
+
+Press `r` to read everything again, `esc` to close.
+
+### Where the numbers come from
+
+- **Codex** records the rate limits OpenAI returns on every turn into its own session log, so the
+  numbers are exact and reading them needs no network. Switchboard reads the end of the newest
+  rollout file rather than the whole thing, and falls back through the three most recent sessions
+  if the newest one has not made a request yet.
+- **Claude Code** persists no quota anywhere: its local stats are token accounting, and a
+  transcript only learns about a limit after it has already been hit. The real number comes from
+  the endpoint the in-session `/usage` command calls, so this card calls it too, with the OAuth
+  token Claude Code already stores (the macOS keychain, or `~/.claude/.credentials.json`). macOS
+  asks for keychain permission the first time. The token is passed to `curl` through a pipe, never
+  on a command line, because a command line is readable by every process you own.
+
+This is the only surface in the plugin that makes a network request, and the only one that reads a
+credential. The request runs on a worker thread with `usage.timeout_ms`, so the popup opens
+immediately with Codex already on screen and fills the other card in when it arrives.
+
+### Which account
+
+Every card names the account it reports on, because the two agents are routinely signed in as two
+different addresses and a percentage means little without knowing whose it is.
+
+Codex has no command that prints it — `codex login status` says only "Logged in using ChatGPT" — so
+the address comes from the `email` claim of the ID token in `~/.codex/auth.json`. Only that claim is
+read; the signature is not verified, because nothing here trusts the token, it only labels a card.
+Claude Code caches its own profile in `~/.claude.json`, which is a settings file rather than a
+credential store, and that is also where the Claude card gets its plan — the usage endpoint names
+none.
+
+Nothing from either file is logged, drawn, or sent anywhere except the address itself.
+
+### Colour
+
+Claude grades each of its limits itself, and the card uses that grade — the provider knows what its
+own plan considers close to the edge. Codex grades nothing, so its windows use
+`usage.warn_percent` (yellow) and `usage.alert_percent` (red). The two cards can therefore colour by
+two different rules, which is deliberate: a provider's own word beats a threshold invented here.
+
+### When something cannot be read
+
+Anything unreadable says so on its own card — a denied keychain, a machine with no Codex sessions,
+an endpoint that changed shape — and never takes the other agent's card down with it. A plan bucket
+the account does not have (Opus-only weekly, for instance) is left out rather than drawn as zero.
+Copilot, Cursor, OpenCode, and Gemini publish no quota anywhere readable, so they are not listed.
+
+Choose which providers appear, and in what order, with `usage.providers`.
+
 ## Commands
 
 Commands combines zsh, Bash, or fish history with `[[commands.presets]]`, deduplicated by exact

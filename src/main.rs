@@ -28,6 +28,7 @@ mod trace;
 mod tui;
 mod ui;
 mod update;
+mod usage;
 mod zen;
 
 use std::cmp::Reverse;
@@ -1009,6 +1010,7 @@ fn main() -> Result<()> {
         Some("--commands") => return commands::main(Config::try_load()?, Theme::load()),
         Some("--ports") => return ports::main(Config::try_load()?, Theme::load()),
         Some("--settings") => return settings::main(Config::try_load()?, Theme::load()),
+        Some("--usage") => return usage::main(Config::try_load()?, Theme::load()),
         Some("--zen") => return zen::main(Config::try_load()?, Theme::load()),
         Some("open") => return cli_open(&args[1..]),
         Some("config") => return cli_config(&args[1..]),

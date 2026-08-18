@@ -18,6 +18,7 @@ leaving the terminal.
 | --- | --- |
 | **Projects** | Jump to agents and workspaces, or open ghq repos and worktrees in a workspace, tab, split, or the current pane. |
 | **AI Agents** | Start any installed Herdr AI integration in the current pane or a fresh target. |
+| **Usage** | See how much of each AI subscription is spent, when it resets, and how old the reading is. |
 | **Commands** | Search exact shell history and presets, then fill, run, copy, or forget a command. |
 | **Ports** | Inspect live TCP listeners and safely act on their owner processes. |
 | **Git** | Review the current repo with tuicr or hand it to lazygit. |
@@ -107,6 +108,7 @@ Bind the central menu or any action directly as a Herdr `plugin_action`:
 | `switchboard.menu` | The searchable central menu. |
 | `switchboard.projects` | Agents, workspaces, ghq repos, and linked worktrees. |
 | `switchboard.agents` | Installed AI integrations. |
+| `switchboard.usage` | Subscription quota for your AI agents. |
 | `switchboard.commands` | Shell history and configured presets. |
 | `switchboard.ports` | Live TCP listeners and owner processes. |
 | `switchboard.git` | The Git menu for the current repo. |
@@ -144,6 +146,8 @@ Common settings include:
 | `commands.presets` | Add named commands with an origin or fixed cwd. |
 | `zen.width` / `zen.scrim` | Control the focused pane and its gutters. |
 | `zen.chrome` | Optionally hide Herdr pane chrome during a Zen session. |
+| `usage.providers` | Which AI subscriptions the Usage popup reads, in display order. |
+| `usage.warn_percent` / `usage.alert_percent` | Where a quota donut turns yellow, then red. |
 
 The plugin reads only its namespaced config; legacy top-level keys are not accepted. See the
 [configuration guide](docs/configuration.md) for every section, remapping, state paths, and update

@@ -95,5 +95,11 @@ Recent Projects selections live at:
 ${XDG_STATE_HOME:-~/.local/state}/herdr-switchboard/recent.tsv
 ```
 
+The Usage popup is the one surface that makes a request while you watch. Codex is read from disk;
+Claude Code's card calls the usage endpoint behind the in-session `/usage` command, reading the
+OAuth token Claude Code stores in the macOS keychain or `~/.claude/.credentials.json`. Set
+`usage.timeout_ms` to bound it, or drop `"claude"` from `usage.providers` to switch it off
+entirely. The token is never cached, logged, traced, or passed on a command line.
+
 Managed installs fetch a version-matched release binary and verify its SHA-256. Linked development
 checkouts build local source instead. The update action refuses to replace a linked checkout.

@@ -9,6 +9,31 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **A Usage popup.** Bind `switchboard.usage` or open it from the central menu to see how much of
+  each AI subscription is spent and when it resets. Each agent gets a donut for the window closest
+  to running out, a bar for every other window, and the numbers that give the percentage its
+  context: what the session spent, how much of the context window the last turn used, whether
+  credits are on. Every card dates itself — `as of 12m ago` — because Codex reports whatever its
+  last session wrote, and a two-day-old percentage read as current is the mistake this popup exists
+  to prevent. Resets are given both ways, `in 1d 12h` and `resets 08:53 Wed`.
+
+  Codex reads the exact numbers OpenAI returns, straight out of its own session log, with no
+  network at all. Claude Code publishes nothing to disk, so its card asks the same endpoint the
+  in-session `/usage` command asks, using the OAuth token Claude Code already stores; that request
+  runs on a worker with a timeout, so the popup opens instantly with Codex on screen and fills
+  Claude in when it lands. Claude also grades its own limits, and the card colours them the way the
+  provider grades them rather than by a threshold of ours; anything ungraded falls back to
+  `usage.warn_percent` and `usage.alert_percent`.
+
+  Each card names the account it is reporting on — the two agents are routinely signed in as two
+  different people, and a quota means little without knowing whose it is. Codex's address comes
+  from the ID token it stores, Claude's from the profile Claude Code caches, and that profile is
+  also where the Claude card gets its plan, since the usage endpoint names none.
+
+  Press `r` to read both again. Any agent that cannot be read says why on its own card and leaves
+  the other one alone. Choose the providers and thresholds under `[usage]`, or from the settings
+  overlay.
+
 - **Zen can hide Herdr's own chrome.** The new `zen.chrome` setting (`off` by default, or
   `panes` / `full`) suppresses the pane borders and gaps, the scrollbar column, the tab row and
   the sidebar for the length of a zen session. None of those have a per-pane switch, so anything

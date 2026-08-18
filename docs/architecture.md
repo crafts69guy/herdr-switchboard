@@ -5,7 +5,7 @@
 Public plugin actions enter through `bin/action.sh`. It captures the origin pane ID and cwd before
 opening the requested Herdr surface:
 
-- Compact popups: Menu, AI Agents, standalone Settings, and Changelog.
+- Compact popups: Menu, AI Agents, Usage, standalone Settings, and Changelog.
 - Full overlays: Projects, Commands, Ports, Zen, Git, Clone, and Update.
 - No pane: `switchboard.zen-toggle` acts directly on the origin pane.
 
@@ -26,6 +26,11 @@ result hands off to Clone.
 Repository and worktree cards include Git state, recent commit information, a file tree, and an
 optional rendered README excerpt. Agents and workspaces use live Herdr metadata. Selection actions
 target the captured origin pane or an ID returned by Herdr; they do not guess identifiers.
+
+Usage draws itself rather than reusing the picker, because its signal is colour: a quota donut has
+to change colour at a threshold, and a picker preview is plain text. Its offline provider is read
+before the terminal is claimed and its networked provider on a worker thread, so the first frame is
+never waiting on a socket.
 
 Git runs the same binary in Git mode and then replaces the pane process with `bin/review.sh` and
 the selected review tool. Changelog and standalone Settings use lightweight Rust popup modes. Clone

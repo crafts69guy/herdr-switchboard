@@ -15,6 +15,7 @@
 
 use std::ffi::OsStr;
 use std::io;
+use std::io::Write;
 use std::os::unix::process::CommandExt;
 use std::process::{Command, ExitStatus, Output, Stdio};
 
@@ -25,6 +26,14 @@ pub trait CommandRunner {
     fn output(&self, program: &str, args: &[&str]) -> io::Result<Output>;
     fn status(&self, program: &str, args: &[&str]) -> io::Result<ExitStatus>;
     fn spawn_detached(&self, program: &OsStr, args: &[&str]) -> io::Result<()>;
+
+    /// Like [`output`](Self::output), but feeds `stdin` to the child first.
+    ///
+    /// This exists for exactly one reason: a secret must never reach a command
+    /// line. `argv` is world-readable through `ps` for the length of the call,
+    /// so the OAuth token [`crate::usage`] hands to `curl` goes down a pipe as a
+    /// `--config -` file instead. Nothing else needs it.
+    fn output_stdin(&self, program: &str, args: &[&str], stdin: &str) -> io::Result<Output>;
 
     /// Trimmed stdout when the command exits 0; `None` on spawn failure or a
     /// non-zero exit. The common read path.
@@ -53,6 +62,25 @@ impl CommandRunner for SystemRunner {
 
     fn status(&self, program: &str, args: &[&str]) -> io::Result<ExitStatus> {
         Command::new(program).args(args).status()
+    }
+
+    fn output_stdin(&self, program: &str, args: &[&str], stdin: &str) -> io::Result<Output> {
+        let mut child = Command::new(program)
+            .args(args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
+        // Drop the pipe after writing: `curl --config -` reads to EOF, so a
+        // handle left open here would hang the wait below forever.
+        {
+            let mut pipe = child
+                .stdin
+                .take()
+                .ok_or_else(|| io::Error::other("child stdin was not piped"))?;
+            pipe.write_all(stdin.as_bytes())?;
+        }
+        child.wait_with_output()
     }
 
     fn spawn_detached(&self, program: &OsStr, args: &[&str]) -> io::Result<()> {
@@ -89,6 +117,7 @@ mod mock {
         responses: Vec<(String, String)>,
         failures: Vec<String>,
         pub calls: RefCell<Vec<Vec<String>>>,
+        stdins: RefCell<Vec<String>>,
     }
 
     impl MockRunner {
@@ -112,6 +141,13 @@ mod mock {
         /// Every argv this runner was handed, program first, in call order.
         pub fn calls(&self) -> Vec<Vec<String>> {
             self.calls.borrow().clone()
+        }
+
+        /// Everything fed to a child's stdin, in call order. A test asserting
+        /// that a secret stayed off the command line reads both this and
+        /// [`calls`](Self::calls).
+        pub fn stdins(&self) -> Vec<String> {
+            self.stdins.borrow().clone()
         }
 
         fn record(&self, program: &str, args: &[&str]) -> String {
@@ -158,6 +194,11 @@ mod mock {
         fn status(&self, program: &str, args: &[&str]) -> io::Result<ExitStatus> {
             let joined = self.record(program, args);
             Ok(exit(self.succeeds(&joined)))
+        }
+
+        fn output_stdin(&self, program: &str, args: &[&str], stdin: &str) -> io::Result<Output> {
+            self.stdins.borrow_mut().push(stdin.to_string());
+            self.output(program, args)
         }
 
         fn spawn_detached(&self, program: &OsStr, args: &[&str]) -> io::Result<()> {

@@ -64,6 +64,16 @@ scrim_color = "#11111b"
 #   full  — also hide_tab_bar_when_single_tab and the sidebar keys
 chrome = "off"
 
+[usage]
+# Which quota providers the Usage popup shows, in display order. Codex reads its
+# number straight off disk; Claude asks the same endpoint `/usage` does, which
+# needs its OAuth token out of the keychain and one HTTPS request.
+providers = ["codex", "claude"]
+timeout_ms = 3000
+# Where a donut turns yellow, then red.
+warn_percent = 60
+alert_percent = 85
+
 # Picker-specific remaps. Projects keeps its full existing action vocabulary;
 # Commands and Ports use the action ids printed in their footer.
 [keys.agents]

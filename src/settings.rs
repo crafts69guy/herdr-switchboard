@@ -277,6 +277,20 @@ const SETTINGS: &[Setting] = &[
         cycle: Cycle::Ring(BOOL),
     },
     Setting {
+        group: "Usage",
+        key: "usage_warn_percent",
+        default: "60",
+        hint: "quota level that turns a donut yellow",
+        cycle: Cycle::Ring(&["50", "60", "70", "80"]),
+    },
+    Setting {
+        group: "Usage",
+        key: "usage_alert_percent",
+        default: "85",
+        hint: "quota level that turns a donut red",
+        cycle: Cycle::Ring(&["75", "85", "90", "95"]),
+    },
+    Setting {
         group: "Zen",
         key: "zen_scrim_color",
         default: "#11111b",
@@ -325,7 +339,14 @@ fn set_document_value(doc: &mut toml_edit::DocumentMut, key: &str, value: &str) 
     }
     if is_bool_setting(key) {
         doc[section][field] = toml_edit::value(value == "true");
-    } else if matches!(key, "history_limit" | "refresh_interval_ms" | "zen_width") {
+    } else if matches!(
+        key,
+        "history_limit"
+            | "refresh_interval_ms"
+            | "zen_width"
+            | "usage_warn_percent"
+            | "usage_alert_percent"
+    ) {
         doc[section][field] = toml_edit::value(value.parse::<i64>()?);
     } else {
         doc[section][field] = toml_edit::value(value);
@@ -357,6 +378,8 @@ fn setting_path(key: &str) -> (&'static str, &str) {
         "history_limit" => ("commands", key),
         "command_sort" => ("commands", "sort"),
         "refresh_interval_ms" => ("ports", key),
+        "usage_warn_percent" => ("usage", "warn_percent"),
+        "usage_alert_percent" => ("usage", "alert_percent"),
         "zen_width" => ("zen", "width"),
         "zen_scrim" => ("zen", "scrim"),
         "zen_scrim_color" => ("zen", "scrim_color"),
@@ -566,7 +589,7 @@ const TABS: [&str; 4] = ["Common", "Projects", "Commands", "Ports"];
 
 fn setting_tab(key: &str) -> usize {
     match setting_path(key).0 {
-        "common" | "zen" => 0,
+        "common" | "zen" | "usage" => 0,
         "commands" => 2,
         "ports" => 3,
         _ => 1,
@@ -586,6 +609,7 @@ const RIGHT_GROUPS: &[&str] = &[
     "Catalog",
     "Monitor",
     "Zen",
+    "Usage",
 ];
 
 const NAME_W: usize = 21; // widest key ("notification_position")
@@ -874,6 +898,32 @@ mod tests {
 
         assert!(write_setting(&path, "refresh_interval_ms", "1").is_err());
         assert_eq!(fs::read_to_string(&path).unwrap(), original);
+        fs::remove_dir_all(dir).ok();
+    }
+
+    /// A number written as a string parses as TOML but fails `Config` — and
+    /// `Config::try_load` failing takes down every surface in the plugin, not
+    /// just the one whose setting was edited. So every value this form writes
+    /// has to survive a round trip back through the typed config.
+    #[test]
+    fn every_setting_this_form_writes_still_loads_as_config() {
+        let dir =
+            std::env::temp_dir().join(format!("switchboard-roundtrip-{}", std::process::id()));
+        let path = dir.join("config.toml");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(&path, toml::to_string_pretty(&Config::default()).unwrap()).unwrap();
+
+        for setting in SETTINGS {
+            let value = match &setting.cycle {
+                Cycle::Ring(ring) => ring[ring.len() - 1],
+                Cycle::Prompt => continue,
+            };
+            write_setting(&path, setting.key, value)
+                .unwrap_or_else(|e| panic!("writing {} = {value:?}: {e}", setting.key));
+            let text = fs::read_to_string(&path).unwrap();
+            toml::from_str::<Config>(&text)
+                .unwrap_or_else(|e| panic!("{} = {value:?} broke the config: {e}", setting.key));
+        }
         fs::remove_dir_all(dir).ok();
     }
 

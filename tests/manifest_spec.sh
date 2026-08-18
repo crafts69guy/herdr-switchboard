@@ -46,13 +46,17 @@ assert_rooted_pane_command update-plugin.sh
 
 # Every public surface has a direct action; the menu is an additional route, not
 # a replacement for the hot picker bindings.
-for action in menu projects agents commands ports settings git zen zen-toggle clone changelog update open-workspace open-tab open-split; do
+for action in menu projects agents usage commands ports settings git zen zen-toggle clone changelog update open-workspace open-tab open-split; do
   grep -Fq "id = \"$action\"" "$MANIFEST" || fail "action '$action' is not declared"
 done
 
 # AI Agents is a compact centered popup, not a mostly empty full-screen overlay.
 grep -Eq '^  agents\) placement=\(--placement popup --width 100 --height 26\) ;;$' "$ROOT/bin/action.sh" ||
   fail "the agents action must open a compact popup"
+
+# Usage is a compact popup too: two donuts and a footer, not a full screen.
+grep -Eq '^  usage\) placement=\(--placement popup --width 96 --height 26\) ;;$' "$ROOT/bin/action.sh" ||
+  fail "the usage action must open a compact popup"
 
 # The git action opens its own pane, not the picker: the menu must not pay for
 # loading agents, workspaces, and repos on the way to a review.

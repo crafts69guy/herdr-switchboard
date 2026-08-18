@@ -618,6 +618,10 @@ mod tests {
             Ok(ExitStatus::from_raw(0))
         }
 
+        fn output_stdin(&self, program: &str, args: &[&str], _stdin: &str) -> io::Result<Output> {
+            self.output(program, args)
+        }
+
         fn spawn_detached(&self, _program: &OsStr, _args: &[&str]) -> io::Result<()> {
             Ok(())
         }

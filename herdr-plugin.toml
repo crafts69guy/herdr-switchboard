@@ -27,6 +27,13 @@ contexts = ["global", "pane"]
 command = ["bash", "bin/action.sh"]
 
 [[actions]]
+id = "usage"
+title = "Usage"
+description = "Show subscription quota for the installed AI agents: how much of the plan is spent and when it resets."
+contexts = ["global", "pane"]
+command = ["bash", "bin/action.sh"]
+
+[[actions]]
 id = "commands"
 title = "Commands"
 description = "Search shell history and presets, then fill or run the exact command."
@@ -135,6 +142,14 @@ placement = "popup"
 width = 100
 height = 26
 command = ["bash", "-c", "exec bash \"$HERDR_PLUGIN_ROOT/bin/picker.sh\" --agents"]
+
+[[panes]]
+id = "usage"
+title = "󰊚"
+placement = "popup"
+width = 96
+height = 26
+command = ["bash", "-c", "exec bash \"$HERDR_PLUGIN_ROOT/bin/picker.sh\" --usage"]
 
 [[panes]]
 id = "commands"

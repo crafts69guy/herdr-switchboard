@@ -17,6 +17,7 @@ case "$ACTION_ID" in
   projects) entrypoint="projects" ;;
   agents) entrypoint="agents" ;;
   commands) entrypoint="commands" ;;
+  usage) entrypoint="usage" ;;
   ports) entrypoint="ports" ;;
   settings) entrypoint="settings" ;;
   git) entrypoint="git" ;;
@@ -71,6 +72,7 @@ placement=(--placement overlay)
 case "$entrypoint" in
   menu) placement=(--placement popup --width 76 --height 24) ;;
   agents) placement=(--placement popup --width 100 --height 26) ;;
+  usage) placement=(--placement popup --width 96 --height 26) ;;
   settings) placement=(--placement popup --width 100 --height 32) ;;
   changelog) placement=(--placement popup --width 88 --height 28) ;;
 esac

@@ -123,6 +123,11 @@ must come from `herdr agent list`, `herdr workspace list`, or the captured origi
   `CommandRunner`
 - `socket.rs` — **the only** code that talks to herdr's unix socket instead of the CLI, and only
   because `pane.graphics.set`/`.clear` have no CLI subcommand. Everything in it fails soft
+- `usage.rs` — the whole `--usage` pane: the `Provider` registry (Codex reads its rate limits off
+  the tail of the newest rollout JSONL; Claude asks the endpoint behind the in-session `/usage`),
+  the braille donut (`donut_points` is pure and tested), the per-window bars and `Fact` rows, and
+  the `SimpleMode` popup. The only network call and the only credential read in the plugin; see the
+  constraints below
 - `update.rs` — the `--update-check` mode plus the cache the picker reads
   (`$XDG_STATE_HOME/herdr-switchboard/update.tsv`, `checked_at<TAB>latest`, 24h TTL)
 
@@ -280,12 +285,53 @@ order so the list stays stable.
   section to a dated one and tags. The tag workflow builds four native archives, generates
   `SHA256SUMS`, and publishes that section verbatim after all targets pass. Commits are not
   Conventional Commits and nothing comes from `git log` — an empty `[Unreleased]` aborts.
-- **The TUI never makes a network request.** `update.rs` spawns a detached `--update-check`
-  child (own process group, no stdio) that runs `git ls-remote` and writes a cache; the picker
-  only ever reads that file, so the badge lands on a _later_ launch. Do not "simplify" this into
-  a thread: the picker frequently exits in under a second and the fetch takes several, so the
-  cache would never be written. `git ls-remote` over the GitHub API on purpose — no `jq`, no
-  60/hour unauthenticated rate limit, no auth. Everything fails silently.
+- **The picker never makes a network request; `usage` is the single exception.** `update.rs`
+  spawns a detached `--update-check` child (own process group, no stdio) that runs `git ls-remote`
+  and writes a cache; the picker only ever reads that file, so the badge lands on a _later_ launch.
+  Do not "simplify" this into a thread: the picker frequently exits in under a second and the fetch
+  takes several, so the cache would never be written. `git ls-remote` over the GitHub API on
+  purpose — no `jq`, no 60/hour unauthenticated rate limit, no auth. Everything fails silently.
+  The `usage` pane is allowed to fetch *while you watch* because it exists to answer a question
+  whose only correct answer is the current one, and it is a pane you opened on purpose rather than
+  a hot path — but it still never blocks the first frame: the offline provider is loaded before
+  `init_terminal`, the networked one runs on a worker thread bounded by `usage.timeout_ms`, and its
+  card sits in `Slot::Loading` until the answer arrives. Nothing else may follow it.
+- **`usage` is the only code that reads a credential, and the token must never reach argv.**
+  `argv` is readable through `ps` by every process the user owns, for the whole life of the call,
+  so `Claude::fetch` hands `curl` its `Authorization` header through stdin as a `--config -` file.
+  That is the entire reason `CommandRunner::output_stdin` exists — do not add a second caller
+  without the same justification, and do not "tidy" the header back into a `-H` flag. The token is
+  never cached, written, traced, or drawn; `the_token_reaches_curl_through_stdin_and_never_through_argv`
+  in `usage.rs` pins it down by asserting the secret is absent from `runner.calls()`.
+- **The account line reads credential-adjacent files, and reads exactly one field from each.**
+  Codex exposes no command that prints its address, so `account_from_codex_auth` decodes the
+  `email` claim from the ID token in `~/.codex/auth.json` — payload only, signature unverified on
+  purpose, because the value is a label and nothing here trusts it. The access and refresh tokens
+  sitting beside it in that file are read past and dropped: never log, draw, or forward anything
+  from it but the address. Claude's address and plan come from `~/.claude.json`, an ordinary
+  settings file. `base64url_decode` is hand-rolled and refuses padded input; do not swap in a
+  base64 crate for sixty-four characters.
+- **A quota card grades by the provider's word when it has one.** Claude's usage endpoint ships a
+  `severity` per limit and Codex ships none, so `window_color` takes `Severity` when present and
+  falls back to `usage.warn_percent`/`alert_percent` otherwise. Yes, that means two cards can
+  colour by two different rules — deliberately: the provider knows what its own plan considers
+  close to the edge, and a threshold invented here does not. `limits[]` and the named buckets share
+  no id, so `claude_severities` joins them on the rounded percentage; a weak key whose worst case
+  is two windows at the same percentage sharing a colour that is correct for both.
+- **Every usage card is laid out to the same row heights.** `draw` computes one `CardRows` from the
+  busiest slot and hands it to every card, because sizing per card puts a one-window provider's
+  donut at a different height from a four-window provider's, and two cards that do not line up read
+  as two unrelated widgets. `every_card_puts_its_rows_at_the_same_height` pins it.
+- **Local time comes from `date +%z`, once per refresh.** `std` has no local-time API and there is
+  no date crate here, so `local_offset` shells out through `CommandRunner` and `format_clock` does
+  the civil-calendar arithmetic. An unreadable offset degrades to UTC — wrong by hours, never wrong
+  about which number resets. Do not add a time zone crate for one line of one card.
+- **A quota percentage is used as reported, never rescaled.** Both sources were measured on a real
+  account: Codex writes `used_percent: 41.0` and the usage endpoint answers `utilization: 51.0`.
+  An earlier `normalize_utilization` guessed that anything at or below `1.0` was a fraction and
+  multiplied by 100 — which reads a genuine `0.8%`, the state of every plan just after its window
+  rolls over, as `80%`. `clamp_percent` only clamps. Guessing a scale fails silently and in the
+  alarming direction; do not reintroduce it.
 - **The update flow fails closed.** `bin/update-plugin.sh` installs only when herdr reports
   an unambiguous `"source":{"kind":"github"…}`; local links, unreadable output, and shapes it
   does not recognise all refuse. The failure it must never make is the permissive one —

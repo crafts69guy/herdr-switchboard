@@ -92,6 +92,15 @@ const ROUTES: &[Route] = &[
         key_label: "⌥z",
     },
     Route {
+        id: "usage",
+        group: "Utilities",
+        title: "Usage",
+        detail: "subscription quota for your AI agents",
+        color: "teal",
+        mnemonic: 'q',
+        key_label: "⌥q",
+    },
+    Route {
         id: "git",
         group: "Utilities",
         title: "Git",
