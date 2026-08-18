@@ -24,6 +24,13 @@ leaving the terminal.
 | **Git** | Review the current repo with tuicr or hand it to lazygit. |
 | **Zen** | Give one pane the screen, centred between optional dimmed gutters. |
 
+![The Usage popup: a quota donut per AI subscription, a bar for every rate-limit window, and the account, session tokens, and reading age beneath each one](docs/usage.png)
+
+Usage answers the question the others cannot: how much of each AI plan is left, and when it comes
+back. Codex reads the exact figures OpenAI returns out of its own session log; Claude Code asks the
+endpoint behind the in-session `/usage`. Every card names the account it reports on and dates its
+own reading, because a stale percentage read as current is worse than no percentage at all.
+
 Projects is a native Rust TUI built with ratatui and nucleo. Unlike
 `ghq list | fzf | cd`, it understands live Herdr agents, workspaces, tabs, panes, and linked
 worktrees. No fzf installation is required.
