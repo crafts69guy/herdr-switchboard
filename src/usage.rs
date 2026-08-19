@@ -919,6 +919,21 @@ fn format_reset(now: u64, resets_at: u64) -> String {
     }
 }
 
+/// `16h 4m` today, `1d 12h · 19 Aug` when the rollover lands on another day.
+///
+/// The countdown stays the primary answer — it is the only "how long do I wait"
+/// figure a window that missed the donut gets — and the date rides behind it for
+/// the windows far enough out that `1d 12h` hides which working day that is. A
+/// reset already past reads `now`, and a date beside that word would contradict
+/// it, so that case stays bare.
+fn format_reset_dated(now: u64, resets_at: u64, offset: i64) -> String {
+    let relative = format_reset(now, resets_at);
+    if resets_at <= now || local_day(resets_at, offset) == local_day(now, offset) {
+        return relative;
+    }
+    format!("{relative} · {}", format_date(resets_at, offset))
+}
+
 /// The local UTC offset in seconds, read once per refresh.
 ///
 /// There is no time zone crate here and `std` has no local-time API, so the
@@ -968,6 +983,22 @@ fn format_clock(epoch: u64, offset: i64) -> String {
     format!("{:02}:{:02} {day}", seconds / 3_600, (seconds % 3_600) / 60)
 }
 
+/// `14:55 Thu` when the window rolls over today, `14:55 Thu 21 Aug` when it
+/// does not.
+///
+/// The weekday alone is unambiguous inside a seven-day window but it is not
+/// legible: `Thu` six days out is a calendar lookup the reader has to do in
+/// their head, and the weekly window is the one that lands that far away.
+/// Today's reset stays short, so the date's presence is itself the signal that
+/// the rollover is not today.
+fn format_clock_dated(now: u64, epoch: u64, offset: i64) -> String {
+    let clock = format_clock(epoch, offset);
+    if clock.is_empty() || local_day(epoch, offset) == local_day(now, offset) {
+        return clock;
+    }
+    format!("{clock} {}", format_date(epoch, offset))
+}
+
 /// What a card says when a date is not knowable. Written out rather than left
 /// blank: a missing row reads as an oversight, `unknown` reads as an answer.
 const UNKNOWN: &str = "unknown";
@@ -988,6 +1019,14 @@ fn format_date(epoch: u64, offset: i64) -> String {
     }
     let (_, month, day) = civil_from_days(local.div_euclid(86_400));
     format!("{day} {}", MONTHS[(month - 1) as usize])
+}
+
+/// The local calendar day an instant falls on, as a day number.
+///
+/// The unit every "is this today?" question on this card is asked in: elapsed
+/// seconds answer a different question and get 23:59 → 00:01 wrong.
+fn local_day(epoch: u64, offset: i64) -> i64 {
+    (epoch as i64 + offset).div_euclid(86_400)
 }
 
 /// Howard Hinnant's civil-from-days, the inverse of the days-from-civil in
@@ -1026,8 +1065,7 @@ fn format_renewal(now: u64, renews_at: Option<u64>, offset: i64) -> String {
     }
     // Counted in local calendar days, not in elapsed seconds: "tomorrow" means
     // the next day on the wall, and a renewal 20 hours away can be either.
-    let day_of = |epoch: u64| (epoch as i64 + offset).div_euclid(86_400);
-    let when = match day_of(at) - day_of(now) {
+    let when = match local_day(at, offset) - local_day(now, offset) {
         d if d <= 0 => "today".to_string(),
         1 => "tomorrow".to_string(),
         d => format!("in {d}d"),
@@ -1204,6 +1242,32 @@ fn enabled_providers(cfg: &Config) -> Vec<Box<dyn Provider>> {
     chosen
 }
 
+/// The blank columns between two provider cards.
+///
+/// Nothing draws a divider — the pane is transparent and a rule between the
+/// cards would compete with the one each card already draws above its facts —
+/// so the whitespace is the only thing separating them, and adjacent cards read
+/// as one wide table of rows rather than two independent answers.
+const CARD_GAP: u16 = 3;
+
+/// The width a card needs before it can spare the full gutter: the longest row
+/// it draws, `label + bar + percentage + a dated countdown`, plus the column
+/// `draw_card` keeps clear on the right.
+const CARD_COMFORTABLE: u16 = 44;
+
+/// The gutter, but never at the expense of a card that is already cutting its
+/// own rows. Two providers on the 96-column popup get the full gap; a pane
+/// squeezed narrower spends its columns on content instead.
+fn card_gap(width: u16, cards: usize) -> u16 {
+    let cards = cards.max(1) as u16;
+    let each = width.saturating_sub(CARD_GAP * (cards - 1)) / cards;
+    if each >= CARD_COMFORTABLE {
+        CARD_GAP
+    } else {
+        1
+    }
+}
+
 fn draw(f: &mut Frame, app: &App) {
     let rows = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).split(f.area());
     // Herdr frames and titles the popup pane already, so this draws no outer
@@ -1218,13 +1282,16 @@ fn draw(f: &mut Frame, app: &App) {
             rows[0],
         );
     } else {
-        let share = 100 / app.slots.len() as u16;
+        // `Fill` rather than `Percentage(100 / n)`, which throws away the
+        // remainder — three providers took 99% of the pane and left a column
+        // dark on the right.
         let columns = Layout::horizontal(
             app.slots
                 .iter()
-                .map(|_| Constraint::Percentage(share))
+                .map(|_| Constraint::Fill(1))
                 .collect::<Vec<_>>(),
         )
+        .spacing(card_gap(rows[0].width, app.slots.len()))
         .split(rows[0]);
         // Built once, here, because the same list has to size the cards and
         // fill them: a count taken from one list and a render taken from
@@ -1351,7 +1418,7 @@ fn draw_card(f: &mut Frame, app: &App, slot: &Slot, facts: &[Fact], area: Rect, 
         Slot::Ready(report) => {
             let mut note = freshness(app.now, report.measured_at);
             if let Some(at) = hottest.and_then(|window| window.resets_at) {
-                let clock = format_clock(at, app.offset);
+                let clock = format_clock_dated(app.now, at, app.offset);
                 if !clock.is_empty() {
                     note = format!("{note} · resets {clock}");
                 }
@@ -1409,7 +1476,10 @@ fn window_line(
     let color = window_color(theme, window, &app.cfg);
     let filled = ((window.used_percent / 100.0) * BAR_W as f64).round() as usize;
     let filled = filled.min(BAR_W);
-    let label_w = width.saturating_sub(BAR_W + 16).clamp(6, 8);
+    // The reservation is the bar plus " NNN%" plus the reset text, whose worst
+    // case is the dated form (`1d 12h · 19 Aug`) and its two leading spaces. On
+    // a card too narrow for all of it the label is what yields.
+    let label_w = width.saturating_sub(BAR_W + 23).clamp(6, 8);
     let mut spans = vec![
         Span::styled(
             format!(" {:<label_w$}", clip(&window.label, label_w)),
@@ -1427,7 +1497,7 @@ fn window_line(
     ];
     if let Some(at) = window.resets_at {
         spans.push(Span::styled(
-            format!("  {}", format_reset(app.now, at)),
+            format!("  {}", format_reset_dated(app.now, at, app.offset)),
             Style::default().fg(muted),
         ));
     }
@@ -1966,6 +2036,47 @@ mod tests {
     }
 
     #[test]
+    fn a_reset_on_another_day_carries_its_date() {
+        // 1787065551 is 2026-08-18T15:05:51Z, a Tuesday.
+        let now = 1_787_065_551;
+        // Later the same day: the weekday alone already says everything a date
+        // would, and the status line is one row on a half-pane-wide card.
+        assert_eq!(format_clock_dated(now, now + 3_600, 0), "16:05 Tue");
+        // Another day, so the date earns its columns.
+        assert_eq!(
+            format_clock_dated(now, now + 86_400 + 3_600, 0),
+            "16:05 Wed 19 Aug"
+        );
+        // Whether two instants share a day is only answerable in the viewer's
+        // zone: this pair is one day in UTC and two at +7h.
+        let evening = 1_787_065_551 + 6 * 3_600; // 21:05 Tue UTC
+        assert_eq!(format_clock_dated(now, evening, 0), "21:05 Tue");
+        assert_eq!(
+            format_clock_dated(now, evening, 7 * 3_600),
+            "04:05 Wed 19 Aug"
+        );
+    }
+
+    #[test]
+    fn a_countdown_names_the_day_when_it_is_not_today() {
+        // 1787000000 is 2026-08-17T20:53:20Z, a Monday.
+        let now = 1_787_000_000;
+        // 23:33 the same evening — the countdown is the whole answer.
+        assert_eq!(
+            format_reset_dated(now, now + 2 * 3_600 + 40 * 60, 0),
+            "2h 40m"
+        );
+        // A day and a half out, where "1d 12h" hides which working day it is.
+        assert_eq!(
+            format_reset_dated(now, now + 86_400 + 12 * 3_600, 0),
+            "1d 12h · 19 Aug"
+        );
+        // A reset already past reads `now`; a date beside that word would
+        // contradict it.
+        assert_eq!(format_reset_dated(now, now - 2 * 86_400, 0), "now");
+    }
+
+    #[test]
     fn a_renewal_is_written_as_a_date_and_a_countdown() {
         // 1787065551 is 2026-08-18T15:05:51Z.
         let now = 1_787_065_551;
@@ -2135,7 +2246,15 @@ mod tests {
             screen.contains("12%"),
             "the quieter window is still shown: {screen}"
         );
-        assert!(screen.contains("1d 12h"), "{screen}");
+        // The countdown, and — because that rollover is not today — the day it
+        // lands on.
+        assert!(screen.contains("1d 12h · 19 Aug"), "{screen}");
+        // The other half of the rule: a window rolling over later the same
+        // evening stays bare, so the date's presence means "not today".
+        assert!(
+            screen.contains("2h 40m") && !screen.contains("2h 40m · "),
+            "a same-day rollover carries no date: {screen}"
+        );
         // The facts that give the percentage its context.
         assert!(screen.contains("19.1M · 97% cached"), "{screen}");
         assert!(screen.contains("162k / 258k"), "{screen}");
@@ -2158,8 +2277,44 @@ mod tests {
         let screen = render(&mut app, 60, 26);
         assert!(screen.contains("as of 12m ago"), "{screen}");
         assert!(
-            screen.contains("resets 08:53 Wed"),
-            "the wall clock too: {screen}"
+            screen.contains("resets 08:53 Wed 19 Aug"),
+            "the wall clock and its date too: {screen}"
+        );
+    }
+
+    #[test]
+    fn cards_are_separated_by_a_gutter_that_yields_before_the_content_does() {
+        // Two providers on the real 96-column popup: 46 columns each and the
+        // full gutter between them.
+        assert_eq!(card_gap(96, 2), CARD_GAP);
+        assert_eq!(card_gap(96, 1), CARD_GAP);
+        // Squeezed, the cards are already cutting their own rows, so the
+        // whitespace is the first thing to go rather than the last.
+        assert_eq!(card_gap(96, 3), 1);
+        assert_eq!(card_gap(60, 2), 1);
+        // Never a divide by zero, however the slots come out.
+        assert_eq!(card_gap(0, 0), 1);
+    }
+
+    #[test]
+    fn a_gutter_actually_separates_two_cards_on_screen() {
+        // The pane paints no background and draws no divider, so the blank
+        // columns are the only thing that keeps two cards from reading as one
+        // wide table of rows.
+        let mut app = app_with(vec![codex_slot(), codex_slot()]);
+        let screen = render(&mut app, 96, 26);
+        let bar = screen
+            .lines()
+            .find(|line| line.contains("weekly"))
+            .expect("a window row is drawn");
+        let first = bar.find("weekly").expect("the left card");
+        let second = bar.rfind("weekly").expect("the right card");
+        assert!(first < second, "two distinct cards: {bar:?}");
+        let between = &bar[first..second];
+        let blanks = between.len() - between.trim_end().len();
+        assert!(
+            blanks >= 4,
+            "at least the gutter plus each card's own margin: {bar:?}"
         );
     }
 

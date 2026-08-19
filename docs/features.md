@@ -24,7 +24,10 @@ resets, and when the plan renews. Each agent gets a card:
   context window the last turn used, whether credits are on, whether a limit has actually been
   hit, and **when the subscription renews** — `renews  13 Sep · in 25d`.
 - A line saying **how old the reading is** and the wall clock the window rolls over at:
-  `as of 12m ago · resets 08:53 Wed`.
+  `as of 12m ago · resets 08:53 Wed 19 Aug`. The calendar date is there only when the rollover is
+  not today — a window resetting this evening reads `resets 23:33 Mon` — so seeing a date is
+  itself the signal that the wait crosses a day. The bar rows say it the other way round, as a
+  countdown that picks up the same date when it needs one: `1d 12h · 19 Aug`.
 
 That last line matters more than it looks. Codex reports whatever its last session wrote, so on a
 machine that has not run Codex since Tuesday the percentage *is* Tuesday's — and a stale number

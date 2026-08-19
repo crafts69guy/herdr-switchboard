@@ -20,6 +20,26 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   created. A date already in the past reads as `unknown` too: the Codex claim only refreshes while
   Codex runs, and a stale date under a heading that says *renews* reads as one that is coming.
 
+### Changed
+
+- **A reset that is not today now names the day it falls on.** The status line reads
+  `resets 08:53 Wed 19 Aug` and the window's own bar row reads `1d 12h · 19 Aug`. A weekday is
+  unambiguous inside a seven-day window but it is not legible: mapping `Thu` onto a calendar six
+  days out is arithmetic you had to do in your head, and the weekly bucket is exactly the one that
+  lands far enough away to need it.
+
+  A window rolling over later today stays as short as it was — `resets 15:59 Thu`, `2h 40m` — so
+  the presence of a date is itself the signal that the rollover is not today. The countdown keeps
+  its place beside it: it is the only "how long do I wait" figure a window that missed the donut
+  gets.
+
+- **More air between the Usage cards.** The pane paints no background and draws no divider
+  between providers, so whitespace is the only thing separating them — and with the columns
+  butted together the two cards read as one wide table of rows rather than two independent
+  answers. They now get a gutter, which yields back to one column on a pane too narrow to seat
+  the cards' own rows. The columns also fill the pane exactly, instead of `100 / n` leaving the
+  remainder dark on the right.
+
 ## [1.2.0] - 2026-08-19
 
 ### Added
