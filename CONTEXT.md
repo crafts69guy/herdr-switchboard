@@ -24,8 +24,15 @@ worktrees.
 _Avoid_: Unified picker, GHQ picker
 
 **Usage Popup**:
-The surface that reports how much of each AI subscription is spent and when it resets.
+The surface that reports how much of each AI subscription is spent, when it resets, and when it
+renews.
 _Avoid_: Quota picker, billing
+
+**Renewal**:
+When a subscription is charged again and its allowance starts over — a property of the plan, not of
+a rate-limit window. Shown as the `renews` row on a Usage card, and only when the provider states
+it; a date this project computed would be a guess.
+_Avoid_: Billing date, expiry, next payment
 
 **Quota Window**:
 One rate-limit period of one provider — a five-hour bucket, a weekly bucket — with a used

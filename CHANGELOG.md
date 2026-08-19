@@ -7,6 +7,19 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **A `renews` row on every Usage card.** A window reset says when you may work again; a renewal
+  says when the plan is charged and its allowance starts over — the question that decides whether
+  pacing is worth it at all. Codex states it, so the row reads `renews  13 Sep · in 25d`, taken
+  from the same `~/.codex/auth.json` ID token the account line already decodes: no extra request,
+  no extra file, one read for both labels.
+
+  Anthropic states it nowhere readable — not in the usage endpoint, not in `~/.claude.json` — so
+  the Claude card says `unknown` instead of counting a month from the day the subscription was
+  created. A date already in the past reads as `unknown` too: the Codex claim only refreshes while
+  Codex runs, and a stale date under a heading that says *renews* reads as one that is coming.
+
 ## [1.2.0] - 2026-08-19
 
 ### Added

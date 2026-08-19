@@ -19,6 +19,12 @@
 //! on it, and the token is handed to `curl` through a pipe because argv is
 //! visible to every process the user owns (see [`Claude::fetch`]).
 //!
+//! A card also says when the plan *renews*, which is a different question from
+//! when a window resets and is answered by a different source: Codex puts the
+//! date in the ID token the account line already decodes, and Anthropic states
+//! it nowhere readable, so that card says `unknown` rather than computing a
+//! date from the day the subscription was created (see [`format_renewal`]).
+//!
 //! Everything degrades to a [`Slot::Unavailable`] card with a readable reason.
 //! A dead endpoint, a denied keychain, a machine that has never run Codex — none
 //! of them may take down the other provider's card, and none of them may panic.
@@ -103,6 +109,13 @@ impl Fact {
 pub struct Report {
     pub name: String,
     pub plan: Option<String>,
+    /// When the subscription itself renews, in epoch seconds.
+    ///
+    /// This is *not* a rate-limit rollover — see [`Window::resets_at`] for that.
+    /// A window reset says when you may work again; a renewal says when the
+    /// plan is charged and its allowance starts over. `None` when the provider
+    /// publishes no such date anywhere readable.
+    pub renews_at: Option<u64>,
     /// Ordered as the provider reports them; the card promotes the busiest.
     pub windows: Vec<Window>,
     pub facts: Vec<Fact>,
@@ -205,9 +218,13 @@ impl Provider for Codex {
             let mut report = parse_codex_rate_limits(&line)?;
             // Which account these numbers belong to, first — the quota is
             // meaningless without knowing whose it is, and the two providers
-            // here are routinely signed in as two different people.
-            if let Some(email) = codex_account() {
-                report.facts.insert(0, Fact::new("account", email));
+            // here are routinely signed in as two different people. The same
+            // token dates the subscription, which the rollout never mentions.
+            if let Some(identity) = codex_identity() {
+                if let Some(email) = identity.email {
+                    report.facts.insert(0, Fact::new("account", email));
+                }
+                report.renews_at = identity.renews_at;
             }
             return Ok(report);
         }
@@ -320,6 +337,9 @@ fn parse_codex_rate_limits(line: &str) -> Result<Report> {
     Ok(Report {
         name: "Codex".into(),
         plan: limits["plan_type"].as_str().map(str::to_string),
+        // The rollout says nothing about the subscription; `Codex::load` fills
+        // this in from the ID token.
+        renews_at: None,
         windows,
         facts: codex_facts(payload),
         // The event's own timestamp, not the file's mtime: resuming a thread
@@ -336,18 +356,45 @@ fn parse_codex_rate_limits(line: &str) -> Result<Report> {
 /// here trusts the token, it just labels a card. **Nothing in that file is ever
 /// logged, drawn, or passed on — the access and refresh tokens beside it are
 /// read past and dropped.**
-fn codex_account() -> Option<String> {
-    let text = fs::read_to_string(home().ok()?.join(".codex/auth.json")).ok()?;
-    account_from_codex_auth(&text)
+/// Who Codex is signed in as, and when that subscription renews.
+///
+/// Both come out of one file and one token: `~/.codex/auth.json` holds an ID
+/// token whose payload carries the address and — under OpenAI's namespaced
+/// claim — the subscription's active window. Read together rather than twice,
+/// the same way [`ClaudeProfile`] takes both of its fields from one read.
+///
+/// The access and refresh tokens sitting beside the ID token in that file are
+/// read past and dropped: nothing from this file is logged, drawn, or sent
+/// anywhere except the two labels below.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct CodexIdentity {
+    email: Option<String>,
+    renews_at: Option<u64>,
 }
 
-fn account_from_codex_auth(text: &str) -> Option<String> {
+fn codex_identity() -> Option<CodexIdentity> {
+    let text = fs::read_to_string(home().ok()?.join(".codex/auth.json")).ok()?;
+    identity_from_codex_auth(&text)
+}
+
+/// The claim OpenAI namespaces its subscription facts under. A JWT claim name
+/// is an opaque string, and this one happens to look like a URL; nothing is
+/// fetched from it.
+const CODEX_AUTH_CLAIM: &str = "https://api.openai.com/auth";
+
+fn identity_from_codex_auth(text: &str) -> Option<CodexIdentity> {
     let value: serde_json::Value = serde_json::from_str(text).ok()?;
     let claims = jwt_claims(value["tokens"]["id_token"].as_str()?)?;
-    claims["email"]
-        .as_str()
-        .filter(|email| !email.is_empty())
-        .map(str::to_string)
+    let identity = CodexIdentity {
+        email: claims["email"]
+            .as_str()
+            .filter(|email| !email.is_empty())
+            .map(str::to_string),
+        renews_at: claims[CODEX_AUTH_CLAIM]["chatgpt_subscription_active_until"]
+            .as_str()
+            .and_then(parse_rfc3339_epoch),
+    };
+    (identity != CodexIdentity::default()).then_some(identity)
 }
 
 /// The claim set of a JWT, without verifying it.
@@ -628,6 +675,9 @@ fn parse_claude_usage(body: &str, measured_at: u64) -> Result<Report> {
             .or_else(|| value["plan_type"].as_str())
             .or_else(|| value["subscription"].as_str())
             .map(str::to_string),
+        // Anthropic publishes no period end: not in this payload, not in
+        // `~/.claude.json`. See `claude_profile`.
+        renews_at: None,
         windows,
         facts: claude_facts(&value),
         measured_at: Some(measured_at),
@@ -918,6 +968,73 @@ fn format_clock(epoch: u64, offset: i64) -> String {
     format!("{:02}:{:02} {day}", seconds / 3_600, (seconds % 3_600) / 60)
 }
 
+/// What a card says when a date is not knowable. Written out rather than left
+/// blank: a missing row reads as an oversight, `unknown` reads as an answer.
+const UNKNOWN: &str = "unknown";
+
+const MONTHS: [&str; 12] = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
+
+/// `13 Sep` — the calendar day something falls on, in the viewer's zone.
+///
+/// The inverse of the conversion [`parse_rfc3339_epoch`] does on the way in,
+/// and for the same reason: this is the only calendar arithmetic in the plugin
+/// and a date crate would be a dependency for two lines.
+fn format_date(epoch: u64, offset: i64) -> String {
+    let local = epoch as i64 + offset;
+    if local < 0 {
+        return String::new();
+    }
+    let (_, month, day) = civil_from_days(local.div_euclid(86_400));
+    format!("{day} {}", MONTHS[(month - 1) as usize])
+}
+
+/// Howard Hinnant's civil-from-days, the inverse of the days-from-civil in
+/// [`parse_rfc3339_epoch`]. Returns `(year, month 1..=12, day 1..=31)`.
+fn civil_from_days(days: i64) -> (i64, i64, i64) {
+    let days = days + 719_468;
+    let era = if days >= 0 { days } else { days - 146_096 } / 146_097;
+    let day_of_era = days - era * 146_097;
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let year = year_of_era + era * 400;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let mp = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    (year + i64::from(month <= 2), month, day)
+}
+
+/// `13 Sep · in 25d` — when the plan is charged again and its allowance starts
+/// over, which is a different question from when a rate-limit window rolls
+/// over, and the one that decides whether it is worth pacing at all.
+///
+/// A date already in the past is reported as [`UNKNOWN`] rather than printed.
+/// Codex's renewal comes from an ID token that is only refreshed while Codex
+/// runs, so a machine left alone for a month still holds the previous period's
+/// date — and a stale date under a heading that says *renews* reads as one that
+/// is coming. Wrong in the reassuring direction is the failure this popup
+/// exists to prevent; saying nothing cannot make it.
+fn format_renewal(now: u64, renews_at: Option<u64>, offset: i64) -> String {
+    let Some(at) = renews_at.filter(|at| *at > now) else {
+        return UNKNOWN.into();
+    };
+    let date = format_date(at, offset);
+    if date.is_empty() {
+        return UNKNOWN.into();
+    }
+    // Counted in local calendar days, not in elapsed seconds: "tomorrow" means
+    // the next day on the wall, and a renewal 20 hours away can be either.
+    let day_of = |epoch: u64| (epoch as i64 + offset).div_euclid(86_400);
+    let when = match day_of(at) - day_of(now) {
+        d if d <= 0 => "today".to_string(),
+        1 => "tomorrow".to_string(),
+        d => format!("in {d}d"),
+    };
+    format!("{date} · {when}")
+}
+
 /// How much to trust the card: `just now`, `12m ago`, `2d ago`, and the wall
 /// clock the window rolls over at.
 ///
@@ -1109,6 +1226,14 @@ fn draw(f: &mut Frame, app: &App) {
                 .collect::<Vec<_>>(),
         )
         .split(rows[0]);
+        // Built once, here, because the same list has to size the cards and
+        // fill them: a count taken from one list and a render taken from
+        // another drift the moment a row is added to only one of them.
+        let facts = app
+            .slots
+            .iter()
+            .map(|slot| card_facts(slot, app.now, app.offset))
+            .collect::<Vec<_>>();
         // Every card gets the same row heights, taken from the busiest one.
         // Sized per card, a provider with one window and a provider with four
         // put their donuts — and every line under them — at different heights,
@@ -1120,15 +1245,10 @@ fn draw(f: &mut Frame, app: &App) {
                 .map(|slot| slot.windows().len() as u16)
                 .max()
                 .unwrap_or(0),
-            facts: app
-                .slots
-                .iter()
-                .map(|slot| slot.facts().len() as u16)
-                .max()
-                .unwrap_or(0),
+            facts: facts.iter().map(|f| f.len() as u16).max().unwrap_or(0),
         };
-        for (slot, area) in app.slots.iter().zip(columns.iter()) {
-            draw_card(f, app, slot, *area, rows);
+        for ((slot, area), facts) in app.slots.iter().zip(columns.iter()).zip(facts.iter()) {
+            draw_card(f, app, slot, facts, *area, rows);
         }
     }
     draw_bar(f, app, rows[1]);
@@ -1147,14 +1267,27 @@ struct CardRows {
     facts: u16,
 }
 
-fn draw_card(f: &mut Frame, app: &App, slot: &Slot, area: Rect, card: CardRows) {
+/// A card's facts as they reach the screen: what the provider recorded, plus
+/// the `renews` row, which only the drawing layer can build — it needs the
+/// clock and the local offset the whole frame shares.
+fn card_facts(slot: &Slot, now: u64, offset: i64) -> Vec<Fact> {
+    let mut facts = slot.facts().to_vec();
+    if let Slot::Ready(report) = slot {
+        facts.push(Fact::new(
+            "renews",
+            format_renewal(now, report.renews_at, offset),
+        ));
+    }
+    facts
+}
+
+fn draw_card(f: &mut Frame, app: &App, slot: &Slot, facts: &[Fact], area: Rect, card: CardRows) {
     let theme = &app.theme;
     let text = theme.or("text", Color::Reset);
     let muted = theme.or("subtext0", Color::Gray);
     let track = theme.or("overlay0", Color::DarkGray);
 
     let windows = slot.windows();
-    let facts = slot.facts();
     // Bars, then a rule, then the facts — all reserved before the donut is
     // sized, so the donut takes what is left rather than crowding them out.
     let facts_h = if card.facts == 0 { 0 } else { card.facts + 1 };
@@ -1692,24 +1825,46 @@ mod tests {
     /// `{"alg":"RS256"}` . `{"email":"cuong.cn0103@gmail.com","name":"Cao Ngoc Cuong"}` . sig
     const ID_TOKEN: &str = "eyJhbGciOiJSUzI1NiJ9.eyJlbWFpbCI6ImN1b25nLmNuMDEwM0BnbWFpbC5jb20iLCJuYW1lIjoiQ2FvIE5nb2MgQ3VvbmcifQ.not-a-real-signature";
 
+    /// The same, plus the namespaced claim a real ChatGPT token carries:
+    /// `{"chatgpt_plan_type":"pro","chatgpt_subscription_active_start":"2026-08-13T07:09:59+00:00",
+    /// "chatgpt_subscription_active_until":"2026-09-13T07:09:59+00:00"}`.
+    const ID_TOKEN_WITH_SUBSCRIPTION: &str = "eyJhbGciOiJSUzI1NiJ9.eyJlbWFpbCI6ImN1b25nLmNuMDEwM0BnbWFpbC5jb20iLCJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9wbGFuX3R5cGUiOiJwcm8iLCJjaGF0Z3B0X3N1YnNjcmlwdGlvbl9hY3RpdmVfc3RhcnQiOiIyMDI2LTA4LTEzVDA3OjA5OjU5KzAwOjAwIiwiY2hhdGdwdF9zdWJzY3JpcHRpb25fYWN0aXZlX3VudGlsIjoiMjAyNi0wOS0xM1QwNzowOTo1OSswMDowMCJ9fQ.not-a-real-signature";
+
+    fn codex_auth(token: &str) -> String {
+        format!(
+            r#"{{"auth_mode":"chatgpt","OPENAI_API_KEY":null,
+                 "tokens":{{"id_token":"{token}","access_token":"secret-access",
+                            "refresh_token":"secret-refresh","account_id":"acc"}}}}"#
+        )
+    }
+
     #[test]
     fn the_codex_account_comes_out_of_the_id_token() {
-        let auth = format!(
-            r#"{{"auth_mode":"chatgpt","OPENAI_API_KEY":null,
-                 "tokens":{{"id_token":"{ID_TOKEN}","access_token":"secret-access",
-                            "refresh_token":"secret-refresh","account_id":"acc"}}}}"#
-        );
-        assert_eq!(
-            account_from_codex_auth(&auth).as_deref(),
-            Some("cuong.cn0103@gmail.com")
-        );
+        let identity = identity_from_codex_auth(&codex_auth(ID_TOKEN)).expect("reads");
+        assert_eq!(identity.email.as_deref(), Some("cuong.cn0103@gmail.com"));
         // Anything unreadable simply leaves the card without an account line.
-        assert_eq!(account_from_codex_auth("{}"), None);
+        assert_eq!(identity_from_codex_auth("{}"), None);
         assert_eq!(
-            account_from_codex_auth(r#"{"tokens":{"id_token":"junk"}}"#),
+            identity_from_codex_auth(r#"{"tokens":{"id_token":"junk"}}"#),
             None
         );
-        assert_eq!(account_from_codex_auth("not json"), None);
+        assert_eq!(identity_from_codex_auth("not json"), None);
+    }
+
+    #[test]
+    fn the_codex_renewal_date_comes_out_of_the_same_token() {
+        // One read, one decode, two labels: the address and the date the plan
+        // is charged again. The rollout that carries the percentages knows
+        // nothing about the subscription.
+        let identity =
+            identity_from_codex_auth(&codex_auth(ID_TOKEN_WITH_SUBSCRIPTION)).expect("reads");
+        assert_eq!(identity.email.as_deref(), Some("cuong.cn0103@gmail.com"));
+        assert_eq!(identity.renews_at, Some(1_789_283_399)); // 2026-09-13T07:09:59Z
+
+        // A token without the claim still names the account; the card simply
+        // has no date to show.
+        let plain = identity_from_codex_auth(&codex_auth(ID_TOKEN)).expect("reads");
+        assert_eq!(plain.renews_at, None);
     }
 
     #[test]
@@ -1756,6 +1911,7 @@ mod tests {
         let mut app = app_with(vec![Slot::Ready(Report {
             name: "Claude Code".into(),
             plan: Some("pro".into()),
+            renews_at: None,
             windows: vec![Window {
                 label: "5h".into(),
                 used_percent: 58.0,
@@ -1807,6 +1963,47 @@ mod tests {
         assert_eq!(format_clock(1_787_065_551, 7 * 3_600), "22:05 Tue");
         assert_eq!(format_clock(1_787_065_551, 17 * 3_600), "08:05 Wed");
         assert_eq!(format_clock(1_787_065_551, -18 * 3_600), "21:05 Mon");
+    }
+
+    #[test]
+    fn a_renewal_is_written_as_a_date_and_a_countdown() {
+        // 1787065551 is 2026-08-18T15:05:51Z.
+        let now = 1_787_065_551;
+        assert_eq!(format_date(now, 0), "18 Aug");
+        // A date is a calendar day, so the viewer's zone can move it: 22:05 the
+        // same day in UTC+7, but already Wednesday in UTC+17.
+        assert_eq!(format_date(now, 7 * 3_600), "18 Aug");
+        assert_eq!(format_date(now, 17 * 3_600), "19 Aug");
+        // Leap day and the year boundary, the two dates a hand-rolled calendar
+        // gets wrong: 2028-02-29 and 2027-01-01.
+        assert_eq!(format_date(1_835_395_200, 0), "29 Feb");
+        assert_eq!(format_date(1_798_761_600, 0), "1 Jan");
+
+        assert_eq!(
+            format_renewal(now, Some(now + 25 * 86_400), 0),
+            "12 Sep · in 25d"
+        );
+        // Counted in calendar days, not in elapsed seconds: twenty hours ahead
+        // is tomorrow when it crosses midnight and today when it does not.
+        assert_eq!(
+            format_renewal(now, Some(now + 20 * 3_600), 0),
+            "19 Aug · tomorrow"
+        );
+        assert_eq!(format_renewal(now, Some(now + 3_600), 0), "18 Aug · today");
+    }
+
+    #[test]
+    fn a_renewal_that_is_not_knowable_says_so_rather_than_reading_as_coming() {
+        let now = 1_787_065_551;
+        // A provider that publishes no date at all — Anthropic keeps none
+        // anywhere readable on this machine.
+        assert_eq!(format_renewal(now, None, 0), "unknown");
+        // And a date already past. Codex's renewal rides an ID token that is
+        // only refreshed while Codex runs, so a machine left alone for a month
+        // still holds the previous period's date — which under a heading that
+        // says *renews* would read as one that is coming.
+        assert_eq!(format_renewal(now, Some(now - 86_400), 0), "unknown");
+        assert_eq!(format_renewal(now, Some(now), 0), "unknown");
     }
 
     #[test]
@@ -1897,6 +2094,8 @@ mod tests {
         Slot::Ready(Report {
             name: "Codex".into(),
             plan: Some("prolite".into()),
+            // 2026-09-11, twenty-five days past the fixture's `now`.
+            renews_at: Some(1_787_000_000 + 25 * 86_400 + 3_600),
             windows: vec![
                 Window {
                     label: "weekly".into(),
@@ -1940,6 +2139,11 @@ mod tests {
         // The facts that give the percentage its context.
         assert!(screen.contains("19.1M · 97% cached"), "{screen}");
         assert!(screen.contains("162k / 258k"), "{screen}");
+        // And when the plan is charged again, which no window reset answers.
+        assert!(
+            screen.contains("renews") && screen.contains("11 Sep · in 25d"),
+            "{screen}"
+        );
         assert!(
             screen.contains("refresh"),
             "the command bar is drawn: {screen}"
@@ -1966,6 +2170,7 @@ mod tests {
         let sparse = Slot::Ready(Report {
             name: "Claude Code".into(),
             plan: None,
+            renews_at: None,
             windows: vec![Window {
                 label: "5h".into(),
                 used_percent: 58.0,
@@ -1977,6 +2182,9 @@ mod tests {
         });
         let mut app = app_with(vec![codex_slot(), sparse]);
         let screen = render(&mut app, 96, 26);
+        // A provider that publishes no renewal still gets the row, so the two
+        // cards keep the same fact count and the same height.
+        assert!(screen.contains("unknown"), "{screen}");
         let rows: Vec<&str> = screen.lines().collect();
         let row_of = |needle: &str| {
             rows.iter()
@@ -2044,6 +2252,7 @@ mod tests {
         let slot = Slot::Ready(Report {
             name: "Claude Code".into(),
             plan: None,
+            renews_at: None,
             windows: vec![
                 Window {
                     label: "5h".into(),

@@ -29,7 +29,7 @@ command = ["bash", "bin/action.sh"]
 [[actions]]
 id = "usage"
 title = "Usage"
-description = "Show subscription quota for the installed AI agents: how much of the plan is spent and when it resets."
+description = "Show subscription quota for the installed AI agents: how much of the plan is spent, when it resets, and when it renews."
 contexts = ["global", "pane"]
 command = ["bash", "bin/action.sh"]
 

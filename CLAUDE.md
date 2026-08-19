@@ -306,14 +306,24 @@ order so the list stays stable.
   without the same justification, and do not "tidy" the header back into a `-H` flag. The token is
   never cached, written, traced, or drawn; `the_token_reaches_curl_through_stdin_and_never_through_argv`
   in `usage.rs` pins it down by asserting the secret is absent from `runner.calls()`.
-- **The account line reads credential-adjacent files, and reads exactly one field from each.**
-  Codex exposes no command that prints its address, so `account_from_codex_auth` decodes the
-  `email` claim from the ID token in `~/.codex/auth.json` — payload only, signature unverified on
-  purpose, because the value is a label and nothing here trusts it. The access and refresh tokens
-  sitting beside it in that file are read past and dropped: never log, draw, or forward anything
-  from it but the address. Claude's address and plan come from `~/.claude.json`, an ordinary
-  settings file. `base64url_decode` is hand-rolled and refuses padded input; do not swap in a
-  base64 crate for sixty-four characters.
+- **The account line reads credential-adjacent files, and reads only named, non-secret labels.**
+  Codex exposes no command that prints its address, so `identity_from_codex_auth` decodes the ID
+  token in `~/.codex/auth.json` — payload only, signature unverified on purpose, because these are
+  labels and nothing here trusts them. It takes exactly two claims: `email`, and
+  `chatgpt_subscription_active_until` under the namespaced `https://api.openai.com/auth` claim
+  (the `renews` row). One read and one decode for both, which is why `codex_account` became
+  `codex_identity`. The access and refresh tokens sitting beside them in that file are read past
+  and dropped: never log, draw, or forward anything from it but those two values. Claude's address
+  and plan come from `~/.claude.json`, an ordinary settings file. `base64url_decode` is hand-rolled
+  and refuses padded input; do not swap in a base64 crate for sixty-four characters.
+- **A renewal date is shown only when it is a fact, never when it is arithmetic.** Codex publishes
+  one; Anthropic publishes none anywhere local — `~/.claude.json` carries `subscriptionCreatedAt`
+  and `billingType: apple_subscription`, and the usage endpoint carries no period end, so a Claude
+  renewal could only be a monthly-anniversary guess against a date Apple actually owns. The card
+  says `unknown` instead. `format_renewal` also answers `unknown` for a date already **past**: the
+  Codex claim only refreshes while Codex runs, so a machine left alone for a month still holds the
+  previous period's date, and a stale date under a heading that says *renews* reads as one that is
+  coming — wrong in the reassuring direction, which is the failure this popup exists to prevent.
 - **A quota card grades by the provider's word when it has one.** Claude's usage endpoint ships a
   `severity` per limit and Codex ships none, so `window_color` takes `Severity` when present and
   falls back to `usage.warn_percent`/`alert_percent` otherwise. Yes, that means two cards can
@@ -324,7 +334,9 @@ order so the list stays stable.
 - **Every usage card is laid out to the same row heights.** `draw` computes one `CardRows` from the
   busiest slot and hands it to every card, because sizing per card puts a one-window provider's
   donut at a different height from a four-window provider's, and two cards that do not line up read
-  as two unrelated widgets. `every_card_puts_its_rows_at_the_same_height` pins it.
+  as two unrelated widgets. `every_card_puts_its_rows_at_the_same_height` pins it. The fact lists
+  are built once, by `card_facts`, and used for *both* the count and the render — a row that the
+  drawing layer appends (`renews`) but the sizing layer does not count is a card one row too short.
 - **Local time comes from `date +%z`, once per refresh.** `std` has no local-time API and there is
   no date crate here, so `local_offset` shells out through `CommandRunner` and `format_clock` does
   the civil-calendar arithmetic. An unreadable offset degrades to UTC — wrong by hours, never wrong

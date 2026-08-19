@@ -15,14 +15,14 @@ it created instead of leaving an empty target behind. Remap these actions under 
 
 ## Usage
 
-The Usage popup answers one question — how much of each AI subscription is spent, and when the
-window resets. Each agent gets a card:
+The Usage popup answers one question — how much of each AI subscription is spent, when the window
+resets, and when the plan renews. Each agent gets a card:
 
 - A **donut** for the window closest to running out, with its percentage in the middle.
 - A **bar per window**, so a plan with a five-hour and a weekly bucket shows both.
 - A **facts block**: which account the numbers belong to, what the session spent, how much of the
-  context window the last turn used, whether credits are on, and whether a limit has actually been
-  hit.
+  context window the last turn used, whether credits are on, whether a limit has actually been
+  hit, and **when the subscription renews** — `renews  13 Sep · in 25d`.
 - A line saying **how old the reading is** and the wall clock the window rolls over at:
   `as of 12m ago · resets 08:53 Wed`.
 
@@ -58,13 +58,30 @@ Every card names the account it reports on, because the two agents are routinely
 different addresses and a percentage means little without knowing whose it is.
 
 Codex has no command that prints it — `codex login status` says only "Logged in using ChatGPT" — so
-the address comes from the `email` claim of the ID token in `~/.codex/auth.json`. Only that claim is
-read; the signature is not verified, because nothing here trusts the token, it only labels a card.
+the address comes from the `email` claim of the ID token in `~/.codex/auth.json`. The signature is
+not verified, because nothing here trusts the token, it only labels a card.
 Claude Code caches its own profile in `~/.claude.json`, which is a settings file rather than a
 credential store, and that is also where the Claude card gets its plan — the usage endpoint names
 none.
 
-Nothing from either file is logged, drawn, or sent anywhere except the address itself.
+Nothing from either file is logged, drawn, or sent anywhere except the labels described here.
+
+### When the plan renews
+
+A window reset says when you may work again. A **renewal** says when the plan is charged and its
+allowance starts over — a different question, and the one that decides whether pacing is worth it
+at all. It is the `renews` row on each card.
+
+Codex states it: the same ID token that carries the address also carries
+`chatgpt_subscription_active_until`, so the date is read offline, from a file already open, with no
+extra request. Anthropic states it nowhere readable — not in the usage endpoint, not in
+`~/.claude.json` — so the Claude card says `unknown` rather than counting a month from the day the
+subscription was created. On this account that is billed through Apple, the real charge date is
+Apple's and is not visible here at all; a computed date would look like a fact and be a guess.
+
+A date that has already passed also reads as `unknown`. Codex's claim is only refreshed while Codex
+runs, so a machine left alone for a month still holds the previous period's date — and a stale date
+under a heading that says *renews* reads as one that is coming.
 
 ### Colour
 
