@@ -21,7 +21,7 @@ leaving the terminal.
 | **Usage** | See how much of each AI subscription is spent, when it resets, and how old the reading is. |
 | **Commands** | Search exact shell history and presets, then fill, run, copy, or forget a command. |
 | **Ports** | Inspect live TCP listeners and safely act on their owner processes. |
-| **Git** | Review the current repo with tuicr or hand it to lazygit. |
+| **Git** | Review the current repo with tuicr, open a merge conflict, or hand it to lazygit. |
 | **Zen** | Give one pane the screen, centred between optional dimmed gutters. |
 
 ![The Usage popup: a quota donut per AI subscription, a bar for every rate-limit window, and the account, session tokens, and reading age beneath each one](docs/usage.png)

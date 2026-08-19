@@ -65,12 +65,14 @@ pub struct Row {
     pub detail: String,
 }
 
-/// Which sub-list a menu row opens. Both are fetched on demand: a `gh` call and a
-/// `tuicr` call are too slow to make while merely drawing the menu.
+/// Which sub-list a menu row opens. All three are fetched on demand: a `gh` call,
+/// a `tuicr` call, and a `git status` are too slow to make while merely drawing the
+/// menu — and the conflict set changes under the menu while it is open.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ListKind {
     PullRequests,
     Reviews,
+    Conflicts,
 }
 
 impl ListKind {
@@ -79,6 +81,7 @@ impl ListKind {
         match self {
             ListKind::PullRequests => "pull requests",
             ListKind::Reviews => "saved reviews",
+            ListKind::Conflicts => "conflicts",
         }
     }
 
@@ -87,6 +90,7 @@ impl ListKind {
         match self {
             ListKind::PullRequests => "pr",
             ListKind::Reviews => "comments",
+            ListKind::Conflicts => "conflict",
         }
     }
 
@@ -95,6 +99,7 @@ impl ListKind {
         match self {
             ListKind::PullRequests => "review PR",
             ListKind::Reviews => "read comments",
+            ListKind::Conflicts => "open file",
         }
     }
 
@@ -103,6 +108,7 @@ impl ListKind {
         match self {
             ListKind::PullRequests => "  (no open pull requests)",
             ListKind::Reviews => "  (no saved reviews)",
+            ListKind::Conflicts => "  (no conflicted files)",
         }
     }
 }
@@ -221,8 +227,9 @@ impl Git {
         // Nerd Font (nf-md) glyphs, one per row so every label lines up: worktree
         // is uncommitted edits (pencil), branch a diff against the base
         // (source-branch), commits the log (clock), all-files a whole-tree read
-        // (file), pull request an incoming change (source-pull), saved reviews the
-        // comments left on one (comment-multiple), lazygit the git surface.
+        // (file), conflicts an unfinished merge (alert), pull request an incoming
+        // change (source-pull), saved reviews the comments left on one
+        // (comment-multiple), lazygit the git surface.
         let mut items = vec![
             Item {
                 key: 'd',
@@ -250,6 +257,16 @@ impl Git {
                 icon: "󰈔".into(),
                 label: "review all files".into(),
                 act: Act::Review("all-files"),
+            },
+            // Unconditional, like `saved reviews`: probing for a merge in progress
+            // would put a `git status` on the path to the menu's first frame, and an
+            // empty sub-list says "no conflicted files" just as clearly as a missing
+            // row would — without the row moving around under the mnemonic.
+            Item {
+                key: 'x',
+                icon: "󰞇".into(),
+                label: "conflicts".into(),
+                act: Act::List(ListKind::Conflicts),
             },
         ];
         // `gh` is a soft dependency: without it the row would only ever fail, so
@@ -495,9 +512,10 @@ pub fn detect_base_branch(
         .map(str::to_string)
 }
 
-/// Fetch a sub-list. Both sources speak JSON and both are parsed with
+/// Fetch a sub-list. The two remote sources speak JSON and are parsed with
 /// `serde_json` — **never `jq`**, which this repo does not depend on and must
-/// not start depending on for a list that is only ever displayed.
+/// not start depending on for a list that is only ever displayed. The conflict
+/// list is `git status` porcelain, a stable line format that needs no parser.
 ///
 /// Every failure (binary missing, not a GitHub remote, unparseable output) is an
 /// empty list. The card then says so, which is the same thing the user needs to
@@ -506,7 +524,74 @@ pub fn load_rows(runner: &dyn CommandRunner, cwd: &str, kind: ListKind) -> Vec<R
     match kind {
         ListKind::PullRequests => load_pull_requests(runner, cwd),
         ListKind::Reviews => load_reviews(runner, cwd),
+        ListKind::Conflicts => load_conflicts(runner, cwd),
     }
+}
+
+/// The unmerged files, from `git status --porcelain`.
+///
+/// One command gives both the path and the status code, where
+/// `git diff --name-only --diff-filter=U` gives only the path — and "deleted by
+/// them" versus "both modified" is exactly what decides whether opening the file
+/// is the right move. `core.quotePath=false` keeps a non-ASCII path readable
+/// instead of octal-escaped.
+///
+/// Porcelain paths are printed from the **repo root** even when git runs inside a
+/// subdirectory, which is why `review.sh` resolves the pick against
+/// `rev-parse --show-toplevel` rather than against the pane's cwd.
+fn load_conflicts(runner: &dyn CommandRunner, cwd: &str) -> Vec<Row> {
+    let Some(out) = runner.capture(
+        "git",
+        &[
+            "-C",
+            cwd,
+            "-c",
+            "core.quotePath=false",
+            "status",
+            "--porcelain",
+        ],
+    ) else {
+        return Vec::new();
+    };
+    out.lines()
+        .filter_map(|line| {
+            // `XY<space>path`: the code is the first two columns, so a path is only
+            // reachable on a line with something after them.
+            if line.len() < 4 || !line.is_char_boundary(2) {
+                return None;
+            }
+            let (code, rest) = line.split_at(2);
+            let detail = unmerged_detail(code)?;
+            let path = rest.trim_start();
+            if path.is_empty() {
+                return None;
+            }
+            Some(Row {
+                id: path.to_string(),
+                // The body column clips an id at `ID_COL`; the pinned header draws
+                // the label in full, so a deep path stays readable somewhere.
+                label: path.to_string(),
+                meta: String::new(),
+                detail: detail.to_string(),
+            })
+        })
+        .collect()
+}
+
+/// The seven porcelain codes git calls unmerged, spelled the way `git status`
+/// spells them in its long form. Anything else — a staged edit, an untracked
+/// file — is not a conflict and is not offered.
+fn unmerged_detail(code: &str) -> Option<&'static str> {
+    Some(match code {
+        "DD" => "both deleted",
+        "AU" => "added by us",
+        "UD" => "deleted by them",
+        "UA" => "added by them",
+        "DU" => "deleted by us",
+        "AA" => "both added",
+        "UU" => "both modified",
+        _ => return None,
+    })
 }
 
 /// Run a command that returns a JSON array and map each element to a [`Row`].
@@ -1332,12 +1417,10 @@ z|Y|pull|git pull
     }
 
     #[test]
-    fn the_retired_staged_and_conflicts_mnemonics_do_nothing() {
+    fn the_retired_staged_mnemonic_does_nothing() {
         let mut g = Git::new();
         open_default(&mut g);
-        for k in ['s', 'x'] {
-            assert_eq!(g.on_key(key(KeyCode::Char(k))), Step::Stay);
-        }
+        assert_eq!(g.on_key(key(KeyCode::Char('s'))), Step::Stay);
         assert!(g.show);
         assert!(g.chosen.is_none());
     }
@@ -1442,7 +1525,7 @@ z|Y|pull|git pull
             "pull request row survived"
         );
         // The rest are unconditional.
-        for k in ['d', 'b', 'h', 'a', 'r'] {
+        for k in ['d', 'b', 'h', 'a', 'x', 'r'] {
             assert!(g.items.iter().any(|i| i.key == k), "row {k} is missing");
         }
 
@@ -1488,6 +1571,46 @@ z|Y|pull|git pull
         assert_eq!(rows[1].detail, "1 comment");
     }
 
+    /// Only the seven unmerged codes become rows: a staged edit, an unstaged edit,
+    /// and an untracked file share the porcelain output and none of them is a
+    /// conflict. The path is the id, because it is what `--file` is handed.
+    #[test]
+    fn conflicts_parse_out_of_git_status_porcelain() {
+        let runner = MockRunner::new().on(
+            "status --porcelain",
+            "UU src/git.rs\n M src/ui.rs\nM  src/data.rs\nDU bin/old.sh\n?? junk\n",
+        );
+        let rows = load_rows(&runner, "/r", ListKind::Conflicts);
+        assert_eq!(rows.len(), 2, "non-conflict lines became rows: {rows:?}");
+        assert_eq!(rows[0].id, "src/git.rs");
+        assert_eq!(rows[0].label, "src/git.rs");
+        assert_eq!(rows[0].detail, "both modified");
+        // No timestamp to show — the date column stays blank rather than inventing one.
+        assert_eq!(rows[0].meta, "");
+        assert_eq!(rows[1].id, "bin/old.sh");
+        assert_eq!(rows[1].detail, "deleted by us");
+    }
+
+    /// The mnemonic opens the sub-list rather than dispatching, and the pick carries
+    /// the path — `review.sh` resolves it against the repo top level from there.
+    #[test]
+    fn a_conflicted_file_dispatches_the_conflict_mode_with_its_path() {
+        let mut g = Git::new();
+        open_default(&mut g);
+        assert_eq!(
+            g.on_key(key(KeyCode::Char('x'))),
+            Step::Load(ListKind::Conflicts)
+        );
+        let runner = MockRunner::new().on("status --porcelain", "UU src/git.rs\n");
+        let rows = load_rows(&runner, "/repo", ListKind::Conflicts);
+        g.show_list(ListKind::Conflicts, rows);
+        assert_eq!(g.on_key(key(KeyCode::Enter)), Step::Chosen);
+        let spec = g.chosen.unwrap();
+        assert_eq!(spec.mode, "conflict");
+        assert_eq!(spec.arg, "src/git.rs");
+        assert_eq!(spec.cwd, "/repo");
+    }
+
     /// The two failure shapes a list fetch actually has. Neither may panic, and
     /// neither may be told apart from "you have no sessions" by the caller — the
     /// card says as much either way.
@@ -1507,6 +1630,9 @@ z|Y|pull|git pull
         // The binary is missing entirely.
         let runner = MockRunner::new().failing("pr list");
         assert!(load_rows(&runner, "/r", ListKind::PullRequests).is_empty());
+        // Not a repo, or git refusing for any other reason.
+        let runner = MockRunner::new().failing("status --porcelain");
+        assert!(load_rows(&runner, "/r", ListKind::Conflicts).is_empty());
     }
 
     #[test]

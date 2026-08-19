@@ -72,5 +72,20 @@ case "$mode" in
     read -rsn1 _ || true
     exit 0
     ;;
+  # tuicr has no conflict mode, and -p is not the way in: `git diff` on an unmerged
+  # path is a *combined* diff (`diff --cc` / `@@@ -1,3 -1,3 +1,9 @@@`), not the
+  # two-sided diff a review tool reads. --file opens the file itself, conflict
+  # markers and all, which is what there is to look at mid-merge.
+  conflict)
+    [[ -n "$arg" ]] || die "No conflicted file to open." "conflict review with empty path"
+    # `git status --porcelain` prints paths from the repo root even when it runs in a
+    # subdirectory, and this pane may well be in one — resolve against the top level,
+    # not against the cwd.
+    root="$(git rev-parse --show-toplevel 2>/dev/null || printf '%s' "$cwd")"
+    # `DD` (both deleted) is a real conflict with no file on disk: it is listed so it
+    # is not a silent omission, but there is nothing for tuicr to open.
+    [[ -f "$root/$arg" ]] || die "That file is not on disk." "conflict file missing: $root/$arg"
+    exec tuicr --file "$root/$arg" --no-update-check
+    ;;
   *) die "Unknown review mode '$mode'." "unknown review mode '$mode'" ;;
 esac

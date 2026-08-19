@@ -7,6 +7,19 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **A conflicts row in the Git menu.** `x` lists every path `git status` reports as unmerged,
+  each with what actually happened to it — `both modified`, `deleted by them`, `both added` —
+  and opens the one you pick in tuicr. It is always offered: with no merge in progress the list
+  says so, rather than the row appearing and disappearing under the mnemonic.
+
+  The pick opens with `tuicr --file`, which shows the file itself with its conflict markers
+  intact, not a diff. That is on purpose: `git diff` on an unmerged path emits a *combined*
+  diff (`diff --cc`), which is not the two-sided shape a review tool reads. This is the row
+  retired in 0.10.0 for exactly that reason, back now that the sub-list picker the pull-request
+  and saved-review rows already use gives it a way to name one file at a time.
+
 ## [1.1.0] - 2026-08-18
 
 ### Added

@@ -20,6 +20,7 @@ close. The selected tool takes over the Git pane; quitting it returns to the ori
 | `b` | Review branch | `tuicr -r <base>.. -w`; base is detected or set by `git.base_branch`. |
 | `h` | Review commits | `tuicr`, using its commit selector. |
 | `a` | Review all files | `tuicr -A`. |
+| `x` | Conflicts | Pick an unmerged file, then run `tuicr --file <path>`. |
 | `p` | Review pull request | Pick from `gh pr list`, then run `tuicr pr <number>`. |
 | `r` | Saved review comments | Pick a session, then run `tuicr review comments --session <slug>`. |
 | `l` | Stage and commit | `lazygit`. |
@@ -27,8 +28,15 @@ close. The selected tool takes over the Git pane; quitting it returns to the ori
 The pull-request row appears only when `gh` is installed; the lazygit row appears only when
 `lazygit` is installed. Review rows require tuicr 0.20.0 or newer.
 
-The pull-request and saved-review lists support fuzzy filtering. `esc` clears an active filter
-before returning to the main menu.
+The conflicts row is always offered; with no merge in progress its list says
+`(no conflicted files)`. It lists every path `git status` reports as unmerged, with what happened
+to it — `both modified`, `deleted by them`, and so on. Enter opens that file with `tuicr --file`,
+which shows the file itself, conflict markers and all. It is deliberately not a diff: `git diff`
+on an unmerged path produces a *combined* diff (`diff --cc`), which is not the two-sided shape a
+review tool reads. A `both deleted` conflict is listed but has no file to open.
+
+All three sub-lists — pull requests, saved reviews, conflicts — support fuzzy filtering. `esc`
+clears an active filter before returning to the main menu.
 
 Saved reviews expose their comments; tuicr does not support reopening an existing review session
 in its TUI.
