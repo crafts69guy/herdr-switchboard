@@ -26,12 +26,7 @@ cargo build                                  # debug binary
 cargo build --release                        # what bin/picker.sh actually launches
 cargo test                                   # unit tests (sorting, group filter, history parsing)
 cargo test recent_sort_puts_latest_opened_first   # single test by name
-cargo fmt --check
-cargo clippy --all-targets -- -D warnings    # warnings are failures
-bash tests/manifest_spec.sh                  # manifest/entrypoint contract, version sync, bash syntax
-bash tests/update_guard_spec.sh              # the update guard, with herdr stubbed via HERDR_BIN_PATH
-bash tests/bootstrap_spec.sh                 # release target, checksum, and atomic-install contract
-bash tests/menu_handoff_spec.sh              # central-menu handoff ordering and process lifetime
+bash bin/check.sh                            # complete local/CI/release gate
 bash bin/release.sh 0.5.0                    # cut a release (gates, bump, changelog, tag, gh release)
 
 herdr plugin link /path/to/herdr-switchboard         # install this checkout for manual testing
@@ -39,9 +34,9 @@ herdr server reload-config                   # after touching keybindings/config
 herdr plugin config-dir switchboard          # where the runtime config.toml lives
 ```
 
-The four shell specs cover the manifest/entrypoints, update guard, bootstrap installer, and central
-menu handoff. Layout, keybinding, or Herdr CLI changes still need manual exercise in a real Herdr
-session in addition to Rust render tests.
+`bin/check.sh` is the single full-gate interface for local sessions, CI, and releases. Layout,
+keybinding, or Herdr CLI changes still need manual exercise in a real Herdr session in addition to
+Rust render tests.
 
 ## Architecture
 
@@ -67,92 +62,10 @@ session in addition to Rust render tests.
 The overlay pane is _not_ the user's pane. Never guess or infer a pane/workspace/agent id — every id
 must come from `herdr agent list`, `herdr workspace list`, or the captured origin.
 
-**Module split (`src/`):**
-
-- `main.rs` — the argv composition root: parses startup arguments and dispatches each CLI mode
-- `projects.rs` — the Projects feature interface and host: `App`, `ProjectsSurface`,
-  `handle_key` → `Flow` (Continue/Quit/Accept), startup loading, dispatch, and `browse_order`
-- `keymap.rs` — the `Chord → Action` tables (Insert + Normal), built from defaults and overridden
-  by `[keys.projects]`; `Mode` (Insert/Normal) and the typed `common.keymode`. `chord_of`
-  reduces a key event; `parse_chord` reads a config spec
-- `source.rs` — `ProjectCatalog`, the explicit load policy for agents, workspaces, repos, and
-  worktrees. Per-source parsing remains in `data`; preview/dispatch stay compiler-checked per-kind
-  matches
-- `surface.rs` — the universal terminal host. Every surface implements `Surface`; this module alone
-  owns terminal claim/restore, mouse capture, event polling, ticks, redraw scheduling, and the
-  restore-before-effect invariant
-- `splash.rs` — one static ASCII cat frame, drawn entirely with terminal cells. The `--git` mode
-  draws it and `exec`s tuicr over it, because tuicr can take 0.9–1.7s to read a large diff before
-  its own first frame. No animation, no floor, nothing to cancel — all that is left of `startup.rs`
-- `trace.rs` — opt-in perf tracing behind `SWITCHBOARD_TRACE`, appended to `$SWITCHBOARD_TRACE_FILE` or
-  `state_dir()/trace.log`. **Never stdout/stderr**: the TUI owns the terminal for its whole life
-- `runner.rs` — the `CommandRunner` interface (`SystemRunner` adapter in production and
-  `MockRunner` adapter in tests) used by Herdr/ghq/git process calls
-- `config.rs` — typed namespaced config, validation, defaults, and the finite `config get`
-  compatibility seam consumed by Bash
-- `data.rs` — `Theme`, `Entry`, browse types, and the per-source response loaders
-- `markdown.rs` — the changelog/README markdown (`Block`, `parse`, `render`, `spans`,
-  `flatten_links`, `wrap`), shared by `changelog`, `ui`, and `preview`
-- `state.rs` — `state_dir()` + `now()`, shared by `history` and `update`
-- `tui.rs` — rendering vocabulary only: `boxed()` (the one rounded-panel helper — rounded border in
-  `overlay0`, caption in `title_color`) and the command-bar `pill_row` widget
-- `projects/view.rs` — responsive Projects Picker layout built from `tui::boxed`: wide panes show Context /
-  Navigator / Inspector, medium panes show Navigator / Inspector, and compact panes prioritize
-  Navigator; Search and the full-width bar remain fixed rows. It also draws the in-picker `⌥c`
-  changelog, the `?` cheatsheet, and — via `settings::draw` — the `⌥,` settings form
-- `picker.rs` — the shared engine behind the **mode** pickers (`menu` / `agents` / `commands` /
-  `ports` / `zen`):
-  the `PickerMode` trait, the fuzzy/query state, and a `draw` that renders the same three
-  panels as `projects/view.rs` through `tui::boxed`. Its chrome is not free-styled — see the
-  constraint below
-- `projects/preview.rs` — the preview card (header + pills / meta column / captioned rules). Reads
-  agents and workspaces from herdr's JSON with `serde_json` and styles everything from
-  `Theme`; shells out to `bin/preview.sh` only for the repo file tree, which arrives as
-  ANSI already and passes through `ansi-to-tui`
-- `git.rs` — the `--git` feature interface, reducer, and hosted runtime: `main()` (repo from the
-  pane's cwd, hosted surface, preroll, `exec`), the review menu state, and the generic `View::List`
-  sub-list over `Vec<Row>`. `on_key` stays IO-free by returning a `Step`; `GitSurface` runs
-  list/count effects on background adapters and applies their typed results on a tick
-- `git/effect.rs`, `git/menu_config.rs`, `git/view.rs` — Git's external reads and response parsing,
-  `menu.conf` parser, and rendering with render-derived hit zones; these children stay behind the
-  `git` interface
-- `action.rs` — `Accept` enum → herdr CLI verbs, plus `run_review` (`exec`s `bin/review.sh`)
-- `history.rs` — recency state at `$XDG_STATE_HOME/herdr-switchboard/recent.tsv`, atomic write, cap 200
-- `commands.rs` — the Command Catalog feature interface; private `commands/catalog.rs`,
-  `commands/history.rs`, `commands/action.rs`, and `commands/picker.rs` own privacy-aware catalogue
-  persistence, bounded shell ingestion, terminal/clipboard effects, and the picker adapter
-- `settings.rs` — the `Settings` draft/apply model and standalone `Surface`. Opened with `⌥,` and
-  drawn as a floating two-column card **over** the picker (like the `⌥c` changelog), not a separate
-  pane; the picker embeds it as `App::settings` and routes keys to `Settings::on_key` while it is
-  shown. Edits
-  are **drafts** (`values` vs the `saved` baseline): cycling stages a value, `a` calls `apply`
-  (writes only the changed keys, then adopts the draft), and `esc` calls `discard` — nothing hits
-  `config.toml` until you apply
-- `settings/catalog.rs`, `settings/document.rs`, `settings/view.rs` — the feature-private setting
-  definitions, comment-preserving namespaced TOML writer, and shared embedded/standalone card view
-- `changelog.rs` — the `--changelog` mode: parses `$HERDR_PLUGIN_ROOT/CHANGELOG.md` and renders it
-  (inline markdown, hanging-indent wrap, `← installed` marker from `CARGO_PKG_VERSION`). `parse` +
-  `render` are shared with the picker's `⌥c` popup, so both surfaces stay identical
-- `zen.rs` — the zen feature interface: the `--zen` mode and
-  `zen toggle|on|off|chrome-restore` CLI verb
-- `zen/geometry.rs`, `zen/session.rs`, `zen/engine.rs`, `zen/picker.rs` — pure centring and restore
-  policy, recoverable state/chrome snapshots, the enter/leave effect engine, and the picker adapter.
-  Every herdr call goes through `CommandRunner`
-- `chrome.rs` — the `zen_chrome` levels (`off`/`panes`/`full`) and **the only code that writes
-  herdr's own `config.toml`**. `plan_overrides`/`apply`/`restore` are pure `toml_edit` functions
-  over a `DocumentMut`; the IO edge is `engage`/`disengage`, and the reload goes through
-  `CommandRunner`
-- `socket.rs` — **the only** code that talks to herdr's unix socket instead of the CLI, and only
-  because `pane.graphics.set`/`.clear` have no CLI subcommand. Everything in it fails soft
-- `usage.rs` — the `--usage` feature interface, refresh runtime, braille geometry, and `Surface`
-  implementation. Private `usage/domain.rs`, `usage/time.rs`, and `usage/view.rs` children own
-  report states, date/reset formatting, and card rendering
-- `usage/provider.rs`, `usage/provider/common.rs`, `usage/provider/codex.rs`,
-  `usage/provider/claude.rs` — the feature-private `Provider` registry, shared parsing primitives,
-  and its offline rollout/identity and credential/HTTP adapters. Usage remains the only
-  credential-reading surface and the only in-process HTTP client; see the constraints below
-- `update.rs` — the `--update-check` mode plus the cache the picker reads
-  (`$XDG_STATE_HOME/herdr-switchboard/update.tsv`, `checked_at<TAB>latest`, 24h TTL)
+**Module ownership:** current file ownership and module seams live only in
+`docs/architecture.md`. Keep this file focused on non-obvious invariants; when moving or
+splitting code, update the architecture document in the same commit and run
+`bash tests/docs_spec.sh`.
 
 **Sort vs. search:** fuzzy score always wins while a query is present; `SortMode` (recent/name/kind)
 only orders the resting, no-query list. Both paths honour the `GroupFilter`. Ties break on load

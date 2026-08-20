@@ -185,13 +185,7 @@ herdr server reload-config
 Before opening a pull request:
 
 ```sh
-cargo fmt --check
-cargo clippy --all-targets -- -D warnings
-cargo test
-bash tests/manifest_spec.sh
-bash tests/update_guard_spec.sh
-bash tests/bootstrap_spec.sh
-bash tests/menu_handoff_spec.sh
+bash bin/check.sh
 ```
 
 User-visible changes need an entry under `CHANGELOG.md`'s `[Unreleased]` section. Do not bump

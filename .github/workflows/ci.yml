@@ -24,22 +24,5 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Format
-        run: cargo fmt --check
-
-      - name: Clippy
-        run: cargo clippy --all-targets -- -D warnings
-
-      - name: Test
-        run: cargo test
-
-      # Manifest/entrypoint contract, version sync, and bash syntax.
-      - name: Manifest spec
-        run: bash tests/manifest_spec.sh
-
-      # The guard that decides whether an install may rewrite a checkout.
-      - name: Update guard spec
-        run: bash tests/update_guard_spec.sh
-
-      - name: Binary bootstrap spec
-        run: bash tests/bootstrap_spec.sh
+      - name: Full repository gate
+        run: bash bin/check.sh

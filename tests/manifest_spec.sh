@@ -63,11 +63,6 @@ grep -Eq '^  usage\) placement=\(--placement popup --width 96 --height 26\) ;;$'
 grep -Eq '^  git\) entrypoint="git" ;;$' "$ROOT/bin/action.sh" ||
   fail "the git action must open the dedicated git pane"
 
-# Exercise popup-to-popup handoff timing with a Herdr stub that rejects the
-# target while the simulated Central Menu process is still alive.
-bash "$ROOT/tests/menu_handoff_spec.sh" ||
-  fail "central menu handoff must wait for the menu popup to exit"
-
 # The pane script must resolve from an unrelated working directory.
 foreign_cwd="$(mktemp -d)"
 trap 'rm -rf "$foreign_cwd"' EXIT

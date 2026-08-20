@@ -65,12 +65,7 @@ unreleased="$(awk '/^## \[Unreleased\]/ { flag = 1; next } /^## \[/ { flag = 0 }
 # Run on the clean tree: a failure here is an abort, not a half-bumped checkout.
 
 log "running gates"
-cargo fmt --check
-cargo clippy --all-targets -- -D warnings
-cargo test
-bash tests/manifest_spec.sh
-bash tests/update_guard_spec.sh
-bash tests/bootstrap_spec.sh
+bash bin/check.sh
 
 # --- bump --------------------------------------------------------------------
 

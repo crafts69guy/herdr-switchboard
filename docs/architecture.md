@@ -52,6 +52,11 @@ detached child, and Clone remains an explicitly invoked Bash flow in `bin/get.sh
 
 ## Module seams
 
+This section is the single source of truth for current module ownership. `AGENTS.md` owns workflow
+rules, `CLAUDE.md` owns non-obvious invariants, and `README.md` remains user-facing. A structural
+change updates this section in the same commit; other documents should link here instead of copying
+the module inventory.
+
 | Module | Interface | Implementation hides |
 | --- | --- | --- |
 | `surface` | `Surface`, `Transition`, `run` | Terminal lease, mouse capture, polling, ticks, redraw, teardown |
@@ -260,9 +265,7 @@ popups cannot be represented as several simultaneously active booleans.
   results, failure behavior, and secret handling.
 - `TestBackend` render tests cover supported widths, transparent panels, live key labels, and hit
   zones for any changed surface.
-- Run `cargo test`, `cargo fmt --check`, and `cargo clippy --all-targets -- -D warnings`.
-- Run `tests/manifest_spec.sh`, `tests/update_guard_spec.sh`, `tests/bootstrap_spec.sh`, and
-  `tests/menu_handoff_spec.sh` with Bash.
+- Run the complete local/CI/release gate with `bash bin/check.sh`.
 - Manually exercise every affected Herdr pane. Attach a current screenshot when layout or
   interaction changes.
 - Any user-visible change receives an `[Unreleased]` changelog entry in the same implementation
