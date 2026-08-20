@@ -9,6 +9,7 @@ use crate::config::Config;
 pub enum Event {
     AgentLaunchFailed,
     CommandDeliveryFailed,
+    ReviewHandoffSucceeded,
     TermSucceeded,
     KillSucceeded,
     SignalFailed,
@@ -88,6 +89,9 @@ impl Notifier {
                 "Could not deliver the selected command to its origin pane.".into(),
                 "request",
             ),
+            Event::ReviewHandoffSucceeded => {
+                ("Sent review comments to the selected agent.".into(), "done")
+            }
             Event::TermSucceeded => (
                 format!("Sent TERM{}.", suffix(safe_subject.as_deref())),
                 "request",
@@ -201,5 +205,21 @@ mod tests {
         assert!(Notifier::new(&cfg)
             .args(Event::AgentLaunchFailed, None)
             .is_none());
+    }
+
+    #[test]
+    fn review_handoff_success_never_repeats_the_agent_label() {
+        let notifier = Notifier::new(&Config::default());
+        let args = notifier
+            .args(
+                Event::ReviewHandoffSucceeded,
+                Some("codex /private/repo token=secret"),
+            )
+            .unwrap();
+        let rendered = args.join(" ");
+        assert!(rendered.contains("Sent review comments to the selected agent."));
+        assert!(!rendered.contains("/private"));
+        assert!(!rendered.contains("secret"));
+        assert!(rendered.contains("--sound done"));
     }
 }

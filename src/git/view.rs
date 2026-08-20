@@ -1,6 +1,6 @@
 //! Rendering and render-derived hit zones for the Git menu.
 
-use crossterm::event::KeyCode;
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::layout::{Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -202,7 +202,7 @@ fn draw_list(
     );
     background.paint(f, popup);
 
-    let what = g.kind.map(ListKind::title).unwrap_or("list");
+    let what = g.list_title();
     let tail = if g.rows.is_empty() {
         format!(" · {what} ")
     } else if g.filtered.is_empty() {
@@ -239,16 +239,21 @@ fn draw_list(
             .split(inner);
     let (header_area, search_area, body_area, bar_area) = (a[0], a[1], a[2], a[3]);
 
-    f.render_widget(
-        Paragraph::new(list_header_lines(
-            g,
-            text,
-            sub,
-            title,
-            header_area.width as usize,
-        )),
-        header_area,
-    );
+    let mut header = list_header_lines(g, text, sub, title, header_area.width as usize);
+    if let Some(message) = g.error_message.as_deref() {
+        header.truncate(2);
+        header.push(Line::from(Span::styled(
+            format!(" {message}"),
+            Style::default().fg(theme.or("red", Color::Red)),
+        )));
+    } else if let Some(message) = g.status_message.as_deref() {
+        header.truncate(2);
+        header.push(Line::from(Span::styled(
+            format!(" {message}"),
+            Style::default().fg(theme.or("yellow", Color::Yellow)),
+        )));
+    }
+    f.render_widget(Paragraph::new(header), header_area);
 
     // The search input, its own rounded box.
     let sbox = crate::tui::framed(border);
@@ -505,6 +510,12 @@ fn bar_pills(g: &Git, theme: &Theme) -> Vec<crate::tui::Pill<'static>> {
             crate::tui::Pill::new("↑ ↓", "move", theme.or("blue", Color::Blue)),
             crate::tui::Pill::new("esc", "close", theme.or("red", Color::Red)),
         ],
+        View::List if g.kind == Some(ListKind::Reviews) => vec![
+            crate::tui::Pill::new("↵", "read comments", theme.or("accent", Color::Cyan)),
+            crate::tui::Pill::new("^s", "send to agent", theme.or("green", Color::Green)),
+            crate::tui::Pill::new("↑ ↓", "move", theme.or("blue", Color::Blue)),
+            crate::tui::Pill::new("esc", "back", theme.or("red", Color::Red)),
+        ],
         View::List => vec![
             crate::tui::Pill::new(
                 "↵",
@@ -550,9 +561,16 @@ fn draw_bar(f: &mut Frame, g: &mut Git, area: Rect, theme: &Theme) {
 
 /// The key each pill in [`bar_pills`] stands for, in the same order. `None` for
 /// a pill that names a pair of keys rather than one action.
-fn bar_keys(g: &Git) -> Vec<Option<KeyCode>> {
+fn bar_keys(g: &Git) -> Vec<Option<KeyEvent>> {
+    let plain = |code| Some(KeyEvent::new(code, KeyModifiers::NONE));
     match g.view {
-        View::Menu | View::List => vec![Some(KeyCode::Enter), None, Some(KeyCode::Esc)],
-        View::Confirm => vec![Some(KeyCode::Enter), Some(KeyCode::Esc)],
+        View::List if g.kind == Some(ListKind::Reviews) => vec![
+            plain(KeyCode::Enter),
+            Some(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL)),
+            None,
+            plain(KeyCode::Esc),
+        ],
+        View::Menu | View::List => vec![plain(KeyCode::Enter), None, plain(KeyCode::Esc)],
+        View::Confirm => vec![plain(KeyCode::Enter), plain(KeyCode::Esc)],
     }
 }

@@ -248,7 +248,7 @@ application-wide framework. Each feature keeps a narrow root module and private 
 | Feature root | Root production lines | Private implementation children |
 | --- | ---: | --- |
 | `main.rs` | 138 | Projects moved behind `projects.rs`, `projects/view.rs`, and `projects/preview.rs` |
-| `git.rs` | 831 | `git/effect.rs`, `git/menu_config.rs`, `git/view.rs` |
+| `git.rs` | 1,023 | `git/effect.rs`, `git/handoff.rs`, `git/menu_config.rs`, `git/view.rs` |
 | `usage.rs` | 324 | domain, time, view, shared provider primitives, and Codex/Claude adapters under `usage/` |
 | `zen.rs` | 130 | geometry, session persistence, effect engine, and picker adapter under `zen/` |
 | `settings.rs` | 373 | catalogue, validated TOML document writer, and view under `settings/` |

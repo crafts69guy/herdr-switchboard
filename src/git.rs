@@ -20,6 +20,7 @@
 //! freezing a half-drawn list.
 
 mod effect;
+mod handoff;
 mod menu_config;
 mod view;
 
@@ -36,9 +37,13 @@ use ratatui::style::Color;
 use ratatui::Frame;
 
 use crate::data::{Config, Theme};
+use crate::notify::{Event as NotifyEvent, Notifier};
 use crate::runner::{CommandRunner, SystemRunner};
 use crate::surface::{Surface, Transition};
 use effect::{count_tracked_files, detect_base_branch, load_rows, read_menu_conf, repo_cwd};
+use handoff::{
+    deliver, discover_targets, AgentTarget, HandoffRequest, TargetResolution, TargetScope,
+};
 use view::{draw, fuzzy_match};
 
 #[cfg(test)]
@@ -83,6 +88,7 @@ pub enum ListKind {
     PullRequests,
     Reviews,
     Conflicts,
+    Agents,
 }
 
 impl ListKind {
@@ -92,16 +98,18 @@ impl ListKind {
             ListKind::PullRequests => "pull requests",
             ListKind::Reviews => "saved reviews",
             ListKind::Conflicts => "conflicts",
+            ListKind::Agents => "review agents",
         }
     }
 
     /// The `review.sh` mode a picked row dispatches with.
-    fn mode(self) -> &'static str {
-        match self {
+    fn mode(self) -> Option<&'static str> {
+        Some(match self {
             ListKind::PullRequests => "pr",
             ListKind::Reviews => "comments",
             ListKind::Conflicts => "conflict",
-        }
+            ListKind::Agents => return None,
+        })
     }
 
     /// What Enter does, for the command bar.
@@ -110,6 +118,7 @@ impl ListKind {
             ListKind::PullRequests => "review PR",
             ListKind::Reviews => "read comments",
             ListKind::Conflicts => "open file",
+            ListKind::Agents => "send review",
         }
     }
 
@@ -119,14 +128,15 @@ impl ListKind {
             ListKind::PullRequests => "  (no open pull requests)",
             ListKind::Reviews => "  (no saved reviews)",
             ListKind::Conflicts => "  (no conflicted files)",
+            ListKind::Agents => "  (no promptable agents; blocked agents cannot receive prompts)",
         }
     }
 }
 
 /// What a key press left for the caller to do. Keeping the fetch out here is what
 /// keeps [`Git::on_key`] IO-free and unit-testable.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum Step {
+#[derive(Clone, Debug, PartialEq)]
+enum Step {
     /// Nothing to do. `show` going false means the user backed out.
     Stay,
     /// A row opened a sub-list: fetch it with [`load_rows`] and hand the result
@@ -139,6 +149,10 @@ pub enum Step {
     /// [`Git::show_count`]. The IO stays out here for the same reason
     /// [`Step::Load`]'s does.
     CountFiles,
+    /// Discover the exact origin agent or the candidates for a target picker.
+    LoadTargets(String),
+    /// Deliver one saved-review session pointer to one exact Herdr pane.
+    Deliver(HandoffRequest),
 }
 
 /// A custom row read from `menu.conf` (`key|icon|label|shell command`).
@@ -186,6 +200,14 @@ enum View {
     Confirm,
 }
 
+#[derive(Clone)]
+struct ListSnapshot {
+    rows: Vec<Row>,
+    kind: ListKind,
+    query: String,
+    lsel: usize,
+}
+
 /// The menu itself. `chosen` is the resolved command a successful activation
 /// leaves behind; [`main`] reads it after the loop and `exec`s `review.sh` with it.
 pub struct Git {
@@ -212,6 +234,13 @@ pub struct Git {
     /// The all-files review waiting on a confirmation, and the tracked-file
     /// count that asked for one. Enter promotes `pending` to `chosen`.
     pending: Option<ReviewSpec>,
+    /// The saved-review session being handed off while the agent picker is open.
+    handoff_session: Option<String>,
+    /// Saved list state restored when Esc backs out of the agent picker.
+    return_list: Option<ListSnapshot>,
+    target_scope: Option<TargetScope>,
+    status_message: Option<String>,
+    error_message: Option<String>,
     count: usize,
     /// Ask before an all-files review over this many tracked files; 0 never asks.
     warn_at: usize,
@@ -236,7 +265,7 @@ struct Zones {
     page_start: usize,
     /// The command bar, each pill carrying the key its cap advertises.
     bar_row: u16,
-    bar_zones: Vec<(u16, u16, KeyCode)>,
+    bar_zones: Vec<(u16, u16, KeyEvent)>,
 }
 
 impl Git {
@@ -256,6 +285,11 @@ impl Git {
             lsel: 0,
             chosen: None,
             pending: None,
+            handoff_session: None,
+            return_list: None,
+            target_scope: None,
+            status_message: None,
+            error_message: None,
             count: 0,
             warn_at: 0,
             zones: Zones::default(),
@@ -373,6 +407,11 @@ impl Git {
         self.refilter();
         self.chosen = None;
         self.pending = None;
+        self.handoff_session = None;
+        self.return_list = None;
+        self.target_scope = None;
+        self.status_message = None;
+        self.error_message = None;
         self.count = 0;
         self.warn_at = all_files_warn;
         self.show = true;
@@ -381,13 +420,87 @@ impl Git {
     /// Show a fetched sub-list after `GitSurface`'s background adapter answers.
     /// An empty result still opens, saying so, rather than silently doing nothing
     /// when a mnemonic is pressed.
-    pub fn show_list(&mut self, kind: ListKind, rows: Vec<Row>) {
+    fn show_list(&mut self, kind: ListKind, rows: Vec<Row>) {
         self.kind = Some(kind);
         self.rows = rows;
         self.view = View::List;
         self.lsel = 0;
         self.query.clear();
         self.refilter();
+    }
+
+    fn list_title(&self) -> &'static str {
+        match (self.kind, self.target_scope) {
+            (Some(ListKind::Agents), Some(TargetScope::SameWorktree)) => "agents · same worktree",
+            (Some(ListKind::Agents), Some(TargetScope::AllAgents)) => "agents · all running",
+            (Some(kind), _) => kind.title(),
+            _ => "list",
+        }
+    }
+
+    /// Apply background target discovery. An exact origin starts delivery at
+    /// once; otherwise the current saved-review list is pushed underneath the
+    /// temporary agent picker so Esc can restore it exactly.
+    fn show_targets(&mut self, session: String, targets: TargetResolution) -> Step {
+        self.status_message = None;
+        self.error_message = None;
+        self.handoff_session = Some(session.clone());
+        self.target_scope = Some(targets.scope);
+        if let Some(target) = targets.origin {
+            return self.begin_delivery(session, target);
+        }
+
+        self.return_list = self.kind.map(|kind| ListSnapshot {
+            rows: self.rows.clone(),
+            kind,
+            query: self.query.clone(),
+            lsel: self.lsel,
+        });
+        let rows = targets
+            .choices
+            .into_iter()
+            .map(|target| Row {
+                id: target.pane_id,
+                label: target.agent,
+                meta: target.status,
+                detail: target.cwd,
+            })
+            .collect();
+        self.show_list(ListKind::Agents, rows);
+        Step::Stay
+    }
+
+    fn restore_review_list(&mut self) {
+        let Some(snapshot) = self.return_list.take() else {
+            self.view = View::Menu;
+            return;
+        };
+        self.rows = snapshot.rows;
+        self.kind = Some(snapshot.kind);
+        self.query = snapshot.query;
+        self.lsel = snapshot.lsel;
+        self.view = View::List;
+        self.handoff_session = None;
+        self.target_scope = None;
+        self.status_message = None;
+        self.error_message = None;
+        self.refilter();
+    }
+
+    fn begin_delivery(&mut self, session: String, target: AgentTarget) -> Step {
+        self.status_message = Some(format!("Sending review to {}…", target.agent));
+        self.error_message = None;
+        Step::Deliver(HandoffRequest {
+            repo: self.cwd.clone(),
+            session,
+            target,
+        })
+    }
+
+    fn delivery_failed(&mut self) {
+        self.status_message = None;
+        self.error_message =
+            Some("Could not send review; the agent may be blocked or unavailable.".into());
     }
 
     /// Recompute `filtered` from `query`: the `rows` indices whose id, label, or
@@ -464,7 +577,7 @@ impl Git {
     /// the confirmation; at or under it — and when the count could not be taken
     /// at all — the review dispatches unchanged, because a number git refuses to
     /// give must not become a locked door in front of a working feature.
-    pub fn show_count(&mut self, count: Option<usize>) -> Step {
+    fn show_count(&mut self, count: Option<usize>) -> Step {
         match count {
             Some(n) if n > self.warn_at => {
                 self.count = n;
@@ -483,9 +596,26 @@ impl Git {
         ) else {
             return Step::Stay;
         };
+        if kind == ListKind::Agents {
+            let Some(session) = self.handoff_session.clone() else {
+                return Step::Stay;
+            };
+            return self.begin_delivery(
+                session,
+                AgentTarget {
+                    pane_id: row.id.clone(),
+                    agent: row.label.clone(),
+                    status: row.meta.clone(),
+                    cwd: row.detail.clone(),
+                },
+            );
+        }
+        let Some(mode) = kind.mode() else {
+            return Step::Stay;
+        };
         self.chosen = Some(ReviewSpec {
             label: format!("{} · {}", self.label, row.id),
-            ..self.spec(kind.mode(), row.id.clone(), String::new())
+            ..self.spec(mode, row.id.clone(), String::new())
         });
         self.show = false;
         Step::Chosen
@@ -493,7 +623,7 @@ impl Git {
 
     /// Handle a key. The returned [`Step`] says what the caller must do next;
     /// `esc`/`q` step back a view, then close, and the caller keeps `^c` as quit.
-    pub fn on_key(&mut self, k: KeyEvent) -> Step {
+    fn on_key(&mut self, k: KeyEvent) -> Step {
         match self.view {
             // The size warning: two ways out and nothing else, so a stray key
             // can neither open a minutes-long read nor lose the menu.
@@ -529,7 +659,11 @@ impl Git {
                     // esc clears a query first, then backs out to the menu.
                     KeyCode::Esc => {
                         if self.query.is_empty() {
-                            self.view = View::Menu;
+                            if self.kind == Some(ListKind::Agents) {
+                                self.restore_review_list();
+                            } else {
+                                self.view = View::Menu;
+                            }
                         } else {
                             self.query.clear();
                             self.refilter();
@@ -539,6 +673,18 @@ impl Git {
                     KeyCode::Up => self.lstep(-1),
                     KeyCode::Char('n') if ctrl => self.lstep(1),
                     KeyCode::Char('p') if ctrl => self.lstep(-1),
+                    KeyCode::Char('s') if ctrl && self.kind == Some(ListKind::Reviews) => {
+                        if let Some(session) = self
+                            .filtered
+                            .get(self.lsel)
+                            .and_then(|&i| self.rows.get(i))
+                            .map(|row| row.id.clone())
+                        {
+                            self.status_message = Some("Finding review agents…".into());
+                            self.error_message = None;
+                            return Step::LoadTargets(session);
+                        }
+                    }
                     KeyCode::Home => self.lsel = 0,
                     KeyCode::End => self.lsel = self.filtered.len().saturating_sub(1),
                     KeyCode::Enter => return self.activate_row(),
@@ -567,7 +713,7 @@ impl Git {
 
     /// Wheel over the card: scroll a sub-list body by moving the selection (which
     /// pages the list). A no-op in the menu, which has nothing to scroll.
-    pub fn on_wheel(&mut self, d: i32) {
+    fn on_wheel(&mut self, d: i32) {
         match self.view {
             View::List => self.lstep(d),
             // The menu is a list too, and a wheel that moved nothing here read
@@ -586,11 +732,11 @@ impl Git {
     /// and a click on the row *already* selected does what Enter would. There is
     /// no double-click event to lean on, and a single click that ran the row
     /// would let a stray one `exec` tuicr over the pane.
-    pub fn on_click(&mut self, at: Position) -> Step {
+    fn on_click(&mut self, at: Position) -> Step {
         // The bar first: a pill overlaps nothing else, and its payload is the
         // key on its cap, so this is exactly the key path.
-        if let Some(code) = crate::tui::zone_at(&self.zones.bar_zones, self.zones.bar_row, at) {
-            return self.on_key(KeyEvent::from(code));
+        if let Some(event) = crate::tui::zone_at(&self.zones.bar_zones, self.zones.bar_row, at) {
+            return self.on_key(event);
         }
         if !self.zones.card.contains(at) {
             return Step::Stay;
@@ -680,9 +826,11 @@ pub fn main() -> Result<()> {
     crate::surface::run(&mut GitSurface {
         git: &mut g,
         cwd: &cwd,
+        origin_pane: env::var("SWITCHBOARD_ORIGIN_PANE_ID").unwrap_or_default(),
         theme: &theme,
         background,
         title,
+        notifier: Notifier::new(&cfg),
         effect: None,
     })?;
     let Some(spec) = g.chosen.take() else {
@@ -716,15 +864,19 @@ pub fn main() -> Result<()> {
 struct GitSurface<'a> {
     git: &'a mut Git,
     cwd: &'a str,
+    origin_pane: String,
     theme: &'a Theme,
     background: crate::tui::SurfaceBackground,
     title: Color,
+    notifier: Notifier,
     effect: Option<Receiver<GitEffect>>,
 }
 
 enum GitEffect {
     Rows(ListKind, Vec<Row>),
     FileCount(Option<usize>),
+    Targets(String, TargetResolution),
+    Delivered(Result<(), String>),
 }
 
 impl Surface for GitSurface<'_> {
@@ -758,6 +910,7 @@ impl Surface for GitSurface<'_> {
             Err(TryRecvError::Empty) => return Ok(Transition::Wait),
             Err(TryRecvError::Disconnected) => {
                 self.effect = None;
+                self.git.delivery_failed();
                 return Ok(Transition::Redraw);
             }
         };
@@ -774,6 +927,23 @@ impl Surface for GitSurface<'_> {
                     Transition::Redraw
                 }
             }
+            GitEffect::Targets(session, targets) => {
+                let step = self.git.show_targets(session, targets);
+                self.apply_step(step)
+            }
+            GitEffect::Delivered(result) => match result {
+                Ok(()) => {
+                    self.git.status_message = None;
+                    self.git.show = false;
+                    self.notifier
+                        .send(NotifyEvent::ReviewHandoffSucceeded, None);
+                    Transition::Exit(())
+                }
+                Err(_) => {
+                    self.git.delivery_failed();
+                    Transition::Redraw
+                }
+            },
         })
     }
 
@@ -835,6 +1005,28 @@ impl GitSurface<'_> {
                 std::thread::spawn(move || {
                     let count = count_tracked_files(&SystemRunner, &cwd);
                     let _ = sender.send(GitEffect::FileCount(count));
+                });
+                self.effect = Some(receiver);
+                Transition::Redraw
+            }
+            Step::LoadTargets(session) => {
+                let (sender, receiver) = mpsc::channel();
+                let cwd = self.cwd.to_string();
+                let origin_pane = self.origin_pane.clone();
+                let effect_session = session.clone();
+                std::thread::spawn(move || {
+                    let targets = discover_targets(&SystemRunner, &cwd, &origin_pane);
+                    let _ = sender.send(GitEffect::Targets(effect_session, targets));
+                });
+                self.effect = Some(receiver);
+                Transition::Redraw
+            }
+            Step::Deliver(request) => {
+                let (sender, receiver) = mpsc::channel();
+                std::thread::spawn(move || {
+                    let result =
+                        deliver(&SystemRunner, &request).map_err(|error| error.to_string());
+                    let _ = sender.send(GitEffect::Delivered(result));
                 });
                 self.effect = Some(receiver);
                 Transition::Redraw
@@ -1188,7 +1380,7 @@ mod tests {
         // The first pill is the one that runs the row, and it says so.
         let (a, b, code) = g.zones.bar_zones[0];
         let text: String = cells[a as usize..b as usize].iter().collect();
-        assert_eq!(code, KeyCode::Enter);
+        assert_eq!(code, KeyEvent::from(KeyCode::Enter));
         assert!(text.contains("run"), "{text}");
     }
 
@@ -1203,7 +1395,7 @@ mod tests {
         let _ = screen(&mut g, 70, 24);
 
         let (a, _, code) = *g.zones.bar_zones.last().unwrap();
-        assert_eq!(code, KeyCode::Esc);
+        assert_eq!(code, KeyEvent::from(KeyCode::Esc));
         assert_eq!(
             g.on_click(Position::new(a + 1, g.zones.bar_row)),
             Step::Stay
@@ -1360,6 +1552,141 @@ z|Y|pull|git pull
         let spec = g.chosen.unwrap();
         assert_eq!(spec.mode, "comments");
         assert_eq!(spec.arg, "9f6c1b3e09a54e2a");
+    }
+
+    fn saved_review(g: &mut Git) {
+        g.show_list(
+            ListKind::Reviews,
+            vec![Row {
+                id: "session-1".into(),
+                label: "main..HEAD".into(),
+                meta: "2026-08-20".into(),
+                detail: "2 comments".into(),
+            }],
+        );
+    }
+
+    fn target(pane_id: &str, agent: &str, cwd: &str) -> AgentTarget {
+        AgentTarget {
+            pane_id: pane_id.into(),
+            agent: agent.into(),
+            status: "idle".into(),
+            cwd: cwd.into(),
+        }
+    }
+
+    #[test]
+    fn ctrl_s_requests_targets_without_becoming_filter_text() {
+        let mut g = Git::new();
+        open_default(&mut g);
+        saved_review(&mut g);
+
+        assert_eq!(
+            g.on_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL)),
+            Step::LoadTargets("session-1".into())
+        );
+        assert!(g.query.is_empty());
+        assert_eq!(g.status_message.as_deref(), Some("Finding review agents…"));
+    }
+
+    #[test]
+    fn an_exact_origin_starts_delivery_without_opening_the_agent_picker() {
+        let mut g = Git::new();
+        open_default(&mut g);
+        saved_review(&mut g);
+        let step = g.show_targets(
+            "session-1".into(),
+            TargetResolution {
+                origin: Some(target("pane-1", "codex", "/repo")),
+                choices: Vec::new(),
+                scope: TargetScope::SameWorktree,
+            },
+        );
+
+        let Step::Deliver(request) = step else {
+            panic!("origin did not start delivery");
+        };
+        assert_eq!(request.session, "session-1");
+        assert_eq!(request.target.pane_id, "pane-1");
+        assert_eq!(g.kind, Some(ListKind::Reviews));
+        assert_eq!(
+            g.status_message.as_deref(),
+            Some("Sending review to codex…")
+        );
+    }
+
+    #[test]
+    fn target_picker_sends_the_choice_and_esc_restores_the_saved_review() {
+        let mut g = Git::new();
+        open_default(&mut g);
+        saved_review(&mut g);
+        g.query = "main".into();
+        g.refilter();
+        assert_eq!(
+            g.show_targets(
+                "session-1".into(),
+                TargetResolution {
+                    origin: None,
+                    choices: vec![target("pane-2", "claude", "/repo")],
+                    scope: TargetScope::SameWorktree,
+                },
+            ),
+            Step::Stay
+        );
+        assert_eq!(g.kind, Some(ListKind::Agents));
+        assert_eq!(g.list_title(), "agents · same worktree");
+
+        let Step::Deliver(request) = g.on_key(key(KeyCode::Enter)) else {
+            panic!("agent selection did not start delivery");
+        };
+        assert_eq!(request.target.pane_id, "pane-2");
+        assert_eq!(request.session, "session-1");
+
+        g.on_key(key(KeyCode::Esc));
+        assert_eq!(g.kind, Some(ListKind::Reviews));
+        assert_eq!(g.query, "main");
+        assert_eq!(g.rows[0].id, "session-1");
+        assert!(g.handoff_session.is_none());
+    }
+
+    #[test]
+    fn all_agent_fallback_and_delivery_failure_are_visible() {
+        let mut g = Git::new();
+        open_default(&mut g);
+        saved_review(&mut g);
+        g.show_targets(
+            "session-1".into(),
+            TargetResolution {
+                origin: None,
+                choices: vec![target("pane-3", "gemini", "/other")],
+                scope: TargetScope::AllAgents,
+            },
+        );
+        assert_eq!(g.list_title(), "agents · all running");
+        g.delivery_failed();
+        let rendered = screen(&mut g, 100, 28);
+        assert!(rendered.contains("Could not send review"), "{rendered}");
+    }
+
+    #[test]
+    fn saved_review_send_pill_keeps_its_control_modifier_when_clicked() {
+        let mut g = Git::new();
+        open_default(&mut g);
+        saved_review(&mut g);
+        let rendered = screen(&mut g, 100, 28);
+        assert!(rendered.contains("send to agent"), "{rendered}");
+        let &(start, _, _) = g
+            .zones
+            .bar_zones
+            .iter()
+            .find(|(_, _, event)| {
+                event.code == KeyCode::Char('s') && event.modifiers.contains(KeyModifiers::CONTROL)
+            })
+            .expect("the send pill publishes Ctrl-S");
+        assert_eq!(
+            g.on_click(Position::new(start + 1, g.zones.bar_row)),
+            Step::LoadTargets("session-1".into())
+        );
     }
 
     #[test]

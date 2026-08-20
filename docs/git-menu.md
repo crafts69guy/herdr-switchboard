@@ -24,7 +24,7 @@ input surface remains responsive while those commands answer.
 | `a` | Review all files | `tuicr -A`. Over `git.all_files_warn` tracked files (default 1,500) the menu names the count and waits for Enter. |
 | `x` | Conflicts | Pick an unmerged file, then run `tuicr --file <path>`. |
 | `p` | Review pull request | Pick from `gh pr list`, then run `tuicr pr <number>`. |
-| `r` | Saved review comments | Pick a session, then run `tuicr review comments --session <slug>`. |
+| `r` | Saved review comments | Pick a session; `enter` reads it and `ctrl-s` sends it to a running agent. |
 | `l` | Stage and commit | `lazygit`. |
 
 The pull-request row appears only when `gh` is installed; the lazygit row appears only when
@@ -37,11 +37,18 @@ which shows the file itself, conflict markers and all. It is deliberately not a 
 on an unmerged path produces a *combined* diff (`diff --cc`), which is not the two-sided shape a
 review tool reads. A `both deleted` conflict is listed but has no file to open.
 
-All three sub-lists — pull requests, saved reviews, conflicts — support fuzzy filtering. `esc`
-clears an active filter before returning to the main menu.
+Pull requests, saved reviews, conflicts, and the handoff's agent picker support fuzzy filtering.
+`esc` clears an active filter before returning to the previous view.
 
 Saved reviews expose their comments; tuicr does not support reopening an existing review session
-in its TUI.
+in its TUI. Press `ctrl-s` on a saved review to hand its session to an agent. Switchboard sends
+straight to the origin agent when that pane still belongs to the same Git worktree. Otherwise it
+opens an agent picker scoped to that worktree, falling back to all promptable running agents when
+there is no match. Blocked agents are omitted because Herdr rejects prompts to them.
+
+The agent receives the saved review with its comment IDs, locations, and classifications intact.
+On success the Git overlay closes and returns to the origin pane. A failed delivery leaves the
+agent picker open with an inline error so another target can be tried.
 
 ## Themes and custom rows
 

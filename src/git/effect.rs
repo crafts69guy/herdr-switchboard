@@ -57,6 +57,9 @@ pub(super) fn load_rows(runner: &dyn CommandRunner, cwd: &str, kind: ListKind) -
         ListKind::PullRequests => load_pull_requests(runner, cwd),
         ListKind::Reviews => load_reviews(runner, cwd),
         ListKind::Conflicts => load_conflicts(runner, cwd),
+        // Agent discovery has its own typed effect because it resolves Git roots
+        // and may immediately select the captured origin.
+        ListKind::Agents => Vec::new(),
     }
 }
 

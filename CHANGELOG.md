@@ -7,6 +7,14 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Saved tuicr reviews can be handed directly to a running agent.** Press `ctrl-s` in the Git
+  menu's saved-review list: Switchboard uses the origin agent when it still shares the worktree,
+  otherwise offers matching agents and then all available agents. The handoff preserves tuicr's
+  structured comment IDs and locations, closes back to the agent on success, and stays retryable
+  when delivery fails.
+
 ## [2.0.0] - 2026-08-20
 
 ### Changed
