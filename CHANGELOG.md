@@ -40,6 +40,20 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the cards' own rows. The columns also fill the pane exactly, instead of `100 / n` leaving the
   remainder dark on the right.
 
+- **The Git menu asks before an all-files review of a large repo.** `a` runs `tuicr -A`, which
+  reads every tracked file — and because the pane deliberately keeps the screen, draws one static
+  splash and `exec`s the review over itself, a checkout big enough to keep tuicr busy for minutes
+  is indistinguishable from a hang: no frame, no spinner, nothing to cancel. On a 7,600-file tree
+  it was two solid minutes of a cat that never moved.
+
+  The row now counts the tree first — one `git ls-files`, taken on activation rather than on open,
+  so the menu's first frame still costs nothing — and over `git.all_files_warn` (1,500 by default)
+  it spends a screen saying what it found: `6,699 files tracked in this repo`, `tuicr reads every
+  one of them before its first frame`. Enter opens it anyway, esc goes back to the menu. Under the
+  threshold nothing changed, and `all_files_warn = 0` never asks. A count git refuses to give
+  opens the review rather than standing in front of it: a broken number must not become a locked
+  door.
+
 - **The Git pane stopped painting itself opaque.** Its menu card, its sub-list card and that
   list's search box each filled themselves with `panel_bg` and drew their borders in the accent.
   All three were hand-rolled `Block`s — exactly the drift `tui::boxed` exists to prevent — and the

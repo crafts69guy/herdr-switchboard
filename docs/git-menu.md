@@ -19,7 +19,7 @@ close. The selected tool takes over the Git pane; quitting it returns to the ori
 | `d` | Review worktree | `tuicr -w` for staged and unstaged changes. |
 | `b` | Review branch | `tuicr -r <base>.. -w`; base is detected or set by `git.base_branch`. |
 | `h` | Review commits | `tuicr`, using its commit selector. |
-| `a` | Review all files | `tuicr -A`. |
+| `a` | Review all files | `tuicr -A`. Over `git.all_files_warn` tracked files (default 1,500) the menu names the count and waits for Enter. |
 | `x` | Conflicts | Pick an unmerged file, then run `tuicr --file <path>`. |
 | `p` | Review pull request | Pick from `gh pr list`, then run `tuicr pr <number>`. |
 | `r` | Saved review comments | Pick a session, then run `tuicr review comments --session <slug>`. |

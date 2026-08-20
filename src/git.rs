@@ -124,6 +124,11 @@ pub enum Step {
     Load(ListKind),
     /// `chosen` holds a resolved [`ReviewSpec`]; dispatch it.
     Chosen,
+    /// An all-files review wants its size checked first: run
+    /// [`count_tracked_files`] and hand the number back through
+    /// [`Git::show_count`]. The IO stays out here for the same reason
+    /// [`Step::Load`]'s does.
+    CountFiles,
 }
 
 /// A custom row read from `menu.conf` (`key|icon|label|shell command`).
@@ -138,9 +143,12 @@ pub struct Custom {
 /// What a menu row does when activated.
 #[derive(Clone, Debug, PartialEq)]
 enum Act {
-    /// A `review.sh` mode with no extra argument resolved here: worktree, commits,
-    /// all-files, lazygit.
+    /// A `review.sh` mode with no extra argument resolved here: worktree,
+    /// commits, lazygit.
     Review(&'static str),
+    /// The whole-tree review — the one row big enough to need a size check
+    /// before it opens.
+    AllFiles,
     /// Review a branch against `base` (resolved at open); empty base still opens,
     /// `review.sh` falls back to the working tree alone.
     Branch,
@@ -160,10 +168,12 @@ struct Item {
 }
 
 /// Which list the overlay is showing.
-#[derive(PartialEq)]
+#[derive(Debug, PartialEq)]
 enum View {
     Menu,
     List,
+    /// The size warning standing in front of an all-files review.
+    Confirm,
 }
 
 /// The menu itself. `chosen` is the resolved command a successful activation
@@ -189,6 +199,12 @@ pub struct Git {
     lsel: usize,
     /// Set by a successful activation; taken by the picker to dispatch.
     pub chosen: Option<ReviewSpec>,
+    /// The all-files review waiting on a confirmation, and the tracked-file
+    /// count that asked for one. Enter promotes `pending` to `chosen`.
+    pending: Option<ReviewSpec>,
+    count: usize,
+    /// Ask before an all-files review over this many tracked files; 0 never asks.
+    warn_at: usize,
 }
 
 impl Git {
@@ -207,6 +223,9 @@ impl Git {
             sel: 0,
             lsel: 0,
             chosen: None,
+            pending: None,
+            count: 0,
+            warn_at: 0,
         }
     }
 
@@ -223,6 +242,7 @@ impl Git {
         has_lazygit: bool,
         has_gh: bool,
         customs: Vec<Custom>,
+        all_files_warn: usize,
     ) {
         // Nerd Font (nf-md) glyphs, one per row so every label lines up: worktree
         // is uncommitted edits (pencil), branch a diff against the base
@@ -256,7 +276,7 @@ impl Git {
                 key: 'a',
                 icon: "󰈔".into(),
                 label: "review all files".into(),
-                act: Act::Review("all-files"),
+                act: Act::AllFiles,
             },
             // Unconditional, like `saved reviews`: probing for a merge in progress
             // would put a `git status` on the path to the menu's first frame, and an
@@ -319,6 +339,9 @@ impl Git {
         self.query.clear();
         self.refilter();
         self.chosen = None;
+        self.pending = None;
+        self.count = 0;
+        self.warn_at = all_files_warn;
         self.show = true;
     }
 
@@ -368,16 +391,55 @@ impl Git {
             ),
             Act::Custom(cmd) => ("custom".to_string(), String::new(), cmd.clone()),
             Act::List(kind) => return Step::Load(*kind),
+            Act::AllFiles => {
+                self.pending = Some(self.spec("all-files", String::new(), String::new()));
+                // A threshold of 0 turns the question off entirely — including
+                // the `git ls-files` it would have been asked from.
+                return if self.warn_at == 0 {
+                    self.take_pending()
+                } else {
+                    Step::CountFiles
+                };
+            }
         };
-        self.chosen = Some(ReviewSpec {
-            mode,
+        self.pending = Some(self.spec(&mode, arg, custom));
+        self.take_pending()
+    }
+
+    /// The review this menu resolves to, in `review.sh`'s vocabulary.
+    fn spec(&self, mode: &str, arg: String, custom: String) -> ReviewSpec {
+        ReviewSpec {
+            mode: mode.to_string(),
             cwd: self.cwd.clone(),
             arg,
             custom,
             label: self.label.clone(),
-        });
+        }
+    }
+
+    /// Promote the pending review to `chosen` and close the menu.
+    fn take_pending(&mut self) -> Step {
+        let Some(spec) = self.pending.take() else {
+            return Step::Stay;
+        };
+        self.chosen = Some(spec);
         self.show = false;
         Step::Chosen
+    }
+
+    /// Hand back what [`count_tracked_files`] found. Over `warn_at` this opens
+    /// the confirmation; at or under it — and when the count could not be taken
+    /// at all — the review dispatches unchanged, because a number git refuses to
+    /// give must not become a locked door in front of a working feature.
+    pub fn show_count(&mut self, count: Option<usize>) -> Step {
+        match count {
+            Some(n) if n > self.warn_at => {
+                self.count = n;
+                self.view = View::Confirm;
+                Step::Stay
+            }
+            _ => self.take_pending(),
+        }
     }
 
     /// Dispatch the selected sub-list row in its list's mode.
@@ -389,11 +451,8 @@ impl Git {
             return Step::Stay;
         };
         self.chosen = Some(ReviewSpec {
-            mode: kind.mode().into(),
-            cwd: self.cwd.clone(),
-            arg: row.id.clone(),
-            custom: String::new(),
             label: format!("{} · {}", self.label, row.id),
+            ..self.spec(kind.mode(), row.id.clone(), String::new())
         });
         self.show = false;
         Step::Chosen
@@ -403,6 +462,16 @@ impl Git {
     /// `esc`/`q` step back a view, then close, and the caller keeps `^c` as quit.
     pub fn on_key(&mut self, k: KeyEvent) -> Step {
         match self.view {
+            // The size warning: two ways out and nothing else, so a stray key
+            // can neither open a minutes-long read nor lose the menu.
+            View::Confirm => match k.code {
+                KeyCode::Esc | KeyCode::Char('q') => {
+                    self.pending = None;
+                    self.view = View::Menu;
+                }
+                KeyCode::Enter => return self.take_pending(),
+                _ => {}
+            },
             View::Menu => match k.code {
                 KeyCode::Esc | KeyCode::Char('q') => self.show = false,
                 KeyCode::Down | KeyCode::Char('j') => self.step(1),
@@ -510,6 +579,18 @@ pub fn detect_base_branch(
         .into_iter()
         .find(|r| resolves(r))
         .map(str::to_string)
+}
+
+/// How many files an all-files review would read: `git ls-files`, counted.
+/// `None` when git could not answer — the review then opens without asking, the
+/// same way an unreadable sub-list opens empty rather than erroring.
+///
+/// Counted rather than parsed, so a path containing a newline over-counts by
+/// one; the only consequence is a confirmation the user would have seen anyway.
+pub fn count_tracked_files(runner: &dyn CommandRunner, cwd: &str) -> Option<usize> {
+    runner
+        .capture("git", &["-C", cwd, "ls-files"])
+        .map(|out| out.lines().filter(|l| !l.trim().is_empty()).count())
 }
 
 /// Fetch a sub-list. The two remote sources speak JSON and are parsed with
@@ -757,6 +838,7 @@ pub fn main() -> Result<()> {
         has_lazygit,
         has_gh,
         read_menu_conf(),
+        cfg.git.all_files_warn,
     );
 
     let mut terminal = crate::init_terminal();
@@ -783,6 +865,13 @@ pub fn main() -> Result<()> {
                     Step::Load(kind) => {
                         let rows = load_rows(&runner, &cwd, kind);
                         g.show_list(kind, rows);
+                    }
+                    // Same reason, same place: the count is one `git ls-files`,
+                    // taken on activation so the menu's first frame stays free.
+                    Step::CountFiles => {
+                        if let Step::Chosen = g.show_count(count_tracked_files(&runner, &cwd)) {
+                            break Ok(());
+                        }
                     }
                     Step::Chosen => break Ok(()),
                     // `show` going false is the user backing all the way out.
@@ -876,6 +965,10 @@ pub fn draw(f: &mut Frame, area: Rect, theme: &Theme, title: Color, g: &Git) {
         draw_list(f, area, theme, title, g);
         return;
     }
+    if matches!(g.view, View::Confirm) {
+        draw_confirm(f, area, theme, title, g);
+        return;
+    }
 
     let lines = menu_lines(g, ink, text, sub, accent, title);
 
@@ -910,6 +1003,88 @@ pub fn draw(f: &mut Frame, area: Rect, theme: &Theme, title: Color, g: &Git) {
     .split(inner);
     f.render_widget(Paragraph::new(lines), rows[0]);
     draw_bar(f, g, rows[1], theme);
+}
+
+/// The size warning for an all-files review, drawn to the menu card's shape:
+/// what it is about to do, how much of it there is, and the two ways out.
+///
+/// It exists because the pane deliberately keeps the screen, draws one static
+/// splash and `exec`s the review over itself — so a tree big enough to keep
+/// tuicr reading for minutes is indistinguishable from a hang. This is the only
+/// frame that can still say otherwise.
+fn draw_confirm(f: &mut Frame, area: Rect, theme: &Theme, title: Color, g: &Git) {
+    let text = theme.or("text", Color::Reset);
+    let sub = theme.or("subtext0", Color::Gray);
+    let border = theme.or("overlay0", Color::DarkGray);
+
+    let lines = vec![
+        Line::from(vec![
+            Span::styled(" 󰈔 ", Style::default().fg(title)),
+            Span::styled(
+                " review all files",
+                Style::default().fg(text).add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::raw(""),
+        Line::from(vec![
+            Span::styled(
+                format!(" {} files", thousands(g.count)),
+                Style::default().fg(title).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" tracked in this repo.", Style::default().fg(text)),
+        ]),
+        Line::from(Span::styled(
+            " tuicr reads every one of them before its first",
+            Style::default().fg(sub),
+        )),
+        Line::from(Span::styled(
+            " frame; on a tree this size that is minutes.",
+            Style::default().fg(sub),
+        )),
+    ];
+
+    let pills = bar_pills(g, theme);
+    let content_w = lines.iter().map(|l| l.width() as u16).max().unwrap_or(24);
+    let want_w = content_w.max(bar_width(&pills)).clamp(24, 78) + 4;
+    let w = want_w.min(area.width.saturating_sub(2));
+    let want_h = lines.len() as u16 + 2 /* border */ + 1 /* bar */;
+    let h = want_h.min(area.height.saturating_sub(1)).max(6);
+    let popup = Rect::new(
+        area.x + (area.width.saturating_sub(w)) / 2,
+        area.y + (area.height.saturating_sub(h)) / 2,
+        w,
+        h,
+    );
+    f.render_widget(Clear, popup);
+
+    let cap = format!("󰊢 Git · {}", g.label);
+    let block = crate::tui::boxed(&cap, title, border).title(
+        Line::from(Span::styled(" · large repo ", Style::default().fg(sub))).right_aligned(),
+    );
+    let inner = block.inner(popup);
+    f.render_widget(block, popup);
+
+    let rows = ratatui::layout::Layout::vertical([
+        ratatui::layout::Constraint::Min(1),
+        ratatui::layout::Constraint::Length(1),
+    ])
+    .split(inner);
+    f.render_widget(Paragraph::new(lines), rows[0]);
+    draw_bar(f, g, rows[1], theme);
+}
+
+/// `6699` → `6,699`. One number on one card; a formatting crate would be a
+/// dependency for a comma.
+fn thousands(n: usize) -> String {
+    let digits = n.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
 }
 
 /// A sub-list, drawn as a **fixed-size** card so filtering never resizes it: a
@@ -1232,6 +1407,10 @@ fn bar_pills(g: &Git, theme: &Theme) -> Vec<crate::tui::Pill<'static>> {
             crate::tui::Pill::new("↑ ↓", "move", theme.or("blue", Color::Blue)),
             crate::tui::Pill::new("esc", "back", theme.or("red", Color::Red)),
         ],
+        View::Confirm => vec![
+            crate::tui::Pill::new("↵", "open anyway", theme.or("accent", Color::Cyan)),
+            crate::tui::Pill::new("esc", "back", theme.or("red", Color::Red)),
+        ],
     }
 }
 
@@ -1262,7 +1441,8 @@ mod tests {
         KeyEvent::new(c, KeyModifiers::NONE)
     }
 
-    /// The menu as `Prefix + g` builds it in a repo with both optional binaries.
+    /// The menu as `Prefix + g` builds it in a repo with both optional binaries,
+    /// and with the all-files confirmation at its shipped threshold.
     fn open_default(g: &mut Git) {
         g.open(
             "/repo".into(),
@@ -1271,6 +1451,7 @@ mod tests {
             true,
             true,
             vec![],
+            1500,
         );
     }
 
@@ -1390,6 +1571,106 @@ mod tests {
     }
 
     #[test]
+    fn counting_tracked_files_counts_what_git_lists() {
+        let runner = MockRunner::new().on("ls-files", "a\nb\nc\n");
+        assert_eq!(count_tracked_files(&runner, "/repo"), Some(3));
+        assert_eq!(
+            runner.calls(),
+            vec![vec![
+                "git".to_string(),
+                "-C".into(),
+                "/repo".into(),
+                "ls-files".into()
+            ]]
+        );
+
+        let broken = MockRunner::new().failing("ls-files");
+        assert_eq!(count_tracked_files(&broken, "/repo"), None);
+    }
+
+    /// The bug this whole path exists for: `tuicr -A` on a large checkout reads
+    /// every tracked file behind a splash that cannot say it is working, and
+    /// reads as a hang. The menu says the number first.
+    #[test]
+    fn a_big_repo_asks_before_it_opens_an_all_files_review() {
+        let mut g = Git::new();
+        open_default(&mut g);
+        assert_eq!(g.on_key(key(KeyCode::Char('a'))), Step::CountFiles);
+        assert!(g.chosen.is_none(), "nothing dispatched before the count");
+
+        assert_eq!(g.show_count(Some(6699)), Step::Stay);
+        assert!(g.show, "the card stays up");
+        assert!(g.chosen.is_none());
+        let screen = screen(&g, 70, 20);
+        assert!(screen.contains("6,699 files"), "{screen}");
+        assert!(screen.contains("open anyway"), "{screen}");
+
+        assert_eq!(g.on_key(key(KeyCode::Enter)), Step::Chosen);
+        assert_eq!(g.chosen.unwrap().mode, "all-files");
+    }
+
+    /// A count git refuses to give must not become a locked door in front of a
+    /// feature that worked yesterday.
+    #[test]
+    fn an_unreadable_count_opens_the_review_rather_than_blocking_it() {
+        let mut g = Git::new();
+        open_default(&mut g);
+        assert_eq!(g.on_key(key(KeyCode::Char('a'))), Step::CountFiles);
+        assert_eq!(g.show_count(None), Step::Chosen);
+        assert_eq!(g.chosen.unwrap().mode, "all-files");
+    }
+
+    #[test]
+    fn esc_on_the_confirmation_goes_back_to_the_menu() {
+        let mut g = Git::new();
+        open_default(&mut g);
+        g.on_key(key(KeyCode::Char('a')));
+        g.show_count(Some(6699));
+
+        assert_eq!(g.on_key(key(KeyCode::Esc)), Step::Stay);
+        assert!(g.show, "esc backs out of the warning, not out of the menu");
+        assert_eq!(g.view, View::Menu);
+        assert!(g.chosen.is_none());
+        assert!(g.pending.is_none(), "a discarded review must not linger");
+
+        // And the row still works on the way back in.
+        assert_eq!(g.on_key(key(KeyCode::Char('a'))), Step::CountFiles);
+        assert_eq!(g.show_count(Some(6699)), Step::Stay);
+        assert_eq!(g.on_key(key(KeyCode::Enter)), Step::Chosen);
+    }
+
+    /// Zero turns the question off — including the `git ls-files` it would have
+    /// been asked from.
+    #[test]
+    fn a_zero_threshold_never_counts_at_all() {
+        let mut g = Git::new();
+        g.open(
+            "/repo".into(),
+            "repo".into(),
+            Some("main".into()),
+            true,
+            true,
+            vec![],
+            0,
+        );
+        assert_eq!(g.on_key(key(KeyCode::Char('a'))), Step::Chosen);
+        assert_eq!(g.chosen.unwrap().mode, "all-files");
+    }
+
+    #[test]
+    fn thousands_groups_digits() {
+        for (n, want) in [
+            (0usize, "0"),
+            (999, "999"),
+            (1000, "1,000"),
+            (6699, "6,699"),
+            (1234567, "1,234,567"),
+        ] {
+            assert_eq!(thousands(n), want);
+        }
+    }
+
+    #[test]
     fn base_branch_prefers_the_configured_one_when_it_resolves() {
         let runner = MockRunner::new(); // every rev-parse succeeds
         assert_eq!(
@@ -1471,14 +1752,22 @@ z|Y|pull|git pull
     /// dispatches straight into it.
     #[test]
     fn commits_and_all_files_dispatch_without_an_argument() {
-        for (k, mode) in [('h', "commits"), ('a', "all-files")] {
-            let mut g = Git::new();
-            open_default(&mut g);
-            assert_eq!(g.on_key(key(KeyCode::Char(k))), Step::Chosen);
-            let spec = g.chosen.unwrap();
-            assert_eq!(spec.mode, mode);
-            assert_eq!(spec.arg, "");
-        }
+        let mut g = Git::new();
+        open_default(&mut g);
+        assert_eq!(g.on_key(key(KeyCode::Char('h'))), Step::Chosen);
+        let spec = g.chosen.take().unwrap();
+        assert_eq!(spec.mode, "commits");
+        assert_eq!(spec.arg, "");
+
+        // All-files takes the same shape, one beat later: the size check runs
+        // first and a small tree comes straight back out of it.
+        let mut g = Git::new();
+        open_default(&mut g);
+        assert_eq!(g.on_key(key(KeyCode::Char('a'))), Step::CountFiles);
+        assert_eq!(g.show_count(Some(12)), Step::Chosen);
+        let spec = g.chosen.take().unwrap();
+        assert_eq!(spec.mode, "all-files");
+        assert_eq!(spec.arg, "");
     }
 
     #[test]
@@ -1573,6 +1862,7 @@ z|Y|pull|git pull
                 label: "prune".into(),
                 cmd: "git gc".into(),
             }],
+            1500,
         );
         assert_eq!(g.on_key(key(KeyCode::Char('z'))), Step::Chosen);
         let spec = g.chosen.unwrap();
@@ -1583,7 +1873,15 @@ z|Y|pull|git pull
     #[test]
     fn rows_whose_binary_is_missing_are_not_offered() {
         let mut g = Git::new();
-        g.open("/repo".into(), "repo".into(), None, false, false, vec![]);
+        g.open(
+            "/repo".into(),
+            "repo".into(),
+            None,
+            false,
+            false,
+            vec![],
+            1500,
+        );
         assert!(g.items.iter().all(|i| i.key != 'l'), "lazygit row survived");
         assert!(
             g.items.iter().all(|i| i.key != 'p'),

@@ -78,10 +78,23 @@ pub struct CloneFlow {
     pub open_after: bool,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default)]
 pub struct Git {
     pub base_branch: String,
+    /// Ask before an all-files review of a tree with more tracked files than
+    /// this; `0` never asks. `tuicr -A` reads every one of them, so a large
+    /// checkout is minutes of a screen that cannot say it is working.
+    pub all_files_warn: usize,
+}
+
+impl Default for Git {
+    fn default() -> Self {
+        Git {
+            base_branch: String::new(),
+            all_files_warn: 1500,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -328,6 +341,7 @@ impl Config {
             ("clone_source", self.clone.source.clone()),
             ("open_after_clone", self.clone.open_after.to_string()),
             ("base_branch", self.git.base_branch.clone()),
+            ("all_files_warn", self.git.all_files_warn.to_string()),
             ("history_limit", self.commands.history_limit.to_string()),
             ("command_sort", self.commands.sort.clone()),
             (

@@ -58,6 +58,9 @@ update. `switchboard.update` is the explicit installation action.
 - `ports.refresh_interval_ms` controls listener refresh and must be at least 250.
 - `clone.source` chooses `clipboard` or an empty prompt; `clone.open_after` controls handoff.
 - `git.base_branch` pins branch review; an empty value enables automatic detection.
+- `git.all_files_warn` is the tracked-file count over which *review all files* asks first (default
+  `1500`; `0` never asks). `tuicr -A` reads every tracked file, so a large checkout spends minutes
+  behind a screen that cannot say it is working.
 
 ### `[usage]`
 

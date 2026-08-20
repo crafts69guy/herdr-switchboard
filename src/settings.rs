@@ -242,6 +242,13 @@ const SETTINGS: &[Setting] = &[
         cycle: Cycle::Prompt,
     },
     Setting {
+        group: "Git",
+        key: "all_files_warn",
+        default: "1500",
+        hint: "confirm all-files over N tracked files (0 = never)",
+        cycle: Cycle::Ring(&["1500", "0", "500", "5000"]),
+    },
+    Setting {
         group: "Catalog",
         key: "history_limit",
         default: "5000",
@@ -346,6 +353,7 @@ fn set_document_value(doc: &mut toml_edit::DocumentMut, key: &str, value: &str) 
             | "zen_width"
             | "usage_warn_percent"
             | "usage_alert_percent"
+            | "all_files_warn"
     ) {
         doc[section][field] = toml_edit::value(value.parse::<i64>()?);
     } else {
@@ -374,7 +382,7 @@ fn setting_path(key: &str) -> (&'static str, &str) {
         | "update_check" => ("common", key),
         "clone_source" => ("clone", "source"),
         "open_after_clone" => ("clone", "open_after"),
-        "base_branch" => ("git", key),
+        "base_branch" | "all_files_warn" => ("git", key),
         "history_limit" => ("commands", key),
         "command_sort" => ("commands", "sort"),
         "refresh_interval_ms" => ("ports", key),

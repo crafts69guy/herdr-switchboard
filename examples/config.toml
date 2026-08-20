@@ -45,6 +45,8 @@ open_after = true
 
 [git]
 base_branch = ""
+# Ask before an all-files review of a tree bigger than this; 0 never asks.
+all_files_warn = 1500
 
 [zen]
 # The zen'd pane's share of the tab; the rest is split evenly into two gutters.
