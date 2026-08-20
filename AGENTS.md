@@ -11,7 +11,8 @@ parses source responses and carries entry presentation data. `query.rs`,
 compilation, responsive Projects Picker rendering, previews, accepted effects, and
 recency state. `picker.rs` is the shared engine behind the
 mode pickers (`menu.rs`, `agents.rs`, `commands.rs`, `ports.rs`, `zen.rs`), and
-`tui.rs` is rendering vocabulary only. `settings.rs`, `changelog.rs`, and `usage.rs`
+`tui.rs` is rendering vocabulary only. Zen keeps geometry, session persistence, herdr effects,
+and its picker adapter in private `zen/` children. `settings.rs`, `changelog.rs`, and `usage.rs`
 are popups hosted through `Surface`; Usage keeps domain values, providers, time formatting,
 and rendering in private `usage/` children. `git.rs` owns its pane and reducer, with external
 reads and rendering in `git/effect.rs` and `git/view.rs`. `chrome.rs`, `socket.rs`,

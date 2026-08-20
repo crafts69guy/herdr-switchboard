@@ -128,10 +128,11 @@ must come from `herdr agent list`, `herdr workspace list`, or the captured origi
 - `changelog.rs` — the `--changelog` mode: parses `$HERDR_PLUGIN_ROOT/CHANGELOG.md` and renders it
   (inline markdown, hanging-indent wrap, `← installed` marker from `CARGO_PKG_VERSION`). `parse` +
   `render` are shared with the picker's `⌥c` popup, so both surfaces stay identical
-- `zen.rs` — the whole zen feature: the enter/leave state machine, the `--zen` `PickerMode`, and
-  the `zen toggle|on|off|chrome-restore` CLI verb. Pure geometry (`gutter_ratios`,
-  `anchor_between`) and the state-file codec are separated from the herdr calls so both are
-  testable without a running herdr; every herdr call goes through `CommandRunner`
+- `zen.rs` — the zen feature interface: the `--zen` mode and
+  `zen toggle|on|off|chrome-restore` CLI verb
+- `zen/geometry.rs`, `zen/session.rs`, `zen/engine.rs`, `zen/picker.rs` — pure centring and restore
+  policy, recoverable state/chrome snapshots, the enter/leave effect engine, and the picker adapter.
+  Every herdr call goes through `CommandRunner`
 - `chrome.rs` — the `zen_chrome` levels (`off`/`panes`/`full`) and **the only code that writes
   herdr's own `config.toml`**. `plan_overrides`/`apply`/`restore` are pure `toml_edit` functions
   over a `DocumentMut`; the IO edge is `engage`/`disengage`, and the reload goes through
