@@ -12,8 +12,9 @@ compilation, responsive Projects Picker rendering, previews, accepted effects, a
 recency state. `picker.rs` is the shared engine behind the
 mode pickers (`menu.rs`, `agents.rs`, `commands.rs`, `ports.rs`, `zen.rs`), and
 `tui.rs` is rendering vocabulary only. `settings.rs`, `changelog.rs`, and `usage.rs`
-are popups hosted through `Surface`; `git.rs` is its own pane with typed background
-effects. `chrome.rs`, `socket.rs`, `runner.rs`, `notify.rs`, `config.rs`, `keymap.rs`,
+are popups hosted through `Surface`; `git.rs` owns its pane and reducer, with external
+reads and rendering in `git/effect.rs` and `git/view.rs`. `chrome.rs`, `socket.rs`,
+`runner.rs`, `notify.rs`, `config.rs`, `keymap.rs`,
 `markdown.rs`, `state.rs`, `trace.rs`, `splash.rs`, and `update.rs` are supporting
 modules. Read `CLAUDE.md` before changing their non-obvious contracts.
 

@@ -109,12 +109,13 @@ must come from `herdr agent list`, `herdr workspace list`, or the captured origi
   agents and workspaces from herdr's JSON with `serde_json` and styles everything from
   `Theme`; shells out to `bin/preview.sh` only for the repo file tree, which arrives as
   ANSI already and passes through `ansi-to-tui`
-- `git.rs` — the **whole `--git` mode**: `main()` (repo from the pane's cwd, hosted surface,
-  preroll, `exec`), the review menu (worktree/branch/commits/all-files/pull-request/saved-reviews/
-  lazygit + `menu.conf` customs), the generic `View::List` sub-list over `Vec<Row>` shared by the
-  PR and saved-review pickers, and the IO helpers (`detect_base_branch`, `load_rows`,
-  `parse_menu_conf`). `on_key` stays IO-free by returning a `Step`; `GitSurface` runs list/count
-  effects on background adapters and applies their typed results on a tick
+- `git.rs` — the `--git` feature interface, reducer, and hosted runtime: `main()` (repo from the
+  pane's cwd, hosted surface, preroll, `exec`), the review menu state, and the generic `View::List`
+  sub-list over `Vec<Row>`. `on_key` stays IO-free by returning a `Step`; `GitSurface` runs
+  list/count effects on background adapters and applies their typed results on a tick
+- `git/effect.rs`, `git/menu_config.rs`, `git/view.rs` — Git's external reads and response parsing,
+  `menu.conf` parser, and rendering with render-derived hit zones; these children stay behind the
+  `git` interface
 - `action.rs` — `Accept` enum → herdr CLI verbs, plus `run_review` (`exec`s `bin/review.sh`)
 - `history.rs` — recency state at `$XDG_STATE_HOME/herdr-switchboard/recent.tsv`, atomic write, cap 200
 - `settings.rs` — the `Settings` overlay: the `SETTINGS` form, its cycle rings, and `write_setting`,
