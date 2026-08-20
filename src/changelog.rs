@@ -13,7 +13,9 @@
 use std::fs;
 
 use anyhow::Result;
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+use crossterm::event::{
+    Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
@@ -22,7 +24,8 @@ use ratatui::Frame;
 
 use crate::data::{Config, Theme};
 use crate::markdown::{self, Block, VERSION};
-use crate::tui::{self, Flow, Pill, SimpleMode};
+use crate::surface::{Surface, Transition};
+use crate::tui::{self, Pill};
 
 pub struct App {
     theme: Theme,
@@ -39,18 +42,30 @@ pub struct App {
     bar_zones: Vec<(u16, u16, KeyCode)>,
 }
 
-impl SimpleMode for App {
+impl Surface for App {
+    type Output = ();
+
     fn draw(&mut self, f: &mut Frame) {
         draw(f, self);
     }
 
-    fn on_key(&mut self, k: KeyEvent) -> Flow {
+    fn on_event(&mut self, event: Event) -> Result<Transition<Self::Output>> {
+        match event {
+            Event::Key(key) if key.kind == KeyEventKind::Press => Ok(self.on_key(key)),
+            Event::Mouse(mouse) => Ok(self.on_mouse(mouse)),
+            _ => Ok(Transition::Wait),
+        }
+    }
+}
+
+impl App {
+    fn on_key(&mut self, k: KeyEvent) -> Transition<()> {
         let page = self.rows.saturating_sub(2).max(1);
         let max = self.height.saturating_sub(self.rows);
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
         match k.code {
-            KeyCode::Esc | KeyCode::Char('q') => return Flow::Quit,
-            KeyCode::Char('c') if ctrl => return Flow::Quit,
+            KeyCode::Esc | KeyCode::Char('q') => return Transition::Exit(()),
+            KeyCode::Char('c') if ctrl => return Transition::Exit(()),
             KeyCode::Down | KeyCode::Char('j') => self.scroll = (self.scroll + 1).min(max),
             KeyCode::Up | KeyCode::Char('k') => self.scroll = self.scroll.saturating_sub(1),
             KeyCode::PageDown | KeyCode::Char(' ') => self.scroll = (self.scroll + page).min(max),
@@ -59,10 +74,10 @@ impl SimpleMode for App {
             KeyCode::End | KeyCode::Char('G') => self.scroll = max,
             _ => {}
         }
-        Flow::Continue
+        Transition::Redraw
     }
 
-    fn on_mouse(&mut self, m: MouseEvent) -> Flow {
+    fn on_mouse(&mut self, m: MouseEvent) -> Transition<()> {
         match m.kind {
             // Three rows a notch: the conventional feel for text.
             MouseEventKind::ScrollDown => {
@@ -84,7 +99,7 @@ impl SimpleMode for App {
             }
             _ => {}
         }
-        Flow::Continue
+        Transition::Redraw
     }
 }
 
@@ -160,7 +175,7 @@ pub fn main() -> Result<()> {
     let cfg = Config::try_load()?;
     let theme = Theme::load();
     let title_color = theme
-        .resolve(&cfg.get("title_color", "peach"))
+        .resolve(&cfg.common.title_color)
         .unwrap_or(Color::Yellow);
 
     let blocks = markdown::parse(&changelog_text()?);
@@ -175,5 +190,5 @@ pub fn main() -> Result<()> {
         bar_zones: Vec::new(),
     };
 
-    tui::run_simple(&mut app)
+    crate::surface::run(&mut app)
 }

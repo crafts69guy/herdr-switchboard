@@ -22,14 +22,20 @@ pub struct Config {
     pub usage: Usage,
     #[serde(default)]
     pub keys: HashMap<String, HashMap<String, String>>,
-    #[serde(skip)]
-    values: HashMap<String, String>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum KeyMode {
+    Insert,
+    #[default]
+    Normal,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default)]
 pub struct Common {
-    pub keymode: String,
+    pub keymode: KeyMode,
     pub notifications: bool,
     pub notification_position: String,
     pub notification_sound: String,
@@ -165,7 +171,7 @@ fn origin() -> String {
 impl Default for Common {
     fn default() -> Self {
         Self {
-            keymode: "insert".into(),
+            keymode: KeyMode::Normal,
             notifications: true,
             notification_position: "top-right".into(),
             notification_sound: "auto".into(),
@@ -226,9 +232,7 @@ impl Default for CloneFlow {
 
 impl Config {
     pub fn parse(text: &str) -> Result<Self> {
-        let mut cfg: Config = toml::from_str(text).context("invalid switchboard config")?;
-        cfg.values = flatten_values(&toml::from_str(text)?);
-        cfg.seed_scalar_values();
+        let cfg: Config = toml::from_str(text).context("invalid switchboard config")?;
         cfg.validate()?;
         Ok(cfg)
     }
@@ -251,27 +255,48 @@ impl Config {
         })
     }
 
-    pub fn get(&self, key: &str, default: &str) -> String {
-        self.values
-            .get(key)
-            .filter(|value| !value.is_empty())
-            .cloned()
-            .unwrap_or_else(|| default.to_string())
-    }
-
-    pub fn bool(&self, key: &str, default: bool) -> bool {
-        self.get(key, if default { "true" } else { "false" }) == "true"
-    }
-
-    #[cfg(test)]
-    pub fn from_pairs(pairs: &[(&str, &str)]) -> Self {
-        Self {
-            values: pairs
-                .iter()
-                .map(|(key, value)| (key.to_string(), value.to_string()))
-                .collect(),
-            ..Self::default()
-        }
+    /// Serialize the small compatibility vocabulary consumed by the Bash
+    /// entrypoints and `config get`. Rust callers should use the typed fields.
+    pub fn value_for_cli(&self, key: &str) -> Option<String> {
+        Some(match key {
+            "keymode" => match self.common.keymode {
+                KeyMode::Insert => "insert".into(),
+                KeyMode::Normal => "normal".into(),
+            },
+            "notifications" => self.common.notifications.to_string(),
+            "notification_position" => self.common.notification_position.clone(),
+            "notification_sound" => self.common.notification_sound.clone(),
+            "title_color" => self.common.title_color.clone(),
+            "transparency" => self.common.transparency.clone(),
+            "update_check" => self.common.update_check.to_string(),
+            "default_target" => self.projects.default_target.clone(),
+            "split_direction" => self.projects.split_direction.clone(),
+            "split_ratio" => self.projects.split_ratio.clone(),
+            "label" => self.projects.label.clone(),
+            "include_agents" => self.projects.include_agents.to_string(),
+            "include_workspaces" => self.projects.include_workspaces.to_string(),
+            "include_worktrees" => self.projects.include_worktrees.to_string(),
+            "default_tab" => self.projects.default_tab.clone(),
+            "sort" => self.projects.sort.clone(),
+            "preview" => self.projects.preview.clone(),
+            "preview_position" => self.projects.preview_position.clone(),
+            "preview_size" => self.projects.preview_size.clone(),
+            "preview_readme" => self.projects.preview_readme.to_string(),
+            "clone_source" => self.clone.source.clone(),
+            "open_after_clone" => self.clone.open_after.to_string(),
+            "base_branch" => self.git.base_branch.clone(),
+            "all_files_warn" => self.git.all_files_warn.to_string(),
+            "history_limit" => self.commands.history_limit.to_string(),
+            "command_sort" => self.commands.sort.clone(),
+            "refresh_interval_ms" => self.ports.refresh_interval_ms.to_string(),
+            "usage_warn_percent" => self.usage.warn_percent.to_string(),
+            "usage_alert_percent" => self.usage.alert_percent.to_string(),
+            "zen_width" => self.zen.width.to_string(),
+            "zen_scrim" => self.zen.scrim.to_string(),
+            "zen_scrim_color" => self.zen.scrim_color.clone(),
+            "zen_chrome" => self.zen.chrome.clone(),
+            _ => return None,
+        })
     }
 
     fn validate(&self) -> Result<()> {
@@ -293,10 +318,6 @@ impl Config {
             "projects.split_ratio must be between 0.1 and 0.9"
         );
         anyhow::ensure!(
-            matches!(self.common.keymode.as_str(), "insert" | "normal"),
-            "common.keymode must be insert or normal"
-        );
-        anyhow::ensure!(
             (20..=95).contains(&self.zen.width),
             "zen.width must be between 20 and 95"
         );
@@ -305,68 +326,6 @@ impl Config {
             "zen.chrome must be off, panes or full"
         );
         Ok(())
-    }
-
-    fn seed_scalar_values(&mut self) {
-        let pairs = [
-            ("keymode", self.common.keymode.clone()),
-            ("notifications", self.common.notifications.to_string()),
-            (
-                "notification_position",
-                self.common.notification_position.clone(),
-            ),
-            ("notification_sound", self.common.notification_sound.clone()),
-            ("title_color", self.common.title_color.clone()),
-            ("transparency", self.common.transparency.clone()),
-            ("update_check", self.common.update_check.to_string()),
-            ("default_target", self.projects.default_target.clone()),
-            ("split_direction", self.projects.split_direction.clone()),
-            ("split_ratio", self.projects.split_ratio.clone()),
-            ("label", self.projects.label.clone()),
-            ("include_agents", self.projects.include_agents.to_string()),
-            (
-                "include_workspaces",
-                self.projects.include_workspaces.to_string(),
-            ),
-            (
-                "include_worktrees",
-                self.projects.include_worktrees.to_string(),
-            ),
-            ("default_tab", self.projects.default_tab.clone()),
-            ("sort", self.projects.sort.clone()),
-            ("preview", self.projects.preview.clone()),
-            ("preview_position", self.projects.preview_position.clone()),
-            ("preview_size", self.projects.preview_size.clone()),
-            ("preview_readme", self.projects.preview_readme.to_string()),
-            ("clone_source", self.clone.source.clone()),
-            ("open_after_clone", self.clone.open_after.to_string()),
-            ("base_branch", self.git.base_branch.clone()),
-            ("all_files_warn", self.git.all_files_warn.to_string()),
-            ("history_limit", self.commands.history_limit.to_string()),
-            ("command_sort", self.commands.sort.clone()),
-            (
-                "refresh_interval_ms",
-                self.ports.refresh_interval_ms.to_string(),
-            ),
-            ("zen_width", self.zen.width.to_string()),
-            ("zen_scrim", self.zen.scrim.to_string()),
-            ("zen_scrim_color", self.zen.scrim_color.clone()),
-            ("zen_chrome", self.zen.chrome.clone()),
-        ];
-        self.values.extend(
-            pairs
-                .into_iter()
-                .map(|(key, value)| (key.to_string(), value)),
-        );
-        for (mode, bindings) in &self.keys {
-            for (action, chord) in bindings {
-                if mode == "projects" {
-                    self.values.insert(format!("keys.{action}"), chord.clone());
-                }
-                self.values
-                    .insert(format!("keys.{mode}.{action}"), chord.clone());
-            }
-        }
     }
 }
 
@@ -380,36 +339,6 @@ pub fn config_path() -> PathBuf {
                 .join(".config")
         })
         .join("config.toml")
-}
-
-fn flatten_values(value: &toml::Value) -> HashMap<String, String> {
-    fn visit(prefix: &str, value: &toml::Value, out: &mut HashMap<String, String>) {
-        match value {
-            toml::Value::Table(table) => {
-                for (key, value) in table {
-                    let next = if prefix.is_empty() {
-                        key.clone()
-                    } else {
-                        format!("{prefix}.{key}")
-                    };
-                    visit(&next, value, out);
-                }
-            }
-            toml::Value::String(value) => {
-                out.insert(prefix.to_string(), value.clone());
-            }
-            toml::Value::Boolean(value) => {
-                out.insert(prefix.to_string(), value.to_string());
-            }
-            toml::Value::Integer(value) => {
-                out.insert(prefix.to_string(), value.to_string());
-            }
-            _ => {}
-        }
-    }
-    let mut out = HashMap::new();
-    visit("", value, &mut out);
-    out
 }
 
 #[cfg(test)]
@@ -448,5 +377,20 @@ keys.down = "ctrl-j,ctrl-n"
 "#,
         );
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn normal_mode_is_the_typed_default() {
+        let cfg = Config::default();
+        assert_eq!(cfg.common.keymode, KeyMode::Normal);
+        assert_eq!(cfg.value_for_cli("keymode").as_deref(), Some("normal"));
+    }
+
+    #[test]
+    fn cli_compatibility_is_finite_and_does_not_expose_arbitrary_paths() {
+        let cfg = Config::parse("[common]\nnotifications = false\n").unwrap();
+        assert_eq!(cfg.value_for_cli("notifications").as_deref(), Some("false"));
+        assert_eq!(cfg.value_for_cli("common.notifications"), None);
+        assert_eq!(cfg.value_for_cli("keys.projects.open"), None);
     }
 }

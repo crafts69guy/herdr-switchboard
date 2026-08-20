@@ -24,6 +24,7 @@ mod socket;
 mod source;
 mod splash;
 mod state;
+mod surface;
 mod trace;
 mod tui;
 mod ui;
@@ -36,15 +37,12 @@ use std::collections::HashMap;
 use std::env;
 use std::ffi::OsString;
 use std::fmt;
-use std::io::{self, Write};
 use std::os::unix::process::CommandExt;
 use std::process::Command;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use crossterm::event::{
-    self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
-};
+use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind};
 use nucleo_matcher::pattern::{CaseMatching, Normalization, Pattern};
 use nucleo_matcher::{Config as NucleoConfig, Matcher, Utf32Str};
 use ratatui::layout::{Position, Rect};
@@ -53,6 +51,7 @@ use ratatui::widgets::ListState;
 
 use action::Accept;
 use data::{Config, Entry, GroupFilter, Kind, SortMode, Theme};
+use surface::{Surface as HostedSurface, Transition as SurfaceTransition};
 
 /// The searchable model: the entries, the query and its result, and the two
 /// orderings (group filter + sort) applied to the resting list. Everything here
@@ -128,7 +127,7 @@ pub struct HitZones {
     pub list_area: Rect,
     pub list_state: ListState,
     /// The group tabs along the list's top border.
-    pub tab_zones: Vec<(u16, u16, GroupFilter)>,
+    pub tab_zones: Vec<(Rect, GroupFilter)>,
     /// The command bar's pills, each carrying the action it runs when clicked.
     pub footer_zones: Vec<(u16, u16, keymap::Action)>,
     /// The command bar's row — it is one row tall, so this plus a zone's `x`
@@ -265,10 +264,11 @@ impl Picker {
 
 impl PreviewState {
     fn new(cfg: &Config, theme: &Theme, script_dir: &str) -> Self {
-        let enabled = cfg.get("preview", "enabled") != "disabled";
-        let position = cfg.get("preview_position", "right");
+        let enabled = cfg.projects.preview != "disabled";
+        let position = cfg.projects.preview_position.clone();
         let pct = cfg
-            .get("preview_size", "60%")
+            .projects
+            .preview_size
             .trim_end_matches('%')
             .parse::<u16>()
             .unwrap_or(52)
@@ -411,15 +411,15 @@ impl HitZones {
 impl App {
     fn new(entries: Vec<Entry>, theme: Theme, cfg: Config, script_dir: String) -> Self {
         let title_color = theme
-            .resolve(&cfg.get("title_color", "peach"))
+            .resolve(&cfg.common.title_color)
             .unwrap_or_else(|| theme.or("accent", ratatui::style::Color::Cyan));
-        let sort = SortMode::parse(&cfg.get("sort", "recent"));
+        let sort = SortMode::parse(&cfg.projects.sort);
         // Read before `cfg` moves into the struct.
         let update = update::available(&cfg);
         let recent = history::load();
         let preview = PreviewState::new(&cfg, &theme, &script_dir);
         let mut picker = Picker::new(entries, sort, recent);
-        picker.select_group_or_all(GroupFilter::parse(&cfg.get("default_tab", "all")));
+        picker.select_group_or_all(GroupFilter::parse(&cfg.projects.default_tab));
         let keymap = keymap::Keymap::load(&cfg);
         let mode = keymap.start_mode();
         // Seed the settings form from the same cfg before it moves into the struct.
@@ -462,22 +462,22 @@ impl App {
     fn reload_config(&mut self) {
         let runner = runner::SystemRunner;
         let cfg = Config::load();
-        let default_tab_changed =
-            self.cfg.get("default_tab", "all") != cfg.get("default_tab", "all");
+        let default_tab_changed = self.cfg.projects.default_tab != cfg.projects.default_tab;
 
         self.title_color = self
             .theme
-            .resolve(&cfg.get("title_color", "peach"))
+            .resolve(&cfg.common.title_color)
             .unwrap_or_else(|| self.theme.or("accent", ratatui::style::Color::Cyan));
-        self.picker.sort = SortMode::parse(&cfg.get("sort", "recent"));
+        self.picker.sort = SortMode::parse(&cfg.projects.sort);
         self.keymap = keymap::Keymap::load(&cfg);
 
         // Preview geometry is read straight from these fields at draw time; the readme
         // toggle lives in the worker's config, so respawn it and force a re-render.
-        self.preview.enabled = cfg.get("preview", "enabled") != "disabled";
-        self.preview.position = cfg.get("preview_position", "right");
+        self.preview.enabled = cfg.projects.preview != "disabled";
+        self.preview.position = cfg.projects.preview_position.clone();
         self.preview.pct = cfg
-            .get("preview_size", "60%")
+            .projects
+            .preview_size
             .trim_end_matches('%')
             .parse::<u16>()
             .unwrap_or(52)
@@ -500,7 +500,7 @@ impl App {
             .collect();
         self.picker.entries = entries;
         let requested = if default_tab_changed {
-            GroupFilter::parse(&cfg.get("default_tab", "all"))
+            GroupFilter::parse(&cfg.projects.default_tab)
         } else {
             self.picker.group
         };
@@ -559,20 +559,17 @@ impl App {
             }
             return apply_action(self, action);
         }
-        // The tab strip rides the list's top border.
-        if at.y == self.zones.list_area.y {
-            if let Some(&(_, _, g)) = self
-                .zones
-                .tab_zones
-                .iter()
-                .find(|&&(a, b, _)| at.x >= a && at.x < b)
-            {
-                if g != self.picker.group {
-                    self.picker.group = g;
-                    self.picker.recompute();
-                }
-                return Flow::Continue;
+        if let Some(&(_, group)) = self
+            .zones
+            .tab_zones
+            .iter()
+            .find(|(zone, _)| zone.contains(at))
+        {
+            if group != self.picker.group {
+                self.picker.group = group;
+                self.picker.recompute();
             }
+            return Flow::Continue;
         }
         if self.zones.list_area.contains(at) {
             if let Some(idx) = self.entry_at(at.y) {
@@ -819,129 +816,110 @@ const PLACEHOLDER_GRACE: Duration = Duration::from_millis(90);
 /// Placeholder animation frame length.
 const PLACEHOLDER_FRAME: Duration = Duration::from_millis(80);
 
-/// Blocks until there is something to draw: a key, a finished preview, or the
-/// next placeholder frame.
-fn wait_for_work(app: &mut App) -> Result<()> {
-    let entered_on = app.preview.placeholder_frame();
-    loop {
-        let tick = if app.preview.pending() {
-            PREVIEW_TICK
-        } else {
-            IDLE_TICK
-        };
-        if event::poll(tick)? {
-            return Ok(()); // a key is waiting: it takes priority
-        }
-        if app.preview.absorb() {
-            return Ok(());
-        }
-        // Redraw on a frame change only — polling at 16ms must not drag the
-        // 80ms animation up to a 60fps repaint.
-        if app.preview.placeholder_frame() != entered_on {
-            return Ok(());
-        }
-    }
+struct ProjectsSurface<'a> {
+    app: &'a mut App,
+    first_list_drawn: bool,
+    key_at: Option<Instant>,
+    placeholder_frame: Option<usize>,
 }
 
-fn run(
-    terminal: &mut ratatui::DefaultTerminal,
-    app: &mut App,
-) -> Result<Option<(Option<Entry>, Accept)>> {
-    // Trace-only bookkeeping (see `trace`): both stay untouched when tracing is off.
-    let mut first_list_drawn = false;
-    let mut key_at: Option<Instant> = None;
-    loop {
+impl HostedSurface for ProjectsSurface<'_> {
+    type Output = Option<(Option<Entry>, Accept)>;
+
+    fn terminal_claimed(&mut self) {
+        trace::mark("terminal.claimed");
+    }
+
+    fn draw(&mut self, frame: &mut ratatui::Frame) {
         // Draw first: it publishes the preview pane's width, which the request
         // below needs to clip the card to. The first pass draws an empty pane
         // for one frame, which is what the placeholder is for anyway.
-        terminal.draw(|f| ui::draw(f, app))?;
+        ui::draw(frame, self.app);
         if trace::enabled() {
             // The keystroke budget is "key in, pixels out": close the span on the
             // draw that follows the key, not on the handler returning.
-            if let Some(at) = key_at.take() {
+            if let Some(at) = self.key_at.take() {
                 trace::span("key.to_frame", at);
             }
-            if !first_list_drawn && !app.picker.entries.is_empty() {
-                first_list_drawn = true;
+            if !self.first_list_drawn && !self.app.picker.entries.is_empty() {
+                self.first_list_drawn = true;
                 trace::mark("frame.first_list");
             }
         }
-        app.request_preview();
-        wait_for_work(app)?;
-        if !event::poll(Duration::ZERO)? {
-            continue; // woke for a finished preview, not a key: redraw it
+    }
+
+    fn after_draw(&mut self) -> Result<()> {
+        self.app.request_preview();
+        self.placeholder_frame = self.app.preview.placeholder_frame();
+        Ok(())
+    }
+
+    fn tick_rate(&self) -> Duration {
+        if self.app.preview.pending() {
+            PREVIEW_TICK
+        } else {
+            IDLE_TICK
         }
-        match event::read()? {
+    }
+
+    fn on_tick(&mut self) -> Result<SurfaceTransition<Self::Output>> {
+        // Poll at 16ms while work is pending, but repaint only for a completed
+        // preview or an actual 80ms placeholder-frame change.
+        let absorbed = self.app.preview.absorb();
+        let frame_changed = self.app.preview.placeholder_frame() != self.placeholder_frame;
+        Ok(if absorbed || frame_changed {
+            SurfaceTransition::Redraw
+        } else {
+            SurfaceTransition::Wait
+        })
+    }
+
+    fn on_event(&mut self, event: Event) -> Result<SurfaceTransition<Self::Output>> {
+        match event {
             Event::Mouse(m) => {
                 let at = Position::new(m.column, m.row);
                 match m.kind {
                     MouseEventKind::ScrollDown => {
-                        app.on_wheel(at, 1);
+                        self.app.on_wheel(at, 1);
                     }
                     MouseEventKind::ScrollUp => {
-                        app.on_wheel(at, -1);
+                        self.app.on_wheel(at, -1);
                     }
-                    MouseEventKind::Down(MouseButton::Left) => match app.on_click(at) {
+                    MouseEventKind::Down(MouseButton::Left) => match self.app.on_click(at) {
                         Flow::Continue => {}
-                        Flow::Quit => return Ok(None),
+                        Flow::Quit => return Ok(SurfaceTransition::Exit(None)),
                         Flow::Accept(a) => {
-                            return Ok(Some((app.picker.selected_entry().cloned(), a)))
+                            return Ok(SurfaceTransition::Exit(Some((
+                                self.app.picker.selected_entry().cloned(),
+                                a,
+                            ))));
                         }
                     },
                     // Releases and drags: nothing here acts on them, and
                     // redrawing for them would be churn.
-                    _ => continue,
+                    _ => return Ok(SurfaceTransition::Wait),
                 }
+                Ok(SurfaceTransition::Redraw)
             }
             Event::Key(k) => {
                 if k.kind != KeyEventKind::Press {
-                    continue;
+                    return Ok(SurfaceTransition::Wait);
                 }
                 if trace::enabled() {
-                    key_at = Some(Instant::now());
+                    self.key_at = Some(Instant::now());
                 }
-                match handle_key(app, k) {
-                    Flow::Continue => {}
-                    Flow::Quit => return Ok(None),
-                    Flow::Accept(a) => return Ok(Some((app.picker.selected_entry().cloned(), a))),
-                }
+                Ok(match handle_key(self.app, k) {
+                    Flow::Continue => SurfaceTransition::Redraw,
+                    Flow::Quit => SurfaceTransition::Exit(None),
+                    Flow::Accept(a) => SurfaceTransition::Exit(Some((
+                        self.app.picker.selected_entry().cloned(),
+                        a,
+                    ))),
+                })
             }
-            _ => {}
+            _ => Ok(SurfaceTransition::Wait),
         }
     }
-}
-
-/// Wheel reporting, on and off.
-///
-/// Not crossterm's `EnableMouseCapture`: that also turns on any-event tracking
-/// (`?1003h`), which reports every pointer *move*. The loop would wake and
-/// redraw hundreds of times a second for events it discards. `?1000h` reports
-/// buttons only — the wheel among them — and `?1006h` asks for SGR encoding, so
-/// coordinates past column 223 survive.
-pub(crate) const MOUSE_ON: &str = "\x1b[?1000h\x1b[?1006h";
-pub(crate) const MOUSE_OFF: &str = "\x1b[?1006l\x1b[?1000l";
-
-/// Claim the terminal, then the wheel. Also chains the mouse teardown ahead of
-/// the panic hook `ratatui::init` installs — that hook restores the screen but
-/// knows nothing about the wheel, and a panic must not leave the terminal
-/// reporting clicks at a shell.
-pub(crate) fn init_terminal() -> ratatui::DefaultTerminal {
-    let terminal = ratatui::init();
-    let restore = std::panic::take_hook();
-    std::panic::set_hook(Box::new(move |info| {
-        print!("{MOUSE_OFF}");
-        let _ = io::stdout().flush();
-        restore(info);
-    }));
-    print!("{MOUSE_ON}");
-    let _ = io::stdout().flush();
-    terminal
-}
-
-pub(crate) fn restore_terminal() {
-    print!("{MOUSE_OFF}");
-    let _ = io::stdout().flush();
-    ratatui::restore();
 }
 
 /// `herdr-switchboard open --target T --path P --origin O --label L` — the
@@ -972,7 +950,12 @@ fn cli_config(args: &[String]) -> Result<()> {
         Some("get") => {
             let key = args.get(1).map(String::as_str).unwrap_or("");
             let default = args.get(2).map(String::as_str).unwrap_or("");
-            println!("{}", Config::try_load()?.get(key, default));
+            println!(
+                "{}",
+                Config::try_load()?
+                    .value_for_cli(key)
+                    .unwrap_or_else(|| default.into())
+            );
             Ok(())
         }
         _ => Err(anyhow::anyhow!("usage: config get <key> [default]")),
@@ -1080,10 +1063,12 @@ fn main() -> Result<()> {
     }
 
     let mut app = App::new(entries, theme, cfg, script_dir.clone());
-    let mut terminal = init_terminal();
-    trace::mark("terminal.claimed");
-    let outcome = run(&mut terminal, &mut app);
-    restore_terminal();
+    let outcome = surface::run(&mut ProjectsSurface {
+        app: &mut app,
+        first_list_drawn: false,
+        key_at: None,
+        placeholder_frame: None,
+    });
 
     if let Some((entry, accept)) = outcome? {
         let id = entry.as_ref().map(|e| e.id.clone());
@@ -1092,7 +1077,7 @@ fn main() -> Result<()> {
         // `default_target` change made in the settings overlay is honoured this session.
         let default_target = action::resolve_default_target(
             action::forced_target().as_deref(),
-            &app.cfg.get("default_target", "workspace"),
+            &app.cfg.projects.default_target,
         );
         action::dispatch(
             &runner,
@@ -1210,7 +1195,9 @@ mod tests {
     /// An app whose preview pane sits at 0,0 and shows `rows` of a `len`-row card.
     /// The pane is two rows and two columns taller/wider than its interior: the border.
     fn app_with_preview(len: u16, rows: u16) -> App {
-        let mut app = App::new(sample(), Theme::default(), Config::default(), ".".into());
+        let mut cfg = Config::default();
+        cfg.common.keymode = crate::config::KeyMode::Insert;
+        let mut app = App::new(sample(), Theme::default(), cfg, ".".into());
         app.preview.area = Some(Rect::new(0, 0, 40, rows + 2));
         app.preview.len = len;
         app
@@ -1247,8 +1234,8 @@ mod tests {
         app.zones.footer_row = 30;
         app.zones.footer_zones = vec![(1, 8, keymap::Action::Accept(Accept::Default))];
         app.zones.tab_zones = vec![
-            (1, 6, GroupFilter::All),
-            (7, 15, GroupFilter::Only(Kind::Repo)),
+            (Rect::new(1, 10, 5, 1), GroupFilter::All),
+            (Rect::new(7, 10, 8, 1), GroupFilter::Only(Kind::Repo)),
         ];
         app
     }
@@ -1336,6 +1323,26 @@ mod tests {
         let mut app = App::new(sample(), Theme::default(), Config::default(), ".".into());
         let screen = rendered(&mut app, 80, 24);
         assert!(screen.contains("Search"), "{screen}");
+        assert!(screen.contains("zeta"), "{screen}");
+    }
+
+    #[test]
+    fn wide_dashboard_has_context_navigator_and_inspector() {
+        let mut app = app_with_layout();
+        let screen = rendered(&mut app, 140, 32);
+        assert!(screen.contains("Context"), "{screen}");
+        assert!(screen.contains("Navigator"), "{screen}");
+        assert!(screen.contains("Preview"), "{screen}");
+        assert!(app.zones.tab_zones.iter().all(|(zone, _)| zone.height == 1));
+    }
+
+    #[test]
+    fn compact_dashboard_prioritizes_the_navigator() {
+        let mut app = app_with_layout();
+        let screen = rendered(&mut app, 79, 24);
+        assert!(!screen.contains("Context"), "{screen}");
+        assert!(!screen.contains("Preview"), "{screen}");
+        assert!(app.preview.area.is_none());
         assert!(screen.contains("zeta"), "{screen}");
     }
 
@@ -1496,17 +1503,20 @@ mod tests {
 
     #[test]
     fn configured_default_tab_selects_a_present_group_or_all() {
-        let repos = Config::from_pairs(&[("default_tab", "repos")]);
+        let mut repos = Config::default();
+        repos.projects.default_tab = "repos".into();
         let app = App::new(sample(), Theme::default(), repos, ".".into());
         assert_eq!(app.picker.group, GroupFilter::Only(Kind::Repo));
 
-        let missing = Config::from_pairs(&[("default_tab", "worktrees")]);
+        let mut missing = Config::default();
+        missing.projects.default_tab = "worktrees".into();
         let app = App::new(sample(), Theme::default(), missing, ".".into());
         assert_eq!(app.picker.group, GroupFilter::All);
 
         let mut entries = sample();
         entries.push(entry(Kind::Worktree, "/tmp/repo.feature", "repo"));
-        let worktrees = Config::from_pairs(&[("default_tab", "worktrees")]);
+        let mut worktrees = Config::default();
+        worktrees.projects.default_tab = "worktrees".into();
         let app = App::new(entries, Theme::default(), worktrees, ".".into());
         assert_eq!(app.picker.group, GroupFilter::Only(Kind::Worktree));
     }
@@ -1530,14 +1540,14 @@ mod tests {
 
     #[test]
     fn typing_a_letter_in_insert_mode_filters() {
-        let mut app = App::new(sample(), Theme::default(), Config::default(), ".".into());
+        let mut app = app_with_preview(0, 0);
         handle_key(&mut app, key(KeyCode::Char('z'), KeyModifiers::NONE));
         assert_eq!(app.picker.query, "z");
     }
 
     #[test]
     fn ctrl_t_accepts_into_a_tab_through_the_keymap() {
-        let mut app = App::new(sample(), Theme::default(), Config::default(), ".".into());
+        let mut app = app_with_preview(0, 0);
         let flow = handle_key(&mut app, key(KeyCode::Char('t'), KeyModifiers::CONTROL));
         assert!(matches!(flow, Flow::Accept(Accept::Tab)));
     }
@@ -1551,8 +1561,8 @@ mod tests {
     }
 
     #[test]
-    fn modal_mode_navigates_bare_and_i_returns_to_insert() {
-        let cfg = Config::from_pairs(&[("keymode", "modal")]);
+    fn normal_mode_navigates_bare_and_i_returns_to_insert() {
+        let cfg = Config::default();
         let mut app = App::new(sample(), Theme::default(), cfg, ".".into());
         assert_eq!(app.mode, keymap::Mode::Normal);
 

@@ -15,7 +15,7 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::action::Accept as AcceptKind;
-use crate::data::Config;
+use crate::config::{Config, KeyMode};
 
 /// A key press reduced to what the keymap distinguishes: a base key plus the two
 /// modifiers the picker uses. Shift is folded into the char case and [`Key::BackTab`].
@@ -38,6 +38,37 @@ impl Chord {
         }
         s.push_str(&key_label(self.key));
         s
+    }
+
+    /// Crossterm representation used by the shared picker engine. Keeping this
+    /// conversion beside the parser prevents each surface from inventing a
+    /// slightly different chord grammar.
+    pub fn event_parts(self) -> (KeyCode, KeyModifiers) {
+        let mut modifiers = KeyModifiers::NONE;
+        if self.ctrl {
+            modifiers.insert(KeyModifiers::CONTROL);
+        }
+        if self.alt {
+            modifiers.insert(KeyModifiers::ALT);
+        }
+        let code = match self.key {
+            Key::Char(c) => KeyCode::Char(c),
+            Key::Enter => KeyCode::Enter,
+            Key::Esc => KeyCode::Esc,
+            Key::Tab => KeyCode::Tab,
+            Key::BackTab => {
+                modifiers.insert(KeyModifiers::SHIFT);
+                KeyCode::BackTab
+            }
+            Key::Backspace => KeyCode::Backspace,
+            Key::Up => KeyCode::Up,
+            Key::Down => KeyCode::Down,
+            Key::PageUp => KeyCode::PageUp,
+            Key::PageDown => KeyCode::PageDown,
+            Key::Home => KeyCode::Home,
+            Key::End => KeyCode::End,
+        };
+        (code, modifiers)
     }
 }
 
@@ -168,9 +199,9 @@ pub struct Keymap {
 impl Keymap {
     /// Build the defaults, then apply `keys.*` overrides and `keymode`.
     pub fn load(cfg: &Config) -> Self {
-        let start = match cfg.get("keymode", "insert").as_str() {
-            "normal" | "modal" => Mode::Normal,
-            _ => Mode::Insert,
+        let start = match cfg.common.keymode {
+            KeyMode::Normal => Mode::Normal,
+            KeyMode::Insert => Mode::Insert,
         };
         let mut km = Keymap {
             insert: default_insert(),
@@ -228,10 +259,9 @@ impl Keymap {
     /// unbind an action.
     fn apply_overrides(&mut self, cfg: &Config) {
         for (name, act) in NAMES {
-            let spec = cfg.get(&format!("keys.{name}"), "");
-            if spec.is_empty() {
+            let Some(spec) = cfg.keys.get("projects").and_then(|keys| keys.get(*name)) else {
                 continue;
-            }
+            };
             let chords: Vec<Chord> = spec.split(',').filter_map(parse_chord).collect();
             if chords.is_empty() {
                 continue;
@@ -464,8 +494,10 @@ mod tests {
     }
 
     #[test]
-    fn insert_is_the_lean_default_and_frees_readline() {
-        let km = Keymap::load(&Config::default());
+    fn insert_mode_is_lean_and_frees_readline() {
+        let mut cfg = Config::default();
+        cfg.common.keymode = KeyMode::Insert;
+        let km = Keymap::load(&cfg);
         assert_eq!(km.start_mode(), Mode::Insert);
         assert_eq!(
             km.action(Mode::Insert, chord(Key::Enter)),
@@ -550,13 +582,18 @@ mod tests {
 
     #[test]
     fn keymode_normal_starts_in_normal() {
-        let km = Keymap::load(&Config::from_pairs(&[("keymode", "normal")]));
+        let km = Keymap::load(&Config::default());
         assert_eq!(km.start_mode(), Mode::Normal);
     }
 
     #[test]
     fn an_override_rebinds_and_becomes_the_shown_chord() {
-        let km = Keymap::load(&Config::from_pairs(&[("keys.tab", "ctrl-y")]));
+        let mut cfg = Config::default();
+        cfg.keys
+            .entry("projects".into())
+            .or_default()
+            .insert("tab".into(), "ctrl-y".into());
+        let km = Keymap::load(&cfg);
         assert_eq!(
             km.action(Mode::Insert, ctrl(Key::Char('y'))),
             Some(Action::Accept(AcceptKind::Tab))

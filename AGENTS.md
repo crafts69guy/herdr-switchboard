@@ -2,17 +2,19 @@
 
 ## Project Structure & Module Organization
 
-The Rust TUI lives in `src/`. `main.rs` owns the Projects event loop and dispatches
-every other mode from its argv; `data.rs`, `source.rs`, `query.rs`, `ui.rs`,
-`preview.rs`, `action.rs`, and `history.rs` carry data loading, the source registry,
-the query language, rendering, previews, accepted actions, and recency state.
-`picker.rs` is the shared engine behind the mode pickers (`menu.rs`, `agents.rs`,
-`commands.rs`, `ports.rs`, `zen.rs`), and `tui.rs` holds the chrome every framed
-surface goes through. `settings.rs`, `changelog.rs`, and `usage.rs` are the popups;
-`git.rs` is its own pane; `chrome.rs`, `socket.rs`, `runner.rs`, `notify.rs`,
-`config.rs`, `keymap.rs`, `markdown.rs`, `state.rs`, `trace.rs`, `splash.rs`, and
-`update.rs` are the supporting edges. `CLAUDE.md` carries the per-module notes and
-the non-obvious constraints — read it before changing any of them.
+The Rust TUI lives in `src/`. `surface.rs` is the universal host for terminal claim,
+mouse capture, polling, redraw, and teardown; no other module owns an event loop.
+`main.rs` composes the Projects Picker and dispatches argv modes. `source.rs` holds
+the explicit `ProjectCatalog` load policy, while `data.rs` parses source responses
+and carries entry presentation data. `query.rs`, `ui.rs`, `preview.rs`, `action.rs`,
+and `history.rs` carry query compilation, responsive Projects Picker rendering, previews,
+accepted effects, and recency state. `picker.rs` is the shared engine behind the
+mode pickers (`menu.rs`, `agents.rs`, `commands.rs`, `ports.rs`, `zen.rs`), and
+`tui.rs` is rendering vocabulary only. `settings.rs`, `changelog.rs`, and `usage.rs`
+are popups hosted through `Surface`; `git.rs` is its own pane with typed background
+effects. `chrome.rs`, `socket.rs`, `runner.rs`, `notify.rs`, `config.rs`, `keymap.rs`,
+`markdown.rs`, `state.rs`, `trace.rs`, `splash.rs`, and `update.rs` are supporting
+modules. Read `CLAUDE.md` before changing their non-obvious contracts.
 
 Bash entrypoints in `bin/` connect the TUI and the bash clone flow to herdr. Plugin
 metadata is defined in `herdr-plugin.toml`; sample user configuration belongs in
@@ -52,9 +54,10 @@ respectively (for example, `default_target` and `open-workspace`).
 
 Place focused Rust tests beside their module in `#[cfg(test)]` blocks and name
 them after observable behavior. Extend `tests/manifest_spec.sh` when changing
-the manifest or entrypoint contract. Before submitting, run both test commands,
-formatting, and Clippy. Manually exercise the overlay for layout, keybinding, or
-herdr CLI changes; attach a screenshot when visual output changes.
+the manifest or entrypoint contract. Before submitting, run `cargo test`, all four
+shell specs listed above, formatting, and Clippy. Manually exercise the overlay
+for layout, keybinding, or Herdr CLI changes; attach a current screenshot when
+visual output changes.
 
 ## Commit & Pull Request Guidelines
 
@@ -82,8 +85,8 @@ Never hardcode credentials or user-specific paths. Verify real pane, workspace,
 and agent IDs before issuing herdr commands. Preserve typed confirmation for
 repository removal and test destructive flows against disposable repositories.
 
-One surface reads a credential and one makes a network request, and they are the
-same one: the `usage` pane. Two rules hold there and nowhere else.
+Usage is the only surface that reads a credential and the only in-process HTTP
+client. Two rules hold there and nowhere else.
 
 - **A secret never reaches a command line.** `argv` is readable through `ps` by
   every process the user owns, for the whole life of the call, so the OAuth token
@@ -95,5 +98,7 @@ same one: the `usage` pane. Two rules hold there and nowhere else.
   is ever logged, traced, drawn, cached, or forwarded. `trace.rs` writes to a file,
   so anything passed to it is anything written to disk.
 
-Everything else must stay offline: the picker frequently exits in under a second,
-which is why `update.rs` fetches from a detached child rather than in-process.
+Do not add network work to a launch or navigation hot path. The explicit exceptions
+are Git's on-demand pull-request fetch through `gh`, Clone/update commands the user
+invokes deliberately, and `update.rs`, whose `git ls-remote` runs in a detached child
+because the Projects Picker frequently exits in under a second.

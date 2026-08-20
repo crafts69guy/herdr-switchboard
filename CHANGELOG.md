@@ -9,6 +9,16 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Switchboard is now Vim-first and adapts as a persistent dashboard.** Projects opens in Normal
+  mode by default; `i` or `/` enters filtering, and `common.keymode = "insert"` restores the old
+  type-first start. Wide panes show a context rail beside the navigator and inspector, medium panes
+  keep the navigator/inspector split, and compact panes reserve the available space for navigation.
+
+- **Every terminal surface now runs through one lifecycle host.** Projects, mode pickers, Git,
+  Usage, Changelog, and Settings share terminal claiming, mouse capture, polling, redraw, and
+  guaranteed teardown. Keybinding overrides also use the same chord parser everywhere, so accepted
+  syntax and displayed key caps cannot drift between pickers.
+
 - **Usage donuts now separate spent quota from what remains.** The used arc and its percentage use
   the theme's semantic red, while the available arc uses semantic green. Loading and unavailable
   cards remain muted, and the per-window bars keep their existing provider severity and configured

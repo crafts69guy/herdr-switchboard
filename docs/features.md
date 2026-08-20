@@ -51,9 +51,11 @@ Press `r` to read everything again, `esc` to close.
   asks for keychain permission the first time. The token is passed to `curl` through a pipe, never
   on a command line, because a command line is readable by every process you own.
 
-This is the only surface in the plugin that makes a network request, and the only one that reads a
-credential. The request runs on a worker thread with `usage.timeout_ms`, so the popup opens
-immediately with Codex already on screen and fills the other card in when it arrives.
+Usage is the only surface that reads a credential and the only in-process HTTP client. Its request
+runs on a worker thread with `usage.timeout_ms`, so the popup opens immediately with Codex already
+on screen and fills the other card in when it arrives. Separately, Git can run `gh pr list` after
+you activate its pull-request row, and update checks run `git ls-remote` in a detached child; neither
+is part of a launch or navigation hot path.
 
 ### Which account
 

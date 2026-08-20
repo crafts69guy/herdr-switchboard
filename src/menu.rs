@@ -14,7 +14,7 @@ use crate::picker::{self, ActionOutcome, ActionSpec, PickerItem, PickerMode};
 use crate::query::{Document, FieldSchema};
 
 pub fn main(cfg: Config, theme: Theme) -> Result<()> {
-    let normal = cfg.common.keymode == "normal";
+    let normal = cfg.common.keymode == crate::config::KeyMode::Normal;
     picker::run(MenuMode, theme, normal)
 }
 
@@ -162,7 +162,7 @@ impl PickerMode for MenuMode {
             id: "open",
             key: KeyCode::Enter,
             modifiers: KeyModifiers::NONE,
-            key_label: "↵",
+            key_label: "↵".into(),
             label: "open",
             color_slot: "mauve",
         })
@@ -170,7 +170,7 @@ impl PickerMode for MenuMode {
             id: route.id,
             key: KeyCode::Char(route.mnemonic),
             modifiers: KeyModifiers::ALT,
-            key_label: route.key_label,
+            key_label: route.key_label.into(),
             label: route.title,
             color_slot: route.color,
         }))

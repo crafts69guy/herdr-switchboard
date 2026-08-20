@@ -269,7 +269,7 @@ impl Drop for PortWorker {
 }
 
 pub fn main(cfg: Config, theme: Theme) -> Result<()> {
-    let normal = cfg.common.keymode == "normal";
+    let normal = cfg.common.keymode == crate::config::KeyMode::Normal;
     picker::run(
         PortMode::new(
             cfg.ports.refresh_interval_ms,
@@ -334,7 +334,7 @@ impl PickerMode for PortMode {
                 id: "copy",
                 key: KeyCode::Enter,
                 modifiers: KeyModifiers::NONE,
-                key_label: "↵",
+                key_label: "↵".into(),
                 label: "copy",
                 color_slot: "blue",
             },
@@ -342,7 +342,7 @@ impl PickerMode for PortMode {
                 id: "http",
                 key: KeyCode::Enter,
                 modifiers: KeyModifiers::CONTROL,
-                key_label: "^↵",
+                key_label: "^↵".into(),
                 label: "http",
                 color_slot: "green",
             },
@@ -350,7 +350,7 @@ impl PickerMode for PortMode {
                 id: "https",
                 key: KeyCode::Enter,
                 modifiers: KeyModifiers::ALT,
-                key_label: "⌥↵",
+                key_label: "⌥↵".into(),
                 label: "https",
                 color_slot: "mauve",
             },
@@ -358,7 +358,7 @@ impl PickerMode for PortMode {
                 id: "workspace",
                 key: KeyCode::Char('w'),
                 modifiers: KeyModifiers::CONTROL,
-                key_label: "^w",
+                key_label: "^w".into(),
                 label: "workspace",
                 color_slot: "peach",
             },
@@ -366,7 +366,7 @@ impl PickerMode for PortMode {
                 id: "term",
                 key: KeyCode::Char('x'),
                 modifiers: KeyModifiers::CONTROL,
-                key_label: "^x",
+                key_label: "^x".into(),
                 label: "term",
                 color_slot: "red",
             },
@@ -374,7 +374,7 @@ impl PickerMode for PortMode {
                 id: "kill",
                 key: KeyCode::Char('x'),
                 modifiers: KeyModifiers::ALT,
-                key_label: "⌥x",
+                key_label: "⌥x".into(),
                 label: "force",
                 color_slot: "red",
             },

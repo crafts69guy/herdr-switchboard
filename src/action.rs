@@ -175,8 +175,8 @@ fn open_repo(
             &["tab", "create", "--cwd", path, "--label", label, "--focus"],
         ),
         "split" => {
-            let dir = cfg.get("split_direction", "right");
-            let ratio = cfg.get("split_ratio", "0.5");
+            let dir = cfg.projects.split_direction.clone();
+            let ratio = cfg.projects.split_ratio.clone();
             let mut args = vec!["pane", "split"];
             if !origin.is_empty() {
                 args.push(origin);

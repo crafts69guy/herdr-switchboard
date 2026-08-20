@@ -28,42 +28,62 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     // Body: list + preview. The footer (root[2]) is always a separate full-width
     // row, so the preview can sit on any side without shrinking the command bar.
     let body = root[1];
-    let (list_area, preview_area) = if app.preview.enabled {
+    let (context_area, content) = if body.width >= 120 {
+        let columns = Layout::horizontal([Constraint::Length(22), Constraint::Min(40)]).split(body);
+        (Some(columns[0]), columns[1])
+    } else {
+        (None, body)
+    };
+    let show_preview = app.preview.enabled && body.width >= 80;
+    let (list_area, preview_area) = if show_preview {
         let pct = app.preview.pct;
         let rest = 100u16.saturating_sub(pct);
         match app.preview.position.as_str() {
             "right" => {
                 let c =
                     Layout::horizontal([Constraint::Percentage(rest), Constraint::Percentage(pct)])
-                        .split(body);
+                        .split(content);
                 (c[0], Some(c[1]))
             }
             "left" => {
                 let c =
                     Layout::horizontal([Constraint::Percentage(pct), Constraint::Percentage(rest)])
-                        .split(body);
+                        .split(content);
                 (c[1], Some(c[0]))
             }
             "up" => {
                 let c =
                     Layout::vertical([Constraint::Percentage(pct), Constraint::Percentage(rest)])
-                        .split(body);
+                        .split(content);
                 (c[1], Some(c[0]))
             }
             _ => {
                 let c =
                     Layout::vertical([Constraint::Percentage(rest), Constraint::Percentage(pct)])
-                        .split(body);
+                        .split(content);
                 (c[0], Some(c[1]))
             }
         }
     } else {
-        (body, None)
+        (content, None)
     };
 
     let title = app.title_color;
     draw_input(f, app, root[0], title, accent, sub, overlay);
-    draw_list(f, app, list_area, title, accent, text, overlay, surface);
+    if let Some(area) = context_area {
+        draw_context(f, app, area, title, text, overlay, surface);
+    }
+    draw_list(
+        f,
+        app,
+        list_area,
+        title,
+        accent,
+        text,
+        overlay,
+        surface,
+        context_area.is_none(),
+    );
     if let Some(area) = preview_area {
         // Publish where the pane landed: the next render request clips the card
         // to its width, the scroll clamps to its height, and a wheel turn asks
@@ -72,6 +92,8 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         // it was built at until the selection moves.
         app.preview.area = Some(area);
         draw_preview(f, app, area, title, overlay);
+    } else {
+        app.preview.area = None;
     }
     draw_footer(f, app, root[2]);
 
@@ -84,6 +106,61 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     if app.show_help {
         draw_help(f, app, f.area());
     }
+}
+
+fn draw_context(
+    f: &mut Frame,
+    app: &mut App,
+    area: Rect,
+    title: Color,
+    text: Color,
+    border: Color,
+    surface: Color,
+) {
+    let mut lines = Vec::new();
+    let mut zones = Vec::new();
+    for (row, group) in app.picker.tabs().into_iter().enumerate() {
+        let selected = group == app.picker.group;
+        let count = match group {
+            crate::data::GroupFilter::All => app.picker.entries.len(),
+            crate::data::GroupFilter::Only(kind) => app
+                .picker
+                .entries
+                .iter()
+                .filter(|entry| entry.kind == kind)
+                .count(),
+        };
+        let style = if selected {
+            Style::default()
+                .fg(title)
+                .bg(surface)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(text)
+        };
+        lines.push(Line::from(Span::styled(
+            format!(" {:<12} {:>3} ", group.label(), count),
+            style,
+        )));
+        zones.push((
+            Rect::new(
+                area.x + 1,
+                area.y + 1 + row as u16,
+                area.width.saturating_sub(2),
+                1,
+            ),
+            group,
+        ));
+    }
+    app.zones.tab_zones = zones;
+    let block = crate::tui::boxed("Context", title, border).title(
+        Line::from(Span::styled(
+            format!(" {} ", app.picker.sort.label()),
+            Style::default().fg(border),
+        ))
+        .right_aligned(),
+    );
+    f.render_widget(Paragraph::new(lines).block(block), area);
 }
 
 /// The changelog, over the list rather than instead of it: reading what changed should
@@ -205,6 +282,7 @@ fn draw_list(
     text: Color,
     border: Color,
     surface: Color,
+    show_tabs: bool,
 ) {
     let items: Vec<ListItem> = app
         .picker
@@ -256,7 +334,7 @@ fn draw_list(
         };
         let label = format!(" {} ", g.label());
         let w = label.chars().count() as u16;
-        zones.push((x, x + w, g));
+        zones.push((Rect::new(x, area.y, w, 1), g));
         x += w + 1; // the gap span below
         tab_spans.push(Span::styled(label, style));
         tab_spans.push(Span::raw(" "));
@@ -269,9 +347,16 @@ fn draw_list(
     // `framed` rather than `boxed`: this panel's caption slot is the tab strip,
     // a multi-span line, not a word — but the frame itself must still be the
     // shared one, or it drifts the way the git card did.
-    let block = crate::tui::framed(border)
-        .title(Line::from(tab_spans))
-        .title(Line::from(sort_hint).right_aligned());
+    let block = if show_tabs {
+        crate::tui::framed(border)
+            .title(Line::from(tab_spans))
+            .title(Line::from(sort_hint).right_aligned())
+    } else {
+        crate::tui::framed(border).title(Span::styled(
+            " Navigator ",
+            Style::default().fg(title).add_modifier(Modifier::BOLD),
+        ))
+    };
 
     let list = List::new(items)
         .block(block)

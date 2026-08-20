@@ -1,10 +1,7 @@
-//! The registry of switchable entry sources.
+//! The project catalog: one cohesive loader for every entry kind.
 //!
-//! Each source knows its kind, whether it is turned on, and how to load its
-//! entries. [`load_all`] folds the registry; [`kinds`] gives the canonical tab
-//! order. Another source (tmux sessions, docker containers, MRU dirs…) is a
-//! new [`Source`] impl plus one line in [`registry`] — nothing on the
-//! load/metadata side has an exhaustive `match Kind` to update.
+//! `ProjectCatalog` keeps inclusion and ordering policy explicit while leaving
+//! the individual entry parsers in `data`.
 //!
 //! The preview card ([`crate::preview::render`]) and the accept dispatch
 //! ([`crate::action::dispatch`]) stay as compiler-checked `match`es in their own
@@ -22,89 +19,61 @@ pub struct LoadCtx<'a> {
     pub root: &'a str,
 }
 
-/// One switchable source of entries.
-pub trait Source {
-    fn kind(&self) -> Kind;
-    /// Whether this source is turned on by Projects configuration.
-    fn enabled(&self, cfg: &Config) -> bool;
-    fn load(&self, ctx: &LoadCtx) -> Vec<Entry>;
+pub struct ProjectCatalog<'a> {
+    config: &'a Config,
+    context: LoadCtx<'a>,
 }
 
-struct Agents;
-impl Source for Agents {
-    fn kind(&self) -> Kind {
-        Kind::Agent
+impl<'a> ProjectCatalog<'a> {
+    pub fn new(config: &'a Config, context: LoadCtx<'a>) -> Self {
+        Self { config, context }
     }
-    fn enabled(&self, cfg: &Config) -> bool {
-        cfg.bool("include_agents", true)
-    }
-    fn load(&self, ctx: &LoadCtx) -> Vec<Entry> {
-        data::load_agents(ctx.runner, ctx.theme)
-    }
-}
 
-struct Workspaces;
-impl Source for Workspaces {
-    fn kind(&self) -> Kind {
-        Kind::Workspace
-    }
-    fn enabled(&self, cfg: &Config) -> bool {
-        cfg.bool("include_workspaces", true)
-    }
-    fn load(&self, ctx: &LoadCtx) -> Vec<Entry> {
-        data::load_workspaces(ctx.runner, ctx.theme)
-    }
-}
-
-struct Repos;
-impl Source for Repos {
-    fn kind(&self) -> Kind {
-        Kind::Repo
-    }
-    fn enabled(&self, _cfg: &Config) -> bool {
-        true // repos are the reason the plugin exists; always listed
-    }
-    fn load(&self, ctx: &LoadCtx) -> Vec<Entry> {
-        data::load_repos(ctx.runner, ctx.theme, ctx.root)
+    pub fn load(&self) -> Vec<Entry> {
+        let mut entries = Vec::new();
+        if self.config.projects.include_agents {
+            entries.extend(data::load_agents(self.context.runner, self.context.theme));
+        }
+        if self.config.projects.include_workspaces {
+            entries.extend(data::load_workspaces(
+                self.context.runner,
+                self.context.theme,
+            ));
+        }
+        // Repositories are the product's anchor and are always present.
+        entries.extend(data::load_repos(
+            self.context.runner,
+            self.context.theme,
+            self.context.root,
+        ));
+        if self.config.projects.include_worktrees {
+            entries.extend(data::load_worktrees(
+                self.context.runner,
+                self.context.theme,
+                self.context.root,
+            ));
+        }
+        entries
     }
 }
 
-struct Worktrees;
-impl Source for Worktrees {
-    fn kind(&self) -> Kind {
-        Kind::Worktree
-    }
-    fn enabled(&self, cfg: &Config) -> bool {
-        cfg.bool("include_worktrees", true)
-    }
-    fn load(&self, ctx: &LoadCtx) -> Vec<Entry> {
-        data::load_worktrees(ctx.runner, ctx.theme, ctx.root)
-    }
-}
-
-/// The sources in list/tab order: agents, workspaces, repos, worktrees.
-pub fn registry() -> Vec<Box<dyn Source>> {
-    vec![
-        Box::new(Agents),
-        Box::new(Workspaces),
-        Box::new(Repos),
-        Box::new(Worktrees),
-    ]
-}
-
-/// Load every enabled source, in registry order.
+/// Load every enabled entry kind, in catalog order.
 pub fn load_all(cfg: &Config, ctx: &LoadCtx) -> Vec<Entry> {
-    registry()
-        .iter()
-        .filter(|s| s.enabled(cfg))
-        .flat_map(|s| s.load(ctx))
-        .collect()
+    ProjectCatalog::new(
+        cfg,
+        LoadCtx {
+            runner: ctx.runner,
+            theme: ctx.theme,
+            root: ctx.root,
+        },
+    )
+    .load()
 }
 
-/// The kinds the registry defines, in order — the canonical tab order before it
-/// is narrowed to the kinds actually present.
+/// The catalog's canonical tab order before it is narrowed to the kinds
+/// actually present.
 pub fn kinds() -> Vec<Kind> {
-    registry().iter().map(|s| s.kind()).collect()
+    vec![Kind::Agent, Kind::Workspace, Kind::Repo, Kind::Worktree]
 }
 
 #[cfg(test)]
@@ -125,7 +94,7 @@ mod tests {
     }
 
     #[test]
-    fn load_all_returns_sources_in_registry_order() {
+    fn load_all_returns_entries_in_catalog_order() {
         let runner = MockRunner::new()
             .on("herdr agent list", AGENTS)
             .on("herdr workspace list", WORKSPACES)
@@ -141,11 +110,10 @@ mod tests {
 
     #[test]
     fn load_all_skips_a_disabled_source_without_querying_it() {
-        let cfg = Config::from_pairs(&[
-            ("include_agents", "false"),
-            ("include_workspaces", "false"),
-            ("include_worktrees", "false"),
-        ]);
+        let mut cfg = Config::default();
+        cfg.projects.include_agents = false;
+        cfg.projects.include_workspaces = false;
+        cfg.projects.include_worktrees = false;
         let runner = MockRunner::new().on("ghq list", REPOS);
         let theme = Theme::default();
         let e = load_all(&cfg, &ctx(&runner, &theme));
@@ -169,7 +137,7 @@ mod tests {
     }
 
     #[test]
-    fn kinds_are_the_registry_order() {
+    fn kinds_are_in_catalog_order() {
         assert_eq!(
             kinds(),
             vec![Kind::Agent, Kind::Workspace, Kind::Repo, Kind::Worktree]

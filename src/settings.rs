@@ -1,9 +1,8 @@
-//! Settings form: the switcher's TUI vocabulary applied to the plugin's flat
-//! `config.toml`.
+//! Settings form: the switcher's TUI vocabulary applied to its typed,
+//! namespaced `config.toml`.
 //!
-//! This was an fzf list, which made a fixed form behave like a search: a fuzzy prompt
-//! and a match counter. You do not *find* `sort` in this list, you walk to it — so it
-//! is a form now, in the picker's colours and command-bar pills.
+//! Settings are navigated as a fixed form in the picker's colours and
+//! command-bar pills.
 //!
 //! Like the `⌥c` changelog and the remove confirm, it lives **inside** the picker: a
 //! centred, rounded, ink-filled floating card — the `?` cheatsheet's shape — drawn over
@@ -22,7 +21,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use anyhow::Result;
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, MouseButton, MouseEventKind};
+use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, MouseButton, MouseEventKind};
 use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -30,6 +29,7 @@ use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 use ratatui::Frame;
 
 use crate::data::{Config, Theme};
+use crate::surface::{Surface, Transition};
 use crate::tui::{self, Pill};
 
 /// Standalone settings action. Projects also embeds this same form, so both
@@ -38,31 +38,56 @@ pub fn main(cfg: Config, theme: Theme) -> Result<()> {
     let title = theme
         .resolve(&cfg.common.title_color)
         .unwrap_or_else(|| theme.or("peach", Color::Yellow));
-    let mut settings = Settings::new(&cfg);
-    settings.open();
-    let mut terminal = crate::init_terminal();
-    let outcome: Result<()> = (|| {
-        while settings.show {
-            terminal.draw(|frame| draw(frame, frame.area(), &theme, title, &mut settings))?;
-            match event::read()? {
-                Event::Key(key) if key.kind == KeyEventKind::Press => {
-                    settings.on_key(key);
-                }
-                Event::Mouse(m) => match m.kind {
-                    MouseEventKind::ScrollDown => settings.on_wheel(1),
-                    MouseEventKind::ScrollUp => settings.on_wheel(-1),
-                    MouseEventKind::Down(MouseButton::Left) => {
-                        settings.on_click(Position::new(m.column, m.row));
-                    }
-                    _ => {}
-                },
-                _ => {}
+    let mut surface = StandaloneSettings {
+        settings: Settings::new(&cfg),
+        theme,
+        title,
+    };
+    surface.settings.open();
+    crate::surface::run(&mut surface)
+}
+
+struct StandaloneSettings {
+    settings: Settings,
+    theme: Theme,
+    title: Color,
+}
+
+impl Surface for StandaloneSettings {
+    type Output = ();
+
+    fn draw(&mut self, frame: &mut Frame) {
+        draw(
+            frame,
+            frame.area(),
+            &self.theme,
+            self.title,
+            &mut self.settings,
+        );
+    }
+
+    fn on_event(&mut self, event: Event) -> Result<Transition<Self::Output>> {
+        match event {
+            Event::Key(key) if key.kind == KeyEventKind::Press => {
+                self.settings.on_key(key);
             }
+            Event::Mouse(mouse) => match mouse.kind {
+                MouseEventKind::ScrollDown => self.settings.on_wheel(1),
+                MouseEventKind::ScrollUp => self.settings.on_wheel(-1),
+                MouseEventKind::Down(MouseButton::Left) => {
+                    self.settings
+                        .on_click(Position::new(mouse.column, mouse.row));
+                }
+                _ => return Ok(Transition::Wait),
+            },
+            _ => return Ok(Transition::Wait),
         }
-        Ok(())
-    })();
-    crate::restore_terminal();
-    outcome
+        Ok(if self.settings.show {
+            Transition::Redraw
+        } else {
+            Transition::Exit(())
+        })
+    }
 }
 
 /// How Enter changes a setting.
@@ -155,7 +180,7 @@ const SETTINGS: &[Setting] = &[
     Setting {
         group: "Keys",
         key: "keymode",
-        default: "insert",
+        default: "normal",
         hint: "start mode: insert (type-to-filter) or normal (Vim)",
         cycle: Cycle::Ring(&["insert", "normal"]),
     },
@@ -471,7 +496,13 @@ impl Settings {
     /// Seed the values from the picker's already-loaded config, so no second read
     /// of `config.toml` is needed.
     pub fn new(cfg: &Config) -> Self {
-        let values: Vec<String> = SETTINGS.iter().map(|s| cfg.get(s.key, s.default)).collect();
+        let values: Vec<String> = SETTINGS
+            .iter()
+            .map(|setting| {
+                cfg.value_for_cli(setting.key)
+                    .unwrap_or_else(|| setting.default.into())
+            })
+            .collect();
         Settings {
             show: false,
             saved: values.clone(),

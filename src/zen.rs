@@ -494,11 +494,10 @@ pub struct ZenConfig {
 impl ZenConfig {
     pub fn from(cfg: &Config) -> Self {
         Self {
-            width: cfg.get("zen_width", "70").parse().unwrap_or(70),
-            scrim: cfg.bool("zen_scrim", true),
-            color: socket::parse_hex(&cfg.get("zen_scrim_color", "#11111b"))
-                .unwrap_or([0x11, 0x11, 0x1b, 0xff]),
-            chrome: chrome::Level::parse(&cfg.get("zen_chrome", "off")),
+            width: cfg.zen.width,
+            scrim: cfg.zen.scrim,
+            color: socket::parse_hex(&cfg.zen.scrim_color).unwrap_or([0x11, 0x11, 0x1b, 0xff]),
+            chrome: chrome::Level::parse(&cfg.zen.chrome),
         }
     }
 }
@@ -870,7 +869,7 @@ pub fn cli<R: CommandRunner>(runner: &R, args: &[String], cfg: &Config) -> Resul
 // ---------------------------------------------------------------------------
 
 pub fn main(cfg: Config, theme: Theme) -> Result<()> {
-    let normal = cfg.common.keymode == "normal";
+    let normal = cfg.common.keymode == crate::config::KeyMode::Normal;
     picker::run(ZenMode::new(cfg), theme, normal)
 }
 
@@ -943,7 +942,7 @@ impl PickerMode for ZenMode {
                 id: "zen",
                 key: KeyCode::Enter,
                 modifiers: KeyModifiers::NONE,
-                key_label: "↵",
+                key_label: "↵".into(),
                 label: "zen",
                 color_slot: "mauve",
             },
@@ -951,7 +950,7 @@ impl PickerMode for ZenMode {
                 id: "exit",
                 key: KeyCode::Char('x'),
                 modifiers: KeyModifiers::CONTROL,
-                key_label: "^x",
+                key_label: "^x".into(),
                 label: "exit zen",
                 color_slot: "peach",
             },

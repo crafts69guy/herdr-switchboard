@@ -36,7 +36,9 @@ use std::sync::mpsc::{self, Receiver};
 use std::thread;
 
 use anyhow::{anyhow, Context, Result};
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+use crossterm::event::{
+    Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::symbols::Marker;
@@ -49,7 +51,8 @@ use crate::config::Config;
 use crate::data::Theme;
 use crate::runner::{CommandRunner, SystemRunner};
 use crate::state::now;
-use crate::tui::{self, Flow, Pill, SimpleMode};
+use crate::surface::{Surface, Transition};
+use crate::tui::{self, Pill};
 
 /// How urgent a window is, as the provider itself grades it.
 ///
@@ -1126,27 +1129,48 @@ pub struct App {
     bar_zones: Vec<(u16, u16, KeyCode)>,
 }
 
-impl SimpleMode for App {
+impl Surface for App {
+    type Output = ();
+
     fn draw(&mut self, f: &mut Frame) {
-        self.drain();
         draw(f, self);
     }
 
-    fn on_key(&mut self, k: KeyEvent) -> Flow {
+    fn on_event(&mut self, event: Event) -> Result<Transition<Self::Output>> {
+        match event {
+            Event::Key(key) if key.kind == KeyEventKind::Press => Ok(self.on_key(key)),
+            Event::Mouse(mouse) => Ok(self.on_mouse(mouse)),
+            _ => Ok(Transition::Wait),
+        }
+    }
+
+    fn on_tick(&mut self) -> Result<Transition<Self::Output>> {
+        Ok(if self.drain() {
+            Transition::Redraw
+        } else {
+            Transition::Wait
+        })
+    }
+}
+
+impl App {
+    fn on_key(&mut self, k: KeyEvent) -> Transition<()> {
         match k.code {
-            KeyCode::Esc | KeyCode::Char('q') => Flow::Quit,
-            KeyCode::Char('c') if k.modifiers.contains(KeyModifiers::CONTROL) => Flow::Quit,
+            KeyCode::Esc | KeyCode::Char('q') => Transition::Exit(()),
+            KeyCode::Char('c') if k.modifiers.contains(KeyModifiers::CONTROL) => {
+                Transition::Exit(())
+            }
             KeyCode::Char('r') => {
                 self.refresh();
-                Flow::Continue
+                Transition::Redraw
             }
-            _ => Flow::Continue,
+            _ => Transition::Wait,
         }
     }
 
     /// Pills only. There is nothing here to scroll: `draw` lays every card to
     /// fit the pane by construction, so a wheel would have nowhere to move to.
-    fn on_mouse(&mut self, m: MouseEvent) -> Flow {
+    fn on_mouse(&mut self, m: MouseEvent) -> Transition<()> {
         if let MouseEventKind::Down(MouseButton::Left) = m.kind {
             if let Some(code) =
                 tui::zone_at(&self.bar_zones, self.bar_row, (m.column, m.row).into())
@@ -1154,20 +1178,22 @@ impl SimpleMode for App {
                 return self.on_key(KeyEvent::from(code));
             }
         }
-        Flow::Continue
+        Transition::Wait
     }
-}
 
-impl App {
     /// Collect whatever the worker has finished. Non-blocking: the draw loop
     /// wakes every 200ms anyway, so a card fills itself in within a frame of the
     /// request landing.
-    fn drain(&mut self) {
-        let Some(inbox) = &self.inbox else { return };
+    fn drain(&mut self) -> bool {
+        let Some(inbox) = &self.inbox else {
+            return false;
+        };
         let mut done = false;
+        let mut changed = false;
         loop {
             match inbox.try_recv() {
                 Ok((index, result)) => {
+                    changed = true;
                     let name = self.slots[index].name().to_string();
                     self.slots[index] = match result {
                         Ok(report) => Slot::Ready(report),
@@ -1184,6 +1210,7 @@ impl App {
         if done {
             self.inbox = None;
         }
+        changed || done
     }
 
     /// Re-read everything: offline providers inline, networked ones on a worker.
@@ -1650,7 +1677,7 @@ pub fn main(cfg: Config, theme: Theme) -> Result<()> {
     // Load before claiming the terminal, like the projects picker: the offline
     // provider is already on screen in the first frame.
     app.refresh();
-    tui::run_simple(&mut app)
+    crate::surface::run(&mut app)
 }
 
 #[cfg(test)]

@@ -4,17 +4,19 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A [herdr](https://herdr.dev) plugin providing a unified switcher over three sources — running
-herdr **agents**, open herdr **workspaces**, and **ghq repos** — in one fuzzy picker. It is a
+A [herdr](https://herdr.dev) plugin providing a unified switcher over running herdr **agents**,
+open herdr **workspaces**, **ghq repos**, and linked Git **worktrees** in one fuzzy picker. It is a
 Rust TUI (ratatui + nucleo), not an fzf wrapper. Every surface is a mode of the same binary,
 selected by argv (`--menu`, `--agents`, `--usage`, `--commands`, `--ports`, `--zen`,
 `--changelog`, `--settings`, `--git`; no flag is the switcher); the settings form is **also** a
-floating overlay inside the switcher (⌥,), not only a pane. **`--usage` is the one mode that
-makes a network request and the one that reads a credential** — both fenced, see the constraints
-below; every other mode is strictly offline. The **git menu is a herdr pane of its own** (`Prefix + g` →
+floating overlay inside the switcher (⌥,), not only a pane. **`--usage` is the only mode that reads
+a credential and the only in-process HTTP client** — both fenced, see the constraints below. Git
+can fetch pull requests through `gh` only when that row is activated, and update checks use a
+detached `git ls-remote` child. The **git menu is a herdr pane of its own** (`Prefix + g` →
 `bin/git.sh` → `--git`), not an overlay on the switcher, and its selection `exec`s a review tool
 over that pane. The clone flow and the review launcher (`bin/review.sh`, which runs
-`tuicr`/`lazygit`) are the only bash that reaches a terminal. The plugin needs no fzf.
+`tuicr`/`lazygit`), the guarded updater, and `bin/picker.sh`'s one-time bootstrap feedback are the
+Bash terminal owners. The plugin needs no fzf.
 See `README.md` for user-facing keybindings and configuration.
 
 ## Commands
@@ -28,6 +30,8 @@ cargo fmt --check
 cargo clippy --all-targets -- -D warnings    # warnings are failures
 bash tests/manifest_spec.sh                  # manifest/entrypoint contract, version sync, bash syntax
 bash tests/update_guard_spec.sh              # the update guard, with herdr stubbed via HERDR_BIN_PATH
+bash tests/bootstrap_spec.sh                 # release target, checksum, and atomic-install contract
+bash tests/menu_handoff_spec.sh              # central-menu handoff ordering and process lifetime
 bash bin/release.sh 0.5.0                    # cut a release (gates, bump, changelog, tag, gh release)
 
 herdr plugin link /path/to/herdr-switchboard         # install this checkout for manual testing
@@ -35,8 +39,9 @@ herdr server reload-config                   # after touching keybindings/config
 herdr plugin config-dir switchboard          # where the runtime config.toml lives
 ```
 
-There is no test runner for the bash layer beyond `tests/manifest_spec.sh`. Changes to overlay
-layout, keybindings, or herdr CLI calls need manual exercise in a real herdr session.
+The four shell specs cover the manifest/entrypoints, update guard, bootstrap installer, and central
+menu handoff. Layout, keybinding, or Herdr CLI changes still need manual exercise in a real Herdr
+session in addition to Rust render tests.
 
 ## Architecture
 
@@ -53,9 +58,10 @@ layout, keybindings, or herdr CLI calls need manual exercise in a real herdr ses
    `--prepare` resolves the binary without launching it.
 3. The TUI (`src/`) loads the sources **synchronously, before claiming the terminal** (~35ms), so
    the first frame is the loaded list; an empty result hands the pane to `bin/get.sh` without ever
-   taking the screen. It then runs the picker event loop and — **after `ratatui::restore()`** —
-   dispatches the accepted action. Interactive accepts (clone prompt, remove confirmation, `ghq
-get -u` output) deliberately run on the torn-down terminal, not inside the TUI.
+   taking the screen. `surface::run` then hosts the Projects surface and guarantees terminal
+   restoration before returning its typed output. Interactive accepts (clone prompt, remove
+   confirmation, `ghq get -u` output) deliberately run on the restored terminal, not inside the
+   TUI.
 
 **Why the origin pane matters:** `split` and `pane` targets act on the captured `SWITCHBOARD_ORIGIN_PANE_ID`.
 The overlay pane is _not_ the user's pane. Never guess or infer a pane/workspace/agent id — every id
@@ -63,34 +69,38 @@ must come from `herdr agent list`, `herdr workspace list`, or the captured origi
 
 **Module split (`src/`):**
 
-- `main.rs` — `App` (a thin shell over four sub-structs: `Picker` / `PreviewState` /
-  `ChangelogState` / `HitZones`), `handle_key` → `Flow` (Continue/Quit/Accept) which resolves a
-  chord through the keymap and runs `apply_action`, and `browse_order`
+- `main.rs` — the Projects composition root and argv dispatcher: `App`, `ProjectsSurface`,
+  `handle_key` → `Flow` (Continue/Quit/Accept), and `browse_order`
 - `keymap.rs` — the `Chord → Action` tables (Insert + Normal), built from defaults and overridden
-  by `keys.*` config lines; `Mode` (Insert/Normal) and the `keymode = modal` flag. `chord_of`
+  by `[keys.projects]`; `Mode` (Insert/Normal) and the typed `common.keymode`. `chord_of`
   reduces a key event; `parse_chord` reads a config spec
-- `source.rs` — the `Source` registry (kind / enabled / load) that `load_all` folds; adding a
-  source's data is a new impl + one registry line. Preview/dispatch stay per-kind matches (a cycle
-  otherwise), guarded by the compiler
+- `source.rs` — `ProjectCatalog`, the explicit load policy for agents, workspaces, repos, and
+  worktrees. Per-source parsing remains in `data`; preview/dispatch stay compiler-checked per-kind
+  matches
+- `surface.rs` — the universal terminal host. Every surface implements `Surface`; this module alone
+  owns terminal claim/restore, mouse capture, event polling, ticks, redraw scheduling, and the
+  restore-before-effect invariant
 - `splash.rs` — one static ASCII cat frame, drawn entirely with terminal cells. The `--git` mode
   draws it and `exec`s tuicr over it, because tuicr can take 0.9–1.7s to read a large diff before
   its own first frame. No animation, no floor, nothing to cancel — all that is left of `startup.rs`
 - `trace.rs` — opt-in perf tracing behind `SWITCHBOARD_TRACE`, appended to `$SWITCHBOARD_TRACE_FILE` or
   `state_dir()/trace.log`. **Never stdout/stderr**: the TUI owns the terminal for its whole life
-- `runner.rs` — the `CommandRunner` trait (`SystemRunner` in prod, `MockRunner` in tests) every
-  herdr/ghq/git call routes through, which is what makes the IO edge testable
-- `data.rs` — `Theme`, `Config`, `Entry`, and the per-source loaders `load_agents` /
-  `load_workspaces` / `load_repos`
+- `runner.rs` — the `CommandRunner` interface (`SystemRunner` adapter in production and
+  `MockRunner` adapter in tests) used by Herdr/ghq/git process calls
+- `config.rs` — typed namespaced config, validation, defaults, and the finite `config get`
+  compatibility seam consumed by Bash
+- `data.rs` — `Theme`, `Entry`, browse types, and the per-source response loaders
 - `markdown.rs` — the changelog/README markdown (`Block`, `parse`, `render`, `spans`,
   `flatten_links`, `wrap`), shared by `changelog`, `ui`, and `preview`
 - `state.rs` — `state_dir()` + `now()`, shared by `history` and `update`
-- `tui.rs` — the shared chrome: `boxed()` (the one rounded-panel helper — rounded border in
-  `overlay0`, caption in `title_color`), the command-bar `pill_row` widget, and `run_simple`
-  (the changelog event loop; the picker keeps its own loop for the preview worker + mouse)
-- `ui.rs` — three-row layout: Search (3) / body (list + optional preview) / full-width command bar (1),
-  built from `tui::boxed`. It also draws the in-picker overlays: the `⌥c`
+- `tui.rs` — rendering vocabulary only: `boxed()` (the one rounded-panel helper — rounded border in
+  `overlay0`, caption in `title_color`) and the command-bar `pill_row` widget
+- `ui.rs` — responsive Projects Picker layout built from `tui::boxed`: wide panes show Context /
+  Navigator / Inspector, medium panes show Navigator / Inspector, and compact panes prioritize
+  Navigator; Search and the full-width bar remain fixed rows. It also draws the in-picker `⌥c`
   changelog, the `?` cheatsheet, and — via `settings::draw` — the `⌥,` settings form
-- `picker.rs` — the shared engine behind the **mode** pickers (`menu` / `commands` / `ports`):
+- `picker.rs` — the shared engine behind the **mode** pickers (`menu` / `agents` / `commands` /
+  `ports` / `zen`):
   the `PickerMode` trait, the fuzzy/query state, and a `draw` that renders the same three
   panels as `ui.rs` through `tui::boxed`. Its chrome is not free-styled — see the
   constraint below
@@ -98,12 +108,12 @@ must come from `herdr agent list`, `herdr workspace list`, or the captured origi
   agents and workspaces from herdr's JSON with `serde_json` and styles everything from
   `Theme`; shells out to `bin/preview.sh` only for the repo file tree, which arrives as
   ANSI already and passes through `ansi-to-tui`
-- `git.rs` — the **whole `--git` mode**: `main()` (repo from the pane's cwd, menu, event loop,
+- `git.rs` — the **whole `--git` mode**: `main()` (repo from the pane's cwd, hosted surface,
   preroll, `exec`), the review menu (worktree/branch/commits/all-files/pull-request/saved-reviews/
   lazygit + `menu.conf` customs), the generic `View::List` sub-list over `Vec<Row>` shared by the
   PR and saved-review pickers, and the IO helpers (`detect_base_branch`, `load_rows`,
-  `parse_menu_conf`). `on_key` stays IO-free by returning a `Step`: the caller runs the fetch and
-  hands the rows back through `show_list`
+  `parse_menu_conf`). `on_key` stays IO-free by returning a `Step`; `GitSurface` runs list/count
+  effects on background adapters and applies their typed results on a tick
 - `action.rs` — `Accept` enum → herdr CLI verbs, plus `run_review` (`exec`s `bin/review.sh`)
 - `history.rs` — recency state at `$XDG_STATE_HOME/herdr-switchboard/recent.tsv`, atomic write, cap 200
 - `settings.rs` — the `Settings` overlay: the `SETTINGS` form, its cycle rings, and `write_setting`,
@@ -129,8 +139,8 @@ must come from `herdr agent list`, `herdr workspace list`, or the captured origi
 - `usage.rs` — the whole `--usage` pane: the `Provider` registry (Codex reads its rate limits off
   the tail of the newest rollout JSONL; Claude asks the endpoint behind the in-session `/usage`),
   the braille donut (`donut_points` is pure and tested), the per-window bars and `Fact` rows, and
-  the `SimpleMode` popup. The only network call and the only credential read in the plugin; see the
-  constraints below
+  its `Surface` implementation. It is the only credential-reading surface and the only in-process
+  HTTP client; see the constraints below
 - `update.rs` — the `--update-check` mode plus the cache the picker reads
   (`$XDG_STATE_HOME/herdr-switchboard/update.tsv`, `checked_at<TAB>latest`, 24h TTL)
 
@@ -169,37 +179,33 @@ order so the list stays stable.
   and a popup would hand it a tiny one. The picker knows nothing about git: there is no `⌥g`, no
   `Accept::Git`, no `App::git`. Two entry points would drift apart, and only one of them can be
   the fast one. `tuicr` is a TUI — never run it non-interactively (it blocks); only ever in a pane.
-- **The picker loads its sources synchronously, before `init_terminal`.** There is no worker, no
-  channel, no minimum-visible floor: `load_all` costs ~35ms, and the 420ms floor the old animation
-  imposed *was* the first-list latency. An empty result must be detected here too, before the
-  terminal is claimed, so the handoff to `bin/get.sh` never takes the screen and gives it back.
-  Do not reintroduce a floor "so the cat is visible" — the cat is what was removed.
-- **A list fetch runs outside `Git::on_key`.** `on_key` returns a `Step`; `Step::Load(kind)` asks
-  the caller to run `load_rows` and hand the result to `show_list`. That is what keeps the entire
-  key surface IO-free and unit-testable through `MockRunner`, and it is why `gh pr list` talking to
-  GitHub leaves the menu on screen rather than freezing a half-drawn list.
+- **The picker loads its sources synchronously, before `surface::run` claims the terminal.** There
+  is no worker, channel, or minimum-visible floor: `load_all` costs ~35ms, and the 420ms floor the
+  previous animation imposed *was* the first-list latency. An empty result must be detected here
+  too, before terminal claim, so the handoff to `bin/get.sh` never takes the screen and gives it
+  back. Do not reintroduce a floor for visual feedback.
+- **A list fetch runs outside `Git::on_key` and off the input thread.** `on_key` returns a `Step`;
+  `GitSurface` turns `Step::Load` and `Step::CountFiles` into typed background effects, then applies
+  their results from `on_tick`. That keeps the key interface IO-free and unit-testable through
+  `MockRunner`, while `gh pr list` leaves the menu responsive instead of freezing a half-drawn list.
 - **Nothing writes to tuicr's config.** The theme is a whole file that
   [hue-theme](https://github.com/crafts69guy/hue-theme) owns
   (`~/.config/tuicr/themes/hue-<mood>.toml`, 41 keys, none optional). tuicr **exits 2** on a theme
   it cannot fully resolve, and `--theme` on a mismatched name takes the whole review path down —
   so `bin/review.sh` never passes `--theme` and `ensure_tuicr` only checks the binary exists.
-- **The bash layer delegates open + config to the Rust binary; it no longer mirrors them.** The
+- **Bash delegates open + config to the Rust binary.** The
   clone flow (`bin/get.sh`) opens a repo with `herdr-switchboard open --target … --path … --origin …
   --label …` and reads settings with `herdr-switchboard config get <key> [default]`, so the herdr
   open verbs (`src/action.rs::open_target`) and typed config reader (`Config::load`) live in one
   place. `bin/lib.sh` keeps `ensure_built` (build-on-demand, shared by the picker and clone flow),
   `toml_get` (used only by `configure_notifications`, the pre-build notification path that must not
-  depend on a cargo build), and the pane-context/JSON helpers. The old bash `open_repo`/`focus_*`/
-  `theme_color`/`hex_rgb` are gone. **A change to how a target opens now lands only in `action.rs`.**
-- **Config parsing is intentionally flat.** `Config::load` (`src/data.rs`) is the canonical
-  hand-rolled line parser — one `key = value` per line, no sections, no nesting — and bash reads
-  settings through it via `herdr-switchboard config get`. `toml_get` (`bin/lib.sh`) survives only
-  for `configure_notifications`, which runs before the binary is guaranteed built; it must stay
-  format-compatible. Do not add a TOML crate or nested keys without changing `Config::load`, the
-  writer in `src/settings.rs` (`write_setting`, which preserves comments and hand-added keys), and
-  the `toml_get` mirror. Theme parsing (`[theme.custom]` from herdr's config) is a separate
-  hand-rolled scanner in both `Theme::load` and… nowhere in bash any more (the bash `theme_color`
-  was removed with the other dead mirrors).
+  depend on a cargo build), and the pane-context/JSON helpers. **A change to how a target opens
+  lands only in `action.rs`.**
+- **Configuration is typed and namespaced.** `config.rs` deserializes the section structs with
+  `deny_unknown_fields`; Rust code reads those fields directly. `Config::value_for_cli` is the
+  deliberately narrow compatibility seam for Bash's `config get` calls, not an internal
+  lookup interface. `settings.rs` writes namespaced values through `toml_edit`, preserving comments
+  and hand-added keys before validating the complete result.
 - **A click zone is measured by the loop that draws the thing.** `tab_zones` and
   `footer_zones` (`src/ui.rs`) are built inside the same loops that lay out the tab strip
   and the command bar, because a zone computed separately drifts the moment a label
@@ -213,8 +219,8 @@ order so the list stays stable.
   test in `main.rs` fires it.
 - **Keys are a config-driven keymap, not hardcoded `match` arms.** `handle_key` resolves a
   `Chord` through `App::keymap` (`src/keymap.rs`) and runs `apply_action`. Two ordered tables
-  (Insert + Normal) plus a `␣` leader table; `keymode` picks the start mode and `esc` toggles
-  Insert↔Normal. `keys.<action>` config lines rebind (first chord wins as the shown one).
+  (Insert + Normal) plus a `␣` leader table; typed `common.keymode` defaults to Normal and `esc`
+  toggles Insert↔Normal. `[keys.projects]` entries rebind actions (first chord wins as the shown one).
   **The footer (`draw_footer`) and the cheatsheet (`draw_help`) render from the keymap via
   `Keymap::label_for(mode, action)`**, so both re-label per mode and per remap — never hardcode a
   key cap in either; add the action to the curated list and it picks up its live chord. A row
@@ -222,17 +228,16 @@ order so the list stays stable.
   `␣g`. Adding an action is one row in `keymap::NAMES`, its default chord in a table, and an
   `apply_action` arm; a new `Accept` also needs the footer curated list and `dispatch`. Cheatsheet
   descriptions must still fit `HELP_DESC`.
-- **The mouse is turned on by hand, and must be turned off on every exit path.** `main.rs`
+- **The mouse is turned on by hand, and must be turned off on every exit path.** `surface.rs`
   writes `?1000h`/`?1006h` itself rather than using crossterm's `EnableMouseCapture`, which
   also enables any-event tracking (`?1003h`) — every pointer move would wake the loop into
   a redraw for an event we discard. `?1000h` reports the wheel *and* buttons, which is
   exactly what every surface consumes; drags stay herdr's, which runs with
-  `mouse_capture = true`. `init_terminal`/`restore_terminal` pair the escapes, and
-  `init_terminal` chains the disable ahead of the panic hook `ratatui::init` installs,
+  `mouse_capture = true`. The universal host pairs claim/restore and
+  chains the disable ahead of the panic hook `ratatui::init` installs,
   since that hook restores the screen but knows nothing about the mouse. Leaving it on
-  drops mouse escapes into the user's shell. **Every loop must claim the terminal through
-  `init_terminal`, never `ratatui::init`** — `tui::run_simple` called the latter, which is
-  why `--usage` and `--changelog` shipped with no mouse at all.
+  drops mouse escapes into the user's shell. **Every new terminal mode implements `Surface` and
+  runs through `surface::run`; it never calls `ratatui::init` or reads crossterm events itself.**
 - **A click selects; a click on the already-selected row acts.** Terminals report no
   double-click (crossterm gives `Down` only), so single-click-to-run would let a stray
   click `exec` tuicr over a pane or write a setting, and a timestamp heuristic would put
@@ -246,8 +251,8 @@ order so the list stays stable.
   `preview_scroll` mean what it says and `preview_len`/`preview_rows` bound it correctly.
   `draw_preview` therefore has no `Wrap`. Re-adding one, or emitting an unclipped line,
   breaks the scroll silently: the offset drifts from the content instead of erroring. The
-  pane's width reaches the worker through `App::preview_width`, published by `ui::draw`,
-  which is why `run` draws _before_ it calls `request_preview`.
+  pane's width reaches the worker through `App::preview_width`, published by `ui::draw`, which is
+  why `ProjectsSurface::after_draw` requests a preview only after the host has drawn geometry.
 - **Nothing uses `jq` — keep it that way.** No code path shells out to it: the bash layer reads
   herdr's JSON with the awk-based `json_string_value` / `json_bool_value` in `bin/lib.sh`, and the
   Rust layer uses `serde_json` (`data.rs`, `preview.rs`). It is not a documented requirement, so a
@@ -302,17 +307,20 @@ order so the list stays stable.
   section to a dated one and tags. The tag workflow builds four native archives, generates
   `SHA256SUMS`, and publishes that section verbatim after all targets pass. Commits are not
   Conventional Commits and nothing comes from `git log` — an empty `[Unreleased]` aborts.
-- **The picker never makes a network request; `usage` is the single exception.** `update.rs`
-  spawns a detached `--update-check` child (own process group, no stdio) that runs `git ls-remote`
-  and writes a cache; the picker only ever reads that file, so the badge lands on a _later_ launch.
+- **No launch or navigation hot path waits on the network.** `update.rs` spawns a detached
+  `--update-check` child (own process group, no stdio) that runs `git ls-remote` and writes a cache;
+  the Projects Picker only reads that file, so the badge lands on a _later_ launch.
   Do not "simplify" this into a thread: the picker frequently exits in under a second and the fetch
-  takes several, so the cache would never be written. `git ls-remote` over the GitHub API on
-  purpose — no `jq`, no 60/hour unauthenticated rate limit, no auth. Everything fails silently.
+  takes several, so the cache would never be written. `git ls-remote` uses Git's HTTPS transport
+  on purpose — no `jq`, no 60/hour unauthenticated API limit, no auth. Everything fails silently.
+  Git's pull-request row may call `gh pr list`, but only after explicit activation and through a
+  background effect. Clone/update commands may fetch because the user invoked that work directly.
   The `usage` pane is allowed to fetch *while you watch* because it exists to answer a question
   whose only correct answer is the current one, and it is a pane you opened on purpose rather than
   a hot path — but it still never blocks the first frame: the offline provider is loaded before
-  `init_terminal`, the networked one runs on a worker thread bounded by `usage.timeout_ms`, and its
-  card sits in `Slot::Loading` until the answer arrives. Nothing else may follow it.
+  the terminal is claimed, the networked one runs on a worker thread bounded by
+  `usage.timeout_ms`, and its card sits in `Slot::Loading` until the answer arrives. No other
+  surface may read a credential or add an in-process HTTP client.
 - **`usage` is the only code that reads a credential, and the token must never reach argv.**
   `argv` is readable through `ps` by every process the user owns, for the whole life of the call,
   so `Claude::fetch` hands `curl` its `Authorization` header through stdin as a `--config -` file.

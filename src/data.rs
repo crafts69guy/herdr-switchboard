@@ -224,8 +224,8 @@ pub fn state_color(theme: &Theme, status: &str) -> Color {
     }
 }
 
-/// Running herdr agents as entries. The include toggle lives on the source
-/// (`AgentSource::enabled`), so this just loads.
+/// Running herdr agents as entries. `ProjectCatalog` owns the inclusion policy,
+/// so this function only parses the command output.
 pub fn load_agents(runner: &dyn CommandRunner, theme: &Theme) -> Vec<Entry> {
     let mut entries = Vec::new();
     if let Some(json) = runner.capture("herdr", &["agent", "list"]) {

@@ -2,7 +2,7 @@
 # Every key is optional. Settings edits these same namespaced tables.
 
 [common]
-keymode = "insert" # insert | normal
+keymode = "normal" # normal | insert
 title_color = "peach"
 transparency = "auto"
 update_check = true
@@ -78,6 +78,12 @@ alert_percent = 85
 
 # Picker-specific remaps. Projects keeps its full existing action vocabulary;
 # Commands and Ports use the action ids printed in their footer.
+[keys.projects]
+# open = "enter"
+# tab = "ctrl-t"
+# split = "ctrl-v"
+# down = "ctrl-j,ctrl-n"
+
 [keys.agents]
 # pane = "enter"
 # tab = "ctrl-t"

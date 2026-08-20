@@ -97,7 +97,7 @@ fn fetch_latest() -> Option<String> {
 /// caches a plugin's manifest at link/install time and `reload-config` does not re-read
 /// it, so that registry reported 0.3.3 for a 0.5.0 checkout.
 pub fn available(cfg: &Config) -> Option<String> {
-    if !cfg.bool("update_check", true) {
+    if !cfg.common.update_check {
         return None;
     }
     let (_, latest) = read_cache()?;
@@ -108,7 +108,7 @@ pub fn available(cfg: &Config) -> Option<String> {
 
 /// Kick off a refresh, if it is due, in a process that outlives this one.
 pub fn spawn_refresh_if_stale(cfg: &Config) {
-    if !cfg.bool("update_check", true) {
+    if !cfg.common.update_check {
         return;
     }
     if let Some((at, _)) = read_cache() {

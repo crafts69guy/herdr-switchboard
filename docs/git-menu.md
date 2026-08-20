@@ -11,8 +11,10 @@ command = "switchboard.git"
 description = "Git menu"
 ```
 
-Use arrow keys to select, `enter` to run, a mnemonic letter to jump directly to a row, and `esc` to
+Use arrow keys to select, `enter` to run, a mnemonic letter to run its row directly, and `esc` to
 close. The selected tool takes over the Git pane; quitting it returns to the original terminal.
+Pull-request, saved-review, conflict, and tracked-file-count work runs in the background, so the
+input surface remains responsive while those commands answer.
 
 | Key | Row | Tool invocation |
 | --- | --- | --- |

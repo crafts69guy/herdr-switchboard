@@ -665,7 +665,7 @@ fn parse_fish(text: &str) -> Vec<Import> {
 }
 
 pub fn main(cfg: Config, theme: Theme) -> Result<()> {
-    let normal = cfg.common.keymode == "normal";
+    let normal = cfg.common.keymode == crate::config::KeyMode::Normal;
     picker::run(CommandMode::new(&cfg)?, theme, normal)
 }
 
@@ -752,7 +752,7 @@ impl PickerMode for CommandMode {
                 id: "sort",
                 key: KeyCode::Char('s'),
                 modifiers: KeyModifiers::ALT,
-                key_label: "⌥s",
+                key_label: "⌥s".into(),
                 label: "sort",
                 color_slot: "mauve",
             },
@@ -760,7 +760,7 @@ impl PickerMode for CommandMode {
                 id: "fill",
                 key: KeyCode::Enter,
                 modifiers: KeyModifiers::NONE,
-                key_label: "↵",
+                key_label: "↵".into(),
                 label: "fill",
                 color_slot: "blue",
             },
@@ -768,7 +768,7 @@ impl PickerMode for CommandMode {
                 id: "run",
                 key: KeyCode::Enter,
                 modifiers: KeyModifiers::CONTROL,
-                key_label: "^↵",
+                key_label: "^↵".into(),
                 label: "run",
                 color_slot: "green",
             },
@@ -776,7 +776,7 @@ impl PickerMode for CommandMode {
                 id: "run_cwd",
                 key: KeyCode::Enter,
                 modifiers: KeyModifiers::ALT,
-                key_label: "⌥↵",
+                key_label: "⌥↵".into(),
                 label: "run cwd",
                 color_slot: "teal",
             },
@@ -784,7 +784,7 @@ impl PickerMode for CommandMode {
                 id: "copy",
                 key: KeyCode::Char('y'),
                 modifiers: KeyModifiers::CONTROL,
-                key_label: "^y",
+                key_label: "^y".into(),
                 label: "copy",
                 color_slot: "peach",
             },
@@ -792,7 +792,7 @@ impl PickerMode for CommandMode {
                 id: "forget",
                 key: KeyCode::Char('x'),
                 modifiers: KeyModifiers::CONTROL,
-                key_label: "^x",
+                key_label: "^x".into(),
                 label: "forget",
                 color_slot: "red",
             },

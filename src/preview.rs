@@ -144,7 +144,7 @@ impl Ink {
             accent: t.or("accent", Color::Cyan),
             // Resolved the way `App::new` resolves it, from the same setting.
             title: t
-                .resolve(&cfg.get("title_color", "peach"))
+                .resolve(&cfg.common.title_color)
                 .unwrap_or_else(|| t.or("accent", Color::Cyan)),
         }
     }
@@ -694,7 +694,7 @@ fn repo_card(
     lines.push(rule("files", width, p));
     lines.extend(tree(runner, dir, script_dir, width));
 
-    if cfg.bool("preview_readme", true) {
+    if cfg.projects.preview_readme {
         if let Some((name, body)) = readme(dir) {
             lines.push(Line::raw(""));
             lines.push(rule(&name, width, p));

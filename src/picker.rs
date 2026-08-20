@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use crossterm::event::{
-    self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
+    Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
 };
 use nucleo_matcher::{Config as MatcherConfig, Matcher};
 use ratatui::layout::{Constraint, Layout, Position, Rect};
@@ -15,7 +15,9 @@ use ratatui::widgets::{Clear, List, ListItem, ListState, Paragraph};
 use ratatui::Frame;
 
 use crate::data::Theme;
+use crate::keymap::parse_chord;
 use crate::query::{CompiledQuery, Document, FieldSchema, QueryDiagnostic};
+use crate::surface::{Surface, Transition};
 use crate::tui::{self, Pill};
 
 #[derive(Clone, Debug)]
@@ -37,7 +39,7 @@ pub struct ActionSpec {
     pub id: &'static str,
     pub key: KeyCode,
     pub modifiers: KeyModifiers,
-    pub key_label: &'static str,
+    pub key_label: String,
     pub label: &'static str,
     pub color_slot: &'static str,
 }
@@ -214,8 +216,191 @@ impl State {
 fn title_color(theme: &Theme) -> Color {
     crate::config::Config::try_load()
         .ok()
-        .and_then(|cfg| theme.resolve(&cfg.get("title_color", "peach")))
+        .and_then(|cfg| theme.resolve(&cfg.common.title_color))
         .unwrap_or_else(|| theme.or("peach", Color::Yellow))
+}
+
+enum PickerExit {
+    Close,
+    Invoke(String, &'static str),
+}
+
+struct PickerSurface<'a, M> {
+    mode: &'a mut M,
+    theme: &'a Theme,
+    title: Color,
+    actions: &'a [ActionSpec],
+    schema: &'a FieldSchema,
+    state: &'a mut State,
+}
+
+impl<M: PickerMode> Surface for PickerSurface<'_, M> {
+    type Output = PickerExit;
+
+    fn draw(&mut self, frame: &mut Frame) {
+        draw(
+            frame,
+            self.mode,
+            self.theme,
+            self.title,
+            self.actions,
+            self.state,
+        );
+    }
+
+    fn tick_rate(&self) -> Duration {
+        Duration::from_millis(50)
+    }
+
+    fn on_tick(&mut self) -> Result<Transition<Self::Output>> {
+        let Some(snapshot) = self.mode.poll() else {
+            return Ok(Transition::Wait);
+        };
+        match snapshot {
+            Ok(items) => {
+                self.state.runtime_error = None;
+                self.state.replace(items, self.schema);
+            }
+            Err(error) => self.state.runtime_error = Some(error.to_string()),
+        }
+        Ok(Transition::Redraw)
+    }
+
+    fn on_event(&mut self, event: Event) -> Result<Transition<Self::Output>> {
+        match event {
+            Event::Key(key) if key.kind == KeyEventKind::Press => self.on_key(key),
+            Event::Mouse(mouse) => {
+                let at: Position = (mouse.column, mouse.row).into();
+                match mouse.kind {
+                    MouseEventKind::ScrollDown if self.state.preview_area.contains(at) => {
+                        self.state.preview_scroll = self.state.preview_scroll.saturating_add(3);
+                    }
+                    MouseEventKind::ScrollUp if self.state.preview_area.contains(at) => {
+                        self.state.preview_scroll = self.state.preview_scroll.saturating_sub(3);
+                    }
+                    MouseEventKind::ScrollDown => self.state.move_selection(1),
+                    MouseEventKind::ScrollUp => self.state.move_selection(-1),
+                    MouseEventKind::Down(MouseButton::Left) => {
+                        if let Some(act) =
+                            tui::zone_at(&self.state.bar_zones, self.state.bar_row, at)
+                        {
+                            return Ok(match act {
+                                PillAct::Close => Transition::Exit(PickerExit::Close),
+                                PillAct::Settings => Transition::Exit(PickerExit::Invoke(
+                                    String::new(),
+                                    "__settings",
+                                )),
+                                PillAct::Run(id) => self.invoke_selected(id),
+                            });
+                        }
+                        if self.state.list_area.contains(at) {
+                            let relative =
+                                mouse.row.saturating_sub(self.state.list_area.y) as usize;
+                            let index = self.state.list_state.offset() + relative;
+                            if index < self.state.filtered.len() {
+                                if index == self.state.selected {
+                                    if let Some(action) =
+                                        first_enabled(self.actions, self.mode, self.state)
+                                    {
+                                        return Ok(self.invoke_selected(action));
+                                    }
+                                }
+                                self.state.selected = index;
+                            }
+                        }
+                    }
+                    _ => return Ok(Transition::Wait),
+                }
+                Ok(Transition::Redraw)
+            }
+            _ => Ok(Transition::Wait),
+        }
+    }
+}
+
+impl<M: PickerMode> PickerSurface<'_, M> {
+    fn invoke_selected(&mut self, action: &'static str) -> Transition<PickerExit> {
+        let Some(item) = self.state.selected_item() else {
+            return Transition::Wait;
+        };
+        if let Some(reason) = self.mode.action_disabled_reason(&item.id, action) {
+            self.state.runtime_error = Some(reason);
+            return Transition::Redraw;
+        }
+        Transition::Exit(PickerExit::Invoke(item.id.clone(), action))
+    }
+
+    fn on_key(&mut self, key: KeyEvent) -> Result<Transition<PickerExit>> {
+        if self.state.runtime_error.take().is_some() {
+            return Ok(Transition::Redraw);
+        }
+        if key.modifiers == KeyModifiers::ALT && key.code == KeyCode::Char(',') {
+            return Ok(Transition::Exit(PickerExit::Invoke(
+                String::new(),
+                "__settings",
+            )));
+        }
+        if key.modifiers == KeyModifiers::ALT && key.code == KeyCode::Char('j') {
+            self.state.preview_scroll = self.state.preview_scroll.saturating_add(1);
+            return Ok(Transition::Redraw);
+        }
+        if key.modifiers == KeyModifiers::ALT && key.code == KeyCode::Char('k') {
+            self.state.preview_scroll = self.state.preview_scroll.saturating_sub(1);
+            return Ok(Transition::Redraw);
+        }
+        if let Some(action) = self.actions.iter().find(|action| action.matches(key)) {
+            if self.state.diagnostic.is_none() {
+                return Ok(self.invoke_selected(action.id));
+            }
+            return Ok(Transition::Wait);
+        }
+
+        match self.state.input_mode {
+            InputMode::Insert => match key.code {
+                KeyCode::Esc => self.state.input_mode = InputMode::Normal,
+                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    return Ok(Transition::Exit(PickerExit::Close));
+                }
+                KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    self.state.query.clear();
+                    self.state.recompute(self.schema);
+                }
+                KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    delete_word(&mut self.state.query);
+                    self.state.recompute(self.schema);
+                }
+                KeyCode::Char(character)
+                    if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT =>
+                {
+                    self.state.query.push(character);
+                    self.state.recompute(self.schema);
+                }
+                KeyCode::Backspace => {
+                    self.state.query.pop();
+                    self.state.recompute(self.schema);
+                }
+                KeyCode::Down => self.state.move_selection(1),
+                KeyCode::Up => self.state.move_selection(-1),
+                _ => return Ok(Transition::Wait),
+            },
+            InputMode::Normal => match key.code {
+                KeyCode::Esc | KeyCode::Char('q') => {
+                    return Ok(Transition::Exit(PickerExit::Close));
+                }
+                KeyCode::Char('i') | KeyCode::Char('/') => {
+                    self.state.input_mode = InputMode::Insert;
+                }
+                KeyCode::Char('j') | KeyCode::Down => self.state.move_selection(1),
+                KeyCode::Char('k') | KeyCode::Up => self.state.move_selection(-1),
+                KeyCode::Char('g') | KeyCode::Home => self.state.selected = 0,
+                KeyCode::Char('G') | KeyCode::End => {
+                    self.state.selected = self.state.filtered.len().saturating_sub(1);
+                }
+                _ => return Ok(Transition::Wait),
+            },
+        }
+        Ok(Transition::Redraw)
+    }
 }
 
 pub fn run<M: PickerMode>(mut mode: M, mut theme: Theme, normal: bool) -> Result<()> {
@@ -226,159 +411,15 @@ pub fn run<M: PickerMode>(mut mode: M, mut theme: Theme, normal: bool) -> Result
     loop {
         let mut actions = mode.actions();
         apply_bindings(&mut actions, &mode.key_bindings());
-        let mut terminal = crate::init_terminal();
-        let outcome: Result<Option<(String, &'static str)>> = (|| loop {
-            terminal.draw(|frame| draw(frame, &mode, &theme, title, &actions, &mut state))?;
-            if let Some(snapshot) = mode.poll() {
-                match snapshot {
-                    Ok(items) => {
-                        state.runtime_error = None;
-                        state.replace(items, &schema);
-                    }
-                    Err(error) => state.runtime_error = Some(error.to_string()),
-                }
-            }
-            if !event::poll(Duration::from_millis(50))? {
-                continue;
-            }
-            match event::read()? {
-                Event::Key(key) if key.kind == KeyEventKind::Press => {
-                    if state.runtime_error.take().is_some() {
-                        continue;
-                    }
-                    if key.modifiers == KeyModifiers::ALT && key.code == KeyCode::Char(',') {
-                        break Ok(Some((String::new(), "__settings")));
-                    }
-                    if key.modifiers == KeyModifiers::ALT && key.code == KeyCode::Char('j') {
-                        state.preview_scroll = state.preview_scroll.saturating_add(1);
-                        continue;
-                    }
-                    if key.modifiers == KeyModifiers::ALT && key.code == KeyCode::Char('k') {
-                        state.preview_scroll = state.preview_scroll.saturating_sub(1);
-                        continue;
-                    }
-                    if let Some(action) = actions.iter().find(|action| action.matches(key)) {
-                        if state.diagnostic.is_none() && state.runtime_error.is_none() {
-                            if let Some(item) = state.selected_item() {
-                                if let Some(reason) =
-                                    mode.action_disabled_reason(&item.id, action.id)
-                                {
-                                    state.runtime_error = Some(reason);
-                                    continue;
-                                }
-                                break Ok(Some((item.id.clone(), action.id)));
-                            }
-                        }
-                        continue;
-                    }
-                    match state.input_mode {
-                        InputMode::Insert => match key.code {
-                            KeyCode::Esc => state.input_mode = InputMode::Normal,
-                            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                                break Ok(None)
-                            }
-                            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                                state.query.clear();
-                                state.recompute(&schema);
-                            }
-                            KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                                delete_word(&mut state.query);
-                                state.recompute(&schema);
-                            }
-                            KeyCode::Char(ch)
-                                if key.modifiers.is_empty()
-                                    || key.modifiers == KeyModifiers::SHIFT =>
-                            {
-                                state.query.push(ch);
-                                state.recompute(&schema);
-                            }
-                            KeyCode::Backspace => {
-                                state.query.pop();
-                                state.recompute(&schema);
-                            }
-                            KeyCode::Down => state.move_selection(1),
-                            KeyCode::Up => state.move_selection(-1),
-                            _ => {}
-                        },
-                        InputMode::Normal => match key.code {
-                            KeyCode::Esc | KeyCode::Char('q') => break Ok(None),
-                            KeyCode::Char('i') | KeyCode::Char('/') => {
-                                state.input_mode = InputMode::Insert
-                            }
-                            KeyCode::Char('j') | KeyCode::Down => state.move_selection(1),
-                            KeyCode::Char('k') | KeyCode::Up => state.move_selection(-1),
-                            KeyCode::Char('g') | KeyCode::Home => state.selected = 0,
-                            KeyCode::Char('G') | KeyCode::End => {
-                                state.selected = state.filtered.len().saturating_sub(1)
-                            }
-                            _ => {}
-                        },
-                    }
-                }
-                Event::Mouse(mouse) => {
-                    let at: Position = (mouse.column, mouse.row).into();
-                    match mouse.kind {
-                        // The wheel moves whatever the pointer is over: three
-                        // rows of the card, or one row of the list.
-                        MouseEventKind::ScrollDown if state.preview_area.contains(at) => {
-                            state.preview_scroll = state.preview_scroll.saturating_add(3);
-                        }
-                        MouseEventKind::ScrollUp if state.preview_area.contains(at) => {
-                            state.preview_scroll = state.preview_scroll.saturating_sub(3);
-                        }
-                        MouseEventKind::ScrollDown => state.move_selection(1),
-                        MouseEventKind::ScrollUp => state.move_selection(-1),
-                        MouseEventKind::Down(MouseButton::Left) => {
-                            // The bar first: a pill overlaps nothing else, and it
-                            // runs what its cap advertises.
-                            if let Some(act) = tui::zone_at(&state.bar_zones, state.bar_row, at) {
-                                match act {
-                                    PillAct::Close => break Ok(None),
-                                    PillAct::Settings => {
-                                        break Ok(Some((String::new(), "__settings")))
-                                    }
-                                    PillAct::Run(id) => {
-                                        if let Some(item) = state.selected_item() {
-                                            if let Some(reason) =
-                                                mode.action_disabled_reason(&item.id, id)
-                                            {
-                                                state.runtime_error = Some(reason);
-                                            } else {
-                                                break Ok(Some((item.id.clone(), id)));
-                                            }
-                                        }
-                                    }
-                                }
-                            } else if state.list_area.contains(at) {
-                                let relative = mouse.row.saturating_sub(state.list_area.y) as usize;
-                                let offset = state.list_state.offset();
-                                let index = offset + relative;
-                                if index < state.filtered.len() {
-                                    // A click selects; a click on the row already
-                                    // selected does what Enter would. There is no
-                                    // double-click event to lean on, and a single
-                                    // click that ran the row would let a stray one
-                                    // launch something.
-                                    if index == state.selected {
-                                        if let Some(action) = first_enabled(&actions, &mode, &state)
-                                        {
-                                            if let Some(item) = state.selected_item() {
-                                                break Ok(Some((item.id.clone(), action)));
-                                            }
-                                        }
-                                    }
-                                    state.selected = index;
-                                }
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-                _ => {}
-            }
-        })();
-        crate::restore_terminal();
-        let Some((item, action)) = outcome? else {
+        let outcome = crate::surface::run(&mut PickerSurface {
+            mode: &mut mode,
+            theme: &theme,
+            title,
+            actions: &actions,
+            schema: &schema,
+            state: &mut state,
+        })?;
+        let PickerExit::Invoke(item, action) = outcome else {
             return Ok(());
         };
         if action == "__settings" {
@@ -386,7 +427,7 @@ pub fn run<M: PickerMode>(mut mode: M, mut theme: Theme, normal: bool) -> Result
             crate::settings::main(cfg, Theme::load())?;
             let cfg = crate::config::Config::try_load()?;
             mode.reload_config(&cfg)?;
-            state.input_mode = if cfg.common.keymode == "normal" {
+            state.input_mode = if cfg.common.keymode == crate::config::KeyMode::Normal {
                 InputMode::Normal
             } else {
                 InputMode::Insert
@@ -395,7 +436,7 @@ pub fn run<M: PickerMode>(mut mode: M, mut theme: Theme, normal: bool) -> Result
             // `title_color` is one of the settings the overlay writes, so re-resolve
             // it against the reloaded theme rather than keeping the stale colour.
             title = theme
-                .resolve(&cfg.get("title_color", "peach"))
+                .resolve(&cfg.common.title_color)
                 .unwrap_or_else(|| theme.or("peach", Color::Yellow));
             state.replace(mode.initial()?, &schema);
             continue;
@@ -416,31 +457,13 @@ fn apply_bindings(actions: &mut [ActionSpec], bindings: &HashMap<String, String>
         else {
             continue;
         };
-        if let Some((code, modifiers)) = parse_chord(chord.trim()) {
+        if let Some(parsed) = parse_chord(chord) {
+            let (code, modifiers) = parsed.event_parts();
             action.key = code;
             action.modifiers = modifiers;
-            action.key_label = Box::leak(chord.trim().to_string().into_boxed_str());
+            action.key_label = parsed.label();
         }
     }
-}
-
-fn parse_chord(chord: &str) -> Option<(KeyCode, KeyModifiers)> {
-    let mut modifiers = KeyModifiers::NONE;
-    let mut key = None;
-    for part in chord.split('-') {
-        match part.to_ascii_lowercase().as_str() {
-            "ctrl" => modifiers.insert(KeyModifiers::CONTROL),
-            "alt" => modifiers.insert(KeyModifiers::ALT),
-            "shift" => modifiers.insert(KeyModifiers::SHIFT),
-            "enter" => key = Some(KeyCode::Enter),
-            "tab" => key = Some(KeyCode::Tab),
-            "esc" => key = Some(KeyCode::Esc),
-            "space" => key = Some(KeyCode::Char(' ')),
-            value if value.chars().count() == 1 => key = value.chars().next().map(KeyCode::Char),
-            _ => return None,
-        }
-    }
-    key.map(|key| (key, modifiers))
 }
 
 fn delete_word(query: &mut String) {
@@ -721,7 +744,7 @@ fn draw<M: PickerMode>(
         .map(|action| {
             (
                 Pill::new(
-                    action.key_label,
+                    &action.key_label,
                     action.label,
                     theme.or(action.color_slot, accent),
                 ),
@@ -1116,7 +1139,7 @@ mod tests {
             id: "copy",
             key: KeyCode::Enter,
             modifiers: KeyModifiers::NONE,
-            key_label: "↵",
+            key_label: "↵".into(),
             label: "copy",
             color_slot: "blue",
         }];
@@ -1126,6 +1149,6 @@ mod tests {
         );
         assert_eq!(actions[0].key, KeyCode::Char('y'));
         assert_eq!(actions[0].modifiers, KeyModifiers::CONTROL);
-        assert_eq!(actions[0].key_label, "ctrl-y");
+        assert_eq!(actions[0].key_label, "^y");
     }
 }

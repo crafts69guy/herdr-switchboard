@@ -1,22 +1,11 @@
-//! Shared TUI plumbing: the rounded panel frame and its captioned form, the
-//! coloured command-bar pill row, and the plain draw/poll/read event loop the
-//! two popup modes run.
-//!
-//! The picker keeps its own loop in `main.rs` on purpose — it also drives a
-//! background preview worker and returns a chosen action, neither of which the
-//! popup modes do. What the popups share verbatim is [`run_simple`]; what they
-//! all share is the pill row and [`zone_at`], the one-row hit test every command
-//! bar performs.
+//! Shared rendering vocabulary: the rounded panel frame and its captioned
+//! form, coloured command-bar pills, and measured hit zones. Terminal lifetime
+//! and event scheduling live in the deep [`crate::surface`] module.
 
-use std::time::Duration;
-
-use anyhow::Result;
-use crossterm::event::{self, Event, KeyEvent, KeyEventKind, MouseEvent};
 use ratatui::layout::Position;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Span;
 use ratatui::widgets::{Block, BorderType, Borders};
-use ratatui::Frame;
 
 /// The frame every Switchboard surface wears: rounded, bordered in `border`,
 /// captionless, and — the part that keeps the panes transparent — carrying no
@@ -94,61 +83,4 @@ pub fn zone_at<T: Copy>(zones: &[(u16, u16, T)], row: u16, at: Position) -> Opti
         .then(|| zones.iter().find(|(a, b, _)| at.x >= *a && at.x < *b))
         .flatten()
         .map(|(_, _, payload)| *payload)
-}
-
-/// What a popup mode's key handler decides.
-pub enum Flow {
-    Continue,
-    Quit,
-}
-
-/// A modal popup driven by [`run_simple`]: it draws itself and reacts to key
-/// presses, nothing more.
-pub trait SimpleMode {
-    fn draw(&mut self, f: &mut Frame);
-    fn on_key(&mut self, key: KeyEvent) -> Flow;
-    /// A pointer event. The default ignores it, so a popup with nothing to
-    /// scroll and nothing to click needs no arm.
-    fn on_mouse(&mut self, m: MouseEvent) -> Flow {
-        let _ = m;
-        Flow::Continue
-    }
-}
-
-/// The draw/poll/read loop the popup modes run: claim the terminal, redraw on
-/// every wake, act on key and pointer events, and restore on quit or error. No
-/// background work — the picker's loop handles that itself.
-///
-/// It claims the mouse through [`crate::init_terminal`] rather than
-/// `ratatui::init`, which is the only thing that chains the mouse teardown ahead
-/// of the panic hook. Turning it on by hand means turning it off on every exit
-/// path, and this loop is two of them.
-pub fn run_simple<M: SimpleMode>(mode: &mut M) -> Result<()> {
-    let mut terminal = crate::init_terminal();
-    let outcome = loop {
-        if let Err(e) = terminal.draw(|f| mode.draw(f)) {
-            break Err(e.into());
-        }
-        match event::poll(Duration::from_millis(200)) {
-            Ok(true) => {}
-            Ok(false) => continue,
-            Err(e) => break Err(e.into()),
-        }
-        match event::read() {
-            Ok(Event::Key(k)) if k.kind == KeyEventKind::Press => {
-                if let Flow::Quit = mode.on_key(k) {
-                    break Ok(());
-                }
-            }
-            Ok(Event::Mouse(m)) => {
-                if let Flow::Quit = mode.on_mouse(m) {
-                    break Ok(());
-                }
-            }
-            Ok(_) => {}
-            Err(e) => break Err(e.into()),
-        }
-    };
-    crate::restore_terminal();
-    outcome
 }

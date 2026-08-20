@@ -1,12 +1,13 @@
 # Keybindings
 
-Switchboard pickers share navigation, filtering, mouse support, and a live command bar. Press `?`
-inside a picker to see the bindings that are active after configuration overrides.
+Switchboard pickers share navigation, filtering, mouse support, and a live command bar. Projects
+also exposes `?` for the bindings active after configuration overrides; the other mode pickers
+show their resolved action caps in the command bar.
 
 ## Picker modes
 
-Pickers start in Insert mode by default so typing filters immediately. Press `esc` for Normal mode;
-press `i` or `/` to resume typing. Set `common.keymode = "normal"` to start Vim-first instead.
+Pickers start in Normal mode by default. Press `i` or `/` to filter, then `esc` to return to Normal.
+Set `common.keymode = "insert"` to restore a type-first start.
 
 ### Projects: Insert mode
 
@@ -95,8 +96,9 @@ down = "ctrl-j,ctrl-n"
 copy = "ctrl-g"
 ```
 
-A chord is a key with optional `ctrl-`, `alt-`, or `shift-` prefixes. Multiple comma-separated
-chords can map to one action. The footer and `?` popup render from the resolved bindings, so they
-remain the source of truth after remapping.
+A chord is a key with optional `ctrl-`, `alt-`, or `shift-` prefixes. Projects accepts multiple
+comma-separated chords for one action; shared mode pickers use the first configured chord for their
+single action slot. Footers and the Projects `?` popup render from the canonical parsed chord, so
+display and input stay synchronized after remapping.
 
 See [`examples/config.toml`](../examples/config.toml) for configuration structure.

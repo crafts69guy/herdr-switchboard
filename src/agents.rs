@@ -38,7 +38,7 @@ enum Target {
 }
 
 pub fn main(cfg: Config, theme: Theme) -> Result<()> {
-    let normal = cfg.common.keymode == "normal";
+    let normal = cfg.common.keymode == crate::config::KeyMode::Normal;
     let mode = AgentsMode {
         origin_pane: env::var("SWITCHBOARD_ORIGIN_PANE_ID").unwrap_or_default(),
         origin_cwd: env::var("SWITCHBOARD_ORIGIN_CWD").unwrap_or_default(),
@@ -106,7 +106,7 @@ impl PickerMode for AgentsMode {
                 id: "pane",
                 key: KeyCode::Enter,
                 modifiers: KeyModifiers::NONE,
-                key_label: "↵",
+                key_label: "↵".into(),
                 label: "pane",
                 color_slot: "green",
             },
@@ -114,7 +114,7 @@ impl PickerMode for AgentsMode {
                 id: "tab",
                 key: KeyCode::Char('t'),
                 modifiers: KeyModifiers::CONTROL,
-                key_label: "^t",
+                key_label: "^t".into(),
                 label: "tab",
                 color_slot: "blue",
             },
@@ -122,7 +122,7 @@ impl PickerMode for AgentsMode {
                 id: "workspace",
                 key: KeyCode::Char('w'),
                 modifiers: KeyModifiers::ALT,
-                key_label: "⌥w",
+                key_label: "⌥w".into(),
                 label: "workspace",
                 color_slot: "mauve",
             },

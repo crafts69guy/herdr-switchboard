@@ -20,8 +20,25 @@ _Avoid_: Shortcut, entrypoint
 
 **Projects Picker**:
 The navigation surface that searches running agents, open workspaces, GHQ repositories, and linked
-worktrees.
+worktrees. It preserves one state model across responsive layouts: wide panes show Context,
+Navigator, and Inspector; medium panes show Navigator and Inspector; compact panes prioritize the
+Navigator.
 _Avoid_: Unified picker, GHQ picker
+
+**Context**:
+The optional wide-layout rail that selects an entry group and reports per-group counts plus the
+current resting sort. It filters the Navigator; it is not a second navigation model.
+_Avoid_: Sidebar, source registry
+
+**Navigator**:
+The searchable, selectable entry list in the Projects Picker. It is the primary surface at every
+width and the only body panel retained in compact panes.
+_Avoid_: Results pane, project tree
+
+**Inspector**:
+The selected entry's preview card. It may be placed beside or below the Navigator on medium and
+wide panes; compact panes clear its geometry so hidden content cannot receive mouse input.
+_Avoid_: Details overlay, preview window
 
 **Usage Popup**:
 The surface that reports how much of each AI subscription is spent, when it resets, and when it

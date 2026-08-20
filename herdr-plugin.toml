@@ -2,7 +2,7 @@ id = "switchboard"
 name = "Switchboard"
 version = "1.3.0"
 min_herdr_version = "0.8.0"
-description = "A colorful Herdr command palette with searchable Projects, AI Agents, Commands, and Ports pickers plus Git, Clone, Settings, Changelog, and Update utilities."
+description = "A colorful Herdr terminal control surface with searchable Projects, AI Agents, Commands, and Ports pickers plus Git, Clone, Settings, Changelog, and Update utilities."
 platforms = ["macos", "linux"]
 
 [[actions]]

@@ -6,7 +6,7 @@ Switchboard reads `config.toml` from its plugin-specific config directory:
 herdr plugin config-dir switchboard
 ```
 
-The file is typed, namespaced TOML. Unknown or legacy top-level keys are rejected. Start from
+The file is typed, namespaced TOML. Unknown top-level keys are rejected. Start from
 [`examples/config.toml`](../examples/config.toml), invoke `switchboard.settings`, or open the
 in-Projects form with `alt-,`.
 
@@ -26,7 +26,7 @@ The standalone settings action persists the same namespaced values for subsequen
 
 | Key | Purpose |
 | --- | --- |
-| `keymode` | Start in `insert` or `normal`. |
+| `keymode` | Start in `normal` (default) or `insert`. |
 | `title_color` | Theme slot used for picker captions. |
 | `transparency` | Picker background transparency behaviour. |
 | `update_check` | Check daily for a newer tagged release. |
@@ -107,11 +107,16 @@ Recent Projects selections live at:
 ${XDG_STATE_HOME:-~/.local/state}/herdr-switchboard/recent.tsv
 ```
 
-The Usage popup is the one surface that makes a request while you watch. Codex is read from disk;
-Claude Code's card calls the usage endpoint behind the in-session `/usage` command, reading the
-OAuth token Claude Code stores in the macOS keychain or `~/.claude/.credentials.json`. Set
-`usage.timeout_ms` to bound it, or drop `"claude"` from `usage.providers` to switch it off
-entirely. The token is never cached, logged, traced, or passed on a command line.
+Usage is the only credential-reading surface and the only in-process HTTP client. Codex is read
+from disk; Claude Code's card calls the usage endpoint behind the in-session `/usage` command,
+reading the OAuth token Claude Code stores in the macOS keychain or
+`~/.claude/.credentials.json`. Set `usage.timeout_ms` to bound it, or drop `"claude"` from
+`usage.providers` to switch it off entirely. The token is never cached, logged, traced, or passed
+on a command line.
+
+Git may fetch pull requests through `gh` after that row is explicitly activated. The daily update
+check runs `git ls-remote` in a detached child and only exposes its later cache to Projects. Clone
+and update commands perform their expected network work only after direct user invocation.
 
 Managed installs fetch a version-matched release binary and verify its SHA-256. Linked development
 checkouts build local source instead. The update action refuses to replace a linked checkout.

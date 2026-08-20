@@ -20,12 +20,12 @@
 //! freezing a half-drawn list.
 
 use std::env;
-use std::io::{self, Write};
+use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::time::Duration;
 
 use anyhow::Result;
 use crossterm::event::{
-    self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
+    Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
 };
 use ratatui::layout::{Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -35,6 +35,7 @@ use ratatui::Frame;
 
 use crate::data::{Config, Theme};
 use crate::runner::{CommandRunner, SystemRunner};
+use crate::surface::{Surface, Transition};
 
 /// The resolved review command, passed to `bin/review.sh` as environment. `mode`
 /// picks the tool + shape; `arg` carries the one variable piece (a base ref for
@@ -368,8 +369,8 @@ impl Git {
         self.show = true;
     }
 
-    /// Show a fetched sub-list. The caller runs the command (see [`load_rows`]);
-    /// an empty result still opens, saying so, rather than silently doing nothing
+    /// Show a fetched sub-list after `GitSurface`'s background adapter answers.
+    /// An empty result still opens, saying so, rather than silently doing nothing
     /// when a mnemonic is pressed.
     pub fn show_list(&mut self, kind: ListKind, rows: Vec<Row>) {
         self.kind = Some(kind);
@@ -570,7 +571,7 @@ impl Git {
     /// A left click, resolved against the zones the last draw published.
     ///
     /// Returns a [`Step`] for the same reason [`Git::on_key`] does: a click on a
-    /// row can start a fetch or a review, and that IO belongs to the caller.
+    /// row can start a fetch or a review, and `GitSurface` must schedule that effect.
     ///
     /// One rule, shared with every other Switchboard surface: a click selects,
     /// and a click on the row *already* selected does what Enter would. There is
@@ -886,7 +887,7 @@ pub fn main() -> Result<()> {
     let cfg = Config::try_load()?;
     let theme = Theme::load();
     let title = theme
-        .resolve(&cfg.get("title_color", "peach"))
+        .resolve(&cfg.common.title_color)
         .unwrap_or_else(|| theme.or("accent", Color::Cyan));
 
     // Not a repo: say so in one line and let the pane close, rather than opening
@@ -900,7 +901,7 @@ pub fn main() -> Result<()> {
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|| "repo".into());
 
-    let base = detect_base_branch(&runner, &cwd, &cfg.get("base_branch", ""));
+    let base = detect_base_branch(&runner, &cwd, &cfg.git.base_branch);
     let has = |bin: &str| runner.ok("sh", &["-c", &format!("command -v {bin} >/dev/null 2>&1")]);
     let (has_lazygit, has_gh) = (has("lazygit"), has("gh"));
     let mut g = Git::new();
@@ -914,100 +915,157 @@ pub fn main() -> Result<()> {
         cfg.git.all_files_warn,
     );
 
-    let mut terminal = crate::init_terminal();
-    let outcome = loop {
-        if let Err(e) = terminal.draw(|f| draw(f, f.area(), &theme, title, &mut g)) {
-            break Err(anyhow::Error::from(e));
-        }
-        match event::poll(Duration::from_millis(200)) {
-            Ok(true) => {}
-            Ok(false) => continue,
-            Err(e) => break Err(e.into()),
-        }
-        match event::read() {
-            Ok(Event::Key(k)) if k.kind == KeyEventKind::Press => {
-                if k.modifiers.contains(KeyModifiers::CONTROL)
-                    && matches!(k.code, KeyCode::Char('c'))
-                {
-                    break Ok(());
-                }
-                match g.on_key(k) {
-                    // The fetch lives out here so `on_key` stays IO-free. It runs
-                    // on the menu's frame, which is why the card keeps showing the
-                    // menu while `gh` talks to GitHub.
-                    Step::Load(kind) => {
-                        let rows = load_rows(&runner, &cwd, kind);
-                        g.show_list(kind, rows);
-                    }
-                    // Same reason, same place: the count is one `git ls-files`,
-                    // taken on activation so the menu's first frame stays free.
-                    Step::CountFiles => {
-                        if let Step::Chosen = g.show_count(count_tracked_files(&runner, &cwd)) {
-                            break Ok(());
-                        }
-                    }
-                    Step::Chosen => break Ok(()),
-                    // `show` going false is the user backing all the way out.
-                    Step::Stay if !g.show => break Ok(()),
-                    Step::Stay => {}
-                }
-            }
-            Ok(Event::Mouse(m)) => match m.kind {
-                MouseEventKind::ScrollDown => g.on_wheel(1),
-                MouseEventKind::ScrollUp => g.on_wheel(-1),
-                MouseEventKind::Down(MouseButton::Left) => {
-                    match g.on_click(Position::new(m.column, m.row)) {
-                        Step::Load(kind) => {
-                            let rows = load_rows(&runner, &cwd, kind);
-                            g.show_list(kind, rows);
-                        }
-                        Step::CountFiles => {
-                            if let Step::Chosen = g.show_count(count_tracked_files(&runner, &cwd)) {
-                                break Ok(());
-                            }
-                        }
-                        Step::Chosen => break Ok(()),
-                        Step::Stay => {}
-                    }
-                }
-                _ => {}
-            },
-            Ok(_) => {}
-            Err(e) => break Err(e.into()),
-        }
-    };
-    // Restore before anything can return: the loop ended holding raw mode, the
-    // alternate screen, and `?1000h`, and an `Err` that skipped this would drop
-    // mouse escapes into the user's shell. Only the `exec` path below is allowed
-    // to leave the screen claimed, and it re-claims it deliberately.
-    if outcome.is_err() || g.chosen.is_none() {
-        crate::restore_terminal();
-    }
-    outcome?;
+    crate::surface::run(&mut GitSurface {
+        git: &mut g,
+        cwd: &cwd,
+        theme: &theme,
+        title,
+        effect: None,
+    })?;
     let Some(spec) = g.chosen.take() else {
         return Ok(());
     };
 
-    // The pre-roll. `review.sh` `exec`s over this process, so the next thing to
-    // paint is the review tool — and tuicr can spend a second or more reading a
-    // large diff before its first frame. Tearing the screen down here would leave
-    // that second black. Instead: turn the wheel off (tuicr sets its own), draw
-    // one static frame, and leave the alternate screen up for tuicr to paint over.
-    // Raw mode and the cursor are restored for the brief cooked-mode window before
-    // it claims them back.
-    print!("{}", crate::MOUSE_OFF);
-    let _ = io::stdout().flush();
-    if let Ok(size) = terminal.size() {
-        let area = Rect::new(0, 0, size.width, size.height);
-        let _ = terminal.draw(|f| crate::splash::draw(f, area, &theme, title, "Opening review"));
-    }
-    let _ = crossterm::terminal::disable_raw_mode();
-    let _ = crossterm::execute!(io::stdout(), crossterm::cursor::Show);
+    // Re-claim only for the pre-roll. The universal host has already restored
+    // its lease, so every normal/error exit is safe; this short second lease is
+    // deliberately handed to the review process after drawing its first frame.
+    crate::surface::preroll(|frame| {
+        crate::splash::draw(frame, frame.area(), &theme, title, "Opening review")
+    });
 
     let script_dir = env::var("HERDR_PLUGIN_ROOT")
         .map(|r| format!("{r}/bin"))
         .unwrap_or_else(|_| ".".into());
-    crate::action::run_review(&spec, &script_dir)
+    let result = crate::action::run_review(&spec, &script_dir);
+    // Only an exec failure returns. Restore the pre-roll lease before carrying
+    // that error back to the shell.
+    crate::surface::restore_terminal();
+    result
+}
+
+struct GitSurface<'a> {
+    git: &'a mut Git,
+    cwd: &'a str,
+    theme: &'a Theme,
+    title: Color,
+    effect: Option<Receiver<GitEffect>>,
+}
+
+enum GitEffect {
+    Rows(ListKind, Vec<Row>),
+    FileCount(Option<usize>),
+}
+
+impl Surface for GitSurface<'_> {
+    type Output = ();
+
+    fn draw(&mut self, frame: &mut Frame) {
+        draw(frame, frame.area(), self.theme, self.title, self.git);
+    }
+
+    fn tick_rate(&self) -> Duration {
+        if self.effect.is_some() {
+            Duration::from_millis(50)
+        } else {
+            Duration::from_millis(250)
+        }
+    }
+
+    fn on_tick(&mut self) -> Result<Transition<Self::Output>> {
+        let Some(receiver) = &self.effect else {
+            return Ok(Transition::Wait);
+        };
+        let effect = match receiver.try_recv() {
+            Ok(effect) => effect,
+            Err(TryRecvError::Empty) => return Ok(Transition::Wait),
+            Err(TryRecvError::Disconnected) => {
+                self.effect = None;
+                return Ok(Transition::Redraw);
+            }
+        };
+        self.effect = None;
+        Ok(match effect {
+            GitEffect::Rows(kind, rows) => {
+                self.git.show_list(kind, rows);
+                Transition::Redraw
+            }
+            GitEffect::FileCount(count) => {
+                if let Step::Chosen = self.git.show_count(count) {
+                    Transition::Exit(())
+                } else {
+                    Transition::Redraw
+                }
+            }
+        })
+    }
+
+    fn on_event(&mut self, event: Event) -> Result<Transition<Self::Output>> {
+        match event {
+            Event::Key(key) if key.kind == KeyEventKind::Press => {
+                if key.modifiers.contains(KeyModifiers::CONTROL)
+                    && matches!(key.code, KeyCode::Char('c'))
+                {
+                    return Ok(Transition::Exit(()));
+                }
+                if self.effect.is_some() {
+                    return Ok(Transition::Wait);
+                }
+                let step = self.git.on_key(key);
+                Ok(self.apply_step(step))
+            }
+            Event::Mouse(mouse) => {
+                if self.effect.is_some() {
+                    return Ok(Transition::Wait);
+                }
+                let step = match mouse.kind {
+                    MouseEventKind::ScrollDown => {
+                        self.git.on_wheel(1);
+                        Step::Stay
+                    }
+                    MouseEventKind::ScrollUp => {
+                        self.git.on_wheel(-1);
+                        Step::Stay
+                    }
+                    MouseEventKind::Down(MouseButton::Left) => {
+                        self.git.on_click(Position::new(mouse.column, mouse.row))
+                    }
+                    _ => return Ok(Transition::Wait),
+                };
+                Ok(self.apply_step(step))
+            }
+            _ => Ok(Transition::Wait),
+        }
+    }
+}
+
+impl GitSurface<'_> {
+    fn apply_step(&mut self, step: Step) -> Transition<()> {
+        match step {
+            Step::Load(kind) => {
+                let (sender, receiver) = mpsc::channel();
+                let cwd = self.cwd.to_string();
+                std::thread::spawn(move || {
+                    let rows = load_rows(&SystemRunner, &cwd, kind);
+                    let _ = sender.send(GitEffect::Rows(kind, rows));
+                });
+                self.effect = Some(receiver);
+                Transition::Redraw
+            }
+            Step::CountFiles => {
+                let (sender, receiver) = mpsc::channel();
+                let cwd = self.cwd.to_string();
+                std::thread::spawn(move || {
+                    let count = count_tracked_files(&SystemRunner, &cwd);
+                    let _ = sender.send(GitEffect::FileCount(count));
+                });
+                self.effect = Some(receiver);
+                Transition::Redraw
+            }
+            Step::Chosen => Transition::Exit(()),
+            Step::Stay if !self.git.show => Transition::Exit(()),
+            Step::Stay => Transition::Redraw,
+        }
+    }
 }
 
 /// Parse a `menu.conf`: one `key|icon|label|shell command` per line. Blank lines,

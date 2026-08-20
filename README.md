@@ -6,11 +6,9 @@
 ![macOS and Linux](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-blue)
 [![MIT license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-A fast, searchable command palette for [Herdr](https://herdr.dev): move between projects,
+A fast terminal control surface for [Herdr](https://herdr.dev): move between projects,
 launch AI agents, recall commands, inspect ports, review Git changes, and focus a pane without
 leaving the terminal.
-
-![The herdr-switchboard Projects picker showing worktrees, a live preview, and the Normal-mode keybindings popup](docs/switcher.png)
 
 ## What it gives you
 
@@ -86,9 +84,13 @@ and forced-target bindings.
 
 ## Using the pickers
 
-Pickers open ready to type. Press `esc` for Vim-style Normal mode, `i` or `/` to return to Insert
-mode, and `?` at any time for the current live keymap. The footer also updates when bindings are
-remapped.
+Pickers open in Vim-style Normal mode. Press `i` or `/` to filter and `esc` to return to Normal;
+set `common.keymode = "insert"` for a type-first start. Projects shows its live keymap with `?`,
+and every picker derives its footer caps from the same chord parser used for input.
+
+The Projects Picker adapts without changing state: wide panes show Context, Navigator, and
+Inspector; medium panes keep Navigator and Inspector; compact panes prioritize Navigator and clear
+hidden preview geometry so it cannot capture mouse input.
 
 Common Projects actions:
 
@@ -146,7 +148,7 @@ Common settings include:
 
 | Setting | Purpose |
 | --- | --- |
-| `common.keymode` | Start in `insert` or Vim-first `normal` mode. |
+| `common.keymode` | Start in Vim-first `normal` (default) or type-first `insert` mode. |
 | `projects.default_target` | Use `workspace`, `tab`, `split`, or `pane` for `enter` on a repo. |
 | `projects.default_tab` | Start on `all`, `agents`, `workspaces`, `repos`, or `worktrees`. |
 | `projects.sort` | Sort the resting list by `recent`, `name`, or `kind`. |
@@ -157,18 +159,19 @@ Common settings include:
 | `usage.providers` / `usage.timeout_ms` | Which AI subscriptions the Usage popup reads, and how long the networked one may take. |
 | `usage.warn_percent` / `usage.alert_percent` | Where an ungraded quota bar turns yellow, then red. |
 
-The plugin reads only its namespaced config; legacy top-level keys are not accepted. See the
+The plugin reads only its namespaced config; unknown top-level keys are not accepted. See the
 [configuration guide](docs/configuration.md) for every section, remapping, state paths, and update
 behaviour.
 
 ## Guides
 
+- [Architecture and performance](docs/architecture.md) — module seams, terminal lifecycle,
+  responsive layout, effects, and tracing.
 - [Features and safety](docs/features.md) — Usage, AI Agents, Commands, Ports, and confirmations.
 - [Keybindings](docs/keybindings.md) — Insert/Normal modes and remapping.
 - [Zen mode](docs/zen.md) — layout restoration, scrims, and `zen.chrome` trade-offs.
 - [Git menu](docs/git-menu.md) — tuicr, pull requests, saved reviews, and lazygit.
 - [Configuration](docs/configuration.md) — namespaced TOML and runtime settings.
-- [Architecture and performance](docs/architecture.md) — launch flow, binaries, previews, and tracing.
 
 ## Contributing
 
