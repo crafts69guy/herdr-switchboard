@@ -7,6 +7,8 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-08-20
+
 ### Added
 
 - **A `renews` row on every Usage card.** A window reset says when you may work again; a renewal
@@ -687,7 +689,8 @@ tuicr's own colours.
   open it in a new workspace, tab, split, or the current pane, plus clone (`ghq get`),
   update, remove, and a handoff to the git-hub menu.
 
-[Unreleased]: https://github.com/crafts69guy/herdr-switchboard/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/crafts69guy/herdr-switchboard/compare/v1.3.0...HEAD
+[1.3.0]: https://github.com/crafts69guy/herdr-switchboard/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/crafts69guy/herdr-switchboard/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/crafts69guy/herdr-switchboard/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/crafts69guy/herdr-switchboard/compare/v0.11.0...v1.0.0
