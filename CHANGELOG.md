@@ -7,6 +7,8 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-08-20
+
 ### Changed
 
 - **Switchboard backgrounds now follow one explicit policy.** Set
@@ -719,7 +721,8 @@ tuicr's own colours.
   open it in a new workspace, tab, split, or the current pane, plus clone (`ghq get`),
   update, remove, and a handoff to the git-hub menu.
 
-[Unreleased]: https://github.com/crafts69guy/herdr-switchboard/compare/v1.3.0...HEAD
+[Unreleased]: https://github.com/crafts69guy/herdr-switchboard/compare/v2.0.0...HEAD
+[2.0.0]: https://github.com/crafts69guy/herdr-switchboard/compare/v1.3.0...v2.0.0
 [1.3.0]: https://github.com/crafts69guy/herdr-switchboard/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/crafts69guy/herdr-switchboard/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/crafts69guy/herdr-switchboard/compare/v1.0.0...v1.1.0
