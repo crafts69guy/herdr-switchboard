@@ -4,7 +4,7 @@
 use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, BorderType, Borders, Clear, List, ListItem, Paragraph};
+use ratatui::widgets::{List, ListItem, Paragraph};
 use ratatui::Frame;
 
 use crate::action::Accept;
@@ -12,6 +12,7 @@ use crate::keymap::{Action, Mode};
 use crate::projects::App;
 
 pub(super) fn draw(f: &mut Frame, app: &mut App) {
+    app.background.paint(f, f.area());
     let accent = app.theme.or("accent", Color::Cyan);
     let text = app.theme.or("text", Color::Reset);
     let sub = app.theme.or("subtext0", Color::DarkGray);
@@ -99,9 +100,14 @@ pub(super) fn draw(f: &mut Frame, app: &mut App) {
 
     match app.overlay {
         super::Overlay::Changelog => draw_changelog(f, app, f.area()),
-        super::Overlay::Settings => {
-            crate::settings::draw(f, f.area(), &app.theme, app.title_color, &mut app.settings)
-        }
+        super::Overlay::Settings => crate::settings::draw(
+            f,
+            f.area(),
+            &app.theme,
+            app.background,
+            app.title_color,
+            &mut app.settings,
+        ),
         super::Overlay::Help => draw_help(f, app, f.area()),
         super::Overlay::None => {}
     }
@@ -167,7 +173,6 @@ fn draw_context(
 /// pane, so the two cannot drift.
 fn draw_changelog(f: &mut Frame, app: &mut App, area: Rect) {
     let t = &app.theme;
-    let ink = t.or("panel_bg", Color::Rgb(16, 18, 20));
     let sub = t.or("subtext0", Color::Gray);
     let border = t.or("accent", Color::Cyan);
     let title = app.title_color;
@@ -180,13 +185,9 @@ fn draw_changelog(f: &mut Frame, app: &mut App, area: Rect) {
         w,
         h,
     );
-    f.render_widget(Clear, popup);
+    app.background.paint(f, popup);
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(border))
-        .style(Style::default().bg(ink))
+    let block = crate::tui::framed(border)
         .title(Span::styled(
             "  Changelog ",
             Style::default().fg(title).add_modifier(Modifier::BOLD),
@@ -706,17 +707,13 @@ fn draw_help(f: &mut Frame, app: &App, area: Rect) {
     let y = area.y + (area.height.saturating_sub(h)) / 2;
     let popup = Rect::new(x, y, w, h);
 
-    f.render_widget(Clear, popup);
+    app.background.paint(f, popup);
 
     let mode_name = match app.mode {
         Mode::Insert => "INSERT",
         Mode::Normal => "NORMAL",
     };
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(border))
-        .style(Style::default().bg(ink))
+    let block = crate::tui::framed(border)
         .title(Span::styled(
             format!("  Keybindings · {mode_name} "),
             Style::default().fg(title).add_modifier(Modifier::BOLD),

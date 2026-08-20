@@ -44,9 +44,11 @@ pub(super) fn card_gap(width: u16, cards: usize) -> u16 {
 }
 
 pub(super) fn draw(f: &mut Frame, app: &mut App) {
+    app.background.paint(f, f.area());
     let rows = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).split(f.area());
     // Herdr frames and titles the popup pane already, so this draws no outer
-    // border of its own — the same reason the changelog pane doesn't.
+    // border of its own — the same reason the changelog pane doesn't. The
+    // shared background painter above still owns transparent versus opaque.
     if app.slots.is_empty() {
         let muted = app.theme.or("subtext0", Color::Gray);
         f.render_widget(

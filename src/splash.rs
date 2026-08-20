@@ -17,10 +17,19 @@ use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
 use crate::data::Theme;
+use crate::tui::SurfaceBackground;
 
 /// Draw the cat centred in `area`, with `status` under it. A pane too small for
 /// the full frame gets the three-line one instead.
-pub fn draw(f: &mut Frame, area: Rect, theme: &Theme, title: Color, status: &str) {
+pub fn draw(
+    f: &mut Frame,
+    area: Rect,
+    theme: &Theme,
+    background: SurfaceBackground,
+    title: Color,
+    status: &str,
+) {
+    background.paint(f, area);
     let glow = theme.or("green", Color::Green);
     let text = theme.or("text", Color::Reset);
     let sub = theme.or("subtext0", Color::DarkGray);
@@ -110,7 +119,13 @@ mod tests {
     use super::*;
 
     /// The whole screen as text, row by row.
-    fn rendered(w: u16, h: u16) -> (String, ratatui::buffer::Buffer) {
+    fn rendered_with(
+        w: u16,
+        h: u16,
+        transparency: crate::config::Transparency,
+    ) -> (String, ratatui::buffer::Buffer) {
+        let theme = Theme::default();
+        let background = SurfaceBackground::resolve(&theme, transparency);
         let mut terminal =
             ratatui::Terminal::new(ratatui::backend::TestBackend::new(w, h)).unwrap();
         terminal
@@ -118,7 +133,8 @@ mod tests {
                 draw(
                     f,
                     f.area(),
-                    &Theme::default(),
+                    &theme,
+                    background,
                     Color::Yellow,
                     "Opening review",
                 )
@@ -134,6 +150,10 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         (screen, buf)
+    }
+
+    fn rendered(w: u16, h: u16) -> (String, ratatui::buffer::Buffer) {
+        rendered_with(w, h, crate::config::Transparency::Transparent)
     }
 
     #[test]
@@ -156,5 +176,11 @@ mod tests {
     fn the_terminals_default_background_is_preserved() {
         let (_, buf) = rendered(80, 24);
         assert!(buf.content.iter().all(|cell| cell.bg == Color::Reset));
+    }
+
+    #[test]
+    fn opaque_splash_fills_the_whole_pane() {
+        let (_, buf) = rendered_with(80, 24, crate::config::Transparency::Opaque);
+        assert!(buf.content.iter().all(|cell| cell.bg != Color::Reset));
     }
 }

@@ -29,6 +29,7 @@ use crate::tui::{self, Pill};
 
 pub struct App {
     theme: Theme,
+    background: crate::tui::SurfaceBackground,
     title_color: Color,
     blocks: Vec<Block>,
     scroll: u16,
@@ -104,6 +105,7 @@ impl App {
 }
 
 fn draw(f: &mut Frame, app: &mut App) {
+    app.background.paint(f, f.area());
     let rows = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).split(f.area());
     let area = rows[0];
 
@@ -180,6 +182,7 @@ pub fn main() -> Result<()> {
 
     let blocks = markdown::parse(&changelog_text()?);
     let mut app = App {
+        background: crate::tui::SurfaceBackground::resolve(&theme, cfg.common.transparency),
         theme,
         title_color,
         blocks,
@@ -191,4 +194,39 @@ pub fn main() -> Result<()> {
     };
 
     crate::surface::run(&mut app)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Transparency;
+
+    fn render(transparency: Transparency) -> ratatui::buffer::Buffer {
+        let theme = Theme::from_slots(&[("panel_bg", "#101214")]);
+        let mut app = App {
+            background: crate::tui::SurfaceBackground::resolve(&theme, transparency),
+            theme,
+            title_color: Color::Yellow,
+            blocks: Vec::new(),
+            scroll: 0,
+            height: 0,
+            rows: 1,
+            bar_row: 0,
+            bar_zones: Vec::new(),
+        };
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(88, 28)).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    #[test]
+    fn standalone_changelog_obeys_both_background_modes() {
+        let fill = Color::Rgb(0x10, 0x12, 0x14);
+        let transparent = render(Transparency::Transparent);
+        assert!(transparent.content.iter().all(|cell| cell.bg != fill));
+
+        let opaque = render(Transparency::Opaque);
+        assert!(opaque.content.iter().all(|cell| cell.bg != Color::Reset));
+    }
 }

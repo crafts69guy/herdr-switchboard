@@ -49,6 +49,7 @@ pub fn main(cfg: Config, theme: Theme) -> Result<()> {
         .unwrap_or_else(|| theme.or("peach", Color::Yellow));
     let mut surface = StandaloneSettings {
         settings: Settings::new(&cfg),
+        background: crate::tui::SurfaceBackground::resolve(&theme, cfg.common.transparency),
         theme,
         title,
     };
@@ -58,6 +59,7 @@ pub fn main(cfg: Config, theme: Theme) -> Result<()> {
 
 struct StandaloneSettings {
     settings: Settings,
+    background: crate::tui::SurfaceBackground,
     theme: Theme,
     title: Color,
 }
@@ -66,10 +68,12 @@ impl Surface for StandaloneSettings {
     type Output = ();
 
     fn draw(&mut self, frame: &mut Frame) {
+        self.background.paint(frame, frame.area());
         draw(
             frame,
             frame.area(),
             &self.theme,
+            self.background,
             self.title,
             &mut self.settings,
         );
@@ -385,9 +389,23 @@ mod tests {
     #[test]
     fn draw_renders_grouped_rows_with_heading_value_and_hint() {
         let mut settings = Settings::new(&Config::default());
+        let theme = Theme::default();
+        let background = crate::tui::SurfaceBackground::resolve(
+            &theme,
+            crate::config::Transparency::Transparent,
+        );
         let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(90, 24)).unwrap();
-        term.draw(|f| draw(f, f.area(), &Theme::default(), Color::Yellow, &mut settings))
-            .unwrap();
+        term.draw(|f| {
+            draw(
+                f,
+                f.area(),
+                &theme,
+                background,
+                Color::Yellow,
+                &mut settings,
+            )
+        })
+        .unwrap();
         let buf = term.backend().buffer().clone();
         let screen: String = (0..24)
             .map(|y| {
@@ -408,6 +426,29 @@ mod tests {
         // The selected row (row 0) carries the ▌ marker, and the card is boxed.
         assert!(screen.contains('▌'), "{screen}");
         assert!(screen.contains('╭'), "{screen}");
+    }
+
+    #[test]
+    fn opaque_standalone_settings_fills_the_whole_pane() {
+        let theme = Theme::from_slots(&[("panel_bg", "#101214")]);
+        let mut surface = StandaloneSettings {
+            settings: Settings::new(&Config::default()),
+            background: crate::tui::SurfaceBackground::resolve(
+                &theme,
+                crate::config::Transparency::Opaque,
+            ),
+            theme,
+            title: Color::Yellow,
+        };
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 32)).unwrap();
+        terminal.draw(|frame| surface.draw(frame)).unwrap();
+        assert!(terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .all(|cell| cell.bg != Color::Reset));
     }
 
     #[test]
@@ -554,8 +595,13 @@ mod tests {
 
     /// Zones only exist after a draw — the card is recentred every frame.
     fn drawn(s: &mut Settings) {
+        let theme = Theme::default();
+        let background = crate::tui::SurfaceBackground::resolve(
+            &theme,
+            crate::config::Transparency::Transparent,
+        );
         let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(90, 24)).unwrap();
-        term.draw(|f| draw(f, f.area(), &Theme::default(), Color::Yellow, s))
+        term.draw(|f| draw(f, f.area(), &theme, background, Color::Yellow, s))
             .unwrap();
     }
 

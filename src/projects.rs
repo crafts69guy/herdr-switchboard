@@ -110,6 +110,7 @@ pub struct HitZones {
 
 pub struct App {
     pub theme: Theme,
+    pub background: crate::tui::SurfaceBackground,
     pub title_color: ratatui::style::Color,
     pub cfg: Config,
     pub script_dir: String,
@@ -390,6 +391,7 @@ impl HitZones {
 
 impl App {
     fn new(entries: Vec<Entry>, theme: Theme, cfg: Config, script_dir: String) -> Self {
+        let background = crate::tui::SurfaceBackground::resolve(&theme, cfg.common.transparency);
         let title_color = theme
             .resolve(&cfg.common.title_color)
             .unwrap_or_else(|| theme.or("accent", ratatui::style::Color::Cyan));
@@ -406,6 +408,7 @@ impl App {
         let settings = settings::Settings::new(&cfg);
         App {
             theme,
+            background,
             title_color,
             cfg,
             script_dir,
@@ -448,6 +451,8 @@ impl App {
             .theme
             .resolve(&cfg.common.title_color)
             .unwrap_or_else(|| self.theme.or("accent", ratatui::style::Color::Cyan));
+        self.background =
+            crate::tui::SurfaceBackground::resolve(&self.theme, cfg.common.transparency);
         self.picker.sort = SortMode::parse(&cfg.projects.sort);
         self.keymap = keymap::Keymap::load(&cfg);
 
@@ -1125,10 +1130,9 @@ mod tests {
         terminal.backend().buffer().clone()
     }
 
-    /// The switcher's own panels are transparent, the way `picker.rs` pins its
-    /// mode pickers down. `panel_bg` belongs on chips and on the popups that
-    /// have to occlude the picker; a panel that fills itself with it blacks out
-    /// the terminal behind a pane that is meant to show through.
+    /// Transparent mode leaves every ordinary cell at the terminal default.
+    /// Deliberately coloured pills and selection rows use other theme slots;
+    /// `panel_bg` remains their foreground ink, never an accidental fill.
     #[test]
     fn no_switcher_panel_paints_an_opaque_background() {
         let mut app = app_with_layout();
@@ -1139,6 +1143,50 @@ mod tests {
             for x in 0..80 {
                 assert_ne!(buffer[(x, y)].bg, fill, "cell ({x},{y}) filled the panel");
             }
+        }
+    }
+
+    #[test]
+    fn every_projects_overlay_obeys_the_transparent_background() {
+        let fill = Color::Rgb(0x10, 0x12, 0x14);
+        for overlay in [Overlay::Help, Overlay::Changelog, Overlay::Settings] {
+            let mut app = app_with_layout();
+            app.theme = Theme::from_slots(&[("panel_bg", "#101214")]);
+            app.background = crate::tui::SurfaceBackground::resolve(
+                &app.theme,
+                crate::config::Transparency::Transparent,
+            );
+            app.overlay = overlay;
+            app.settings.open();
+            let buffer = rendered_buffer(&mut app, 120, 40);
+            assert!(
+                buffer.content.iter().all(|cell| cell.bg != fill),
+                "{overlay:?} painted panel_bg in transparent mode"
+            );
+        }
+    }
+
+    #[test]
+    fn opaque_projects_and_overlays_leave_no_transparent_holes() {
+        for overlay in [
+            Overlay::None,
+            Overlay::Help,
+            Overlay::Changelog,
+            Overlay::Settings,
+        ] {
+            let mut app = app_with_layout();
+            app.theme = Theme::from_slots(&[("panel_bg", "#101214")]);
+            app.background = crate::tui::SurfaceBackground::resolve(
+                &app.theme,
+                crate::config::Transparency::Opaque,
+            );
+            app.overlay = overlay;
+            app.settings.open();
+            let buffer = rendered_buffer(&mut app, 120, 40);
+            assert!(
+                buffer.content.iter().all(|cell| cell.bg != Color::Reset),
+                "{overlay:?} left a transparent cell in opaque mode"
+            );
         }
     }
 

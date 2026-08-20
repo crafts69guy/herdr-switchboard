@@ -33,6 +33,8 @@ herdr_bin() {
 bootstrap_frame() {
   local label="$1"
   local frame="$2"
+  local cols="${3:-${COLUMNS:-80}}"
+  local rows="${4:-${LINES:-24}}"
   local eye="o.o"
   local left_paw="_|"
   local right_paw="|_"
@@ -40,21 +42,27 @@ bootstrap_frame() {
   ((frame % 4 == 1)) && right_paw="|\\"
   ((frame % 8 == 5)) && eye="o.-"
 
-  local cols="${COLUMNS:-80}"
-  local rows="${LINES:-24}"
-  if command -v tput >/dev/null 2>&1; then
-    cols="$(tput cols 2>/dev/null || printf '80')"
-    rows="$(tput lines 2>/dev/null || printf '24')"
+  [[ "$cols" =~ ^[0-9]+$ ]] && ((cols > 0)) || cols=80
+  [[ "$rows" =~ ^[0-9]+$ ]] && ((rows > 0)) || rows=24
+  local compact="false"
+  local content_height=12
+  if ((cols < 40 || rows < 14)); then
+    compact="true"
+    content_height=6
   fi
   local pad_x=$(((cols - 32) / 2))
-  local pad_y=$(((rows - 14) / 2))
+  local pad_y=$(((rows - content_height) / 2))
   ((pad_x < 0)) && pad_x=0
   ((pad_y < 0)) && pad_y=0
   local left
   printf -v left '%*s' "$pad_x" ''
 
-  printf '\033[2J\033[H%*s' "$pad_y" '' >&2
-  if ((cols < 40 || rows < 14)); then
+  printf '\033[2J\033[H' >&2
+  local i
+  for ((i = 0; i < pad_y; i++)); do
+    printf '\n' >&2
+  done
+  if [[ "$compact" == "true" ]]; then
     printf '%s\033[97;1m /\\_/\\\033[0m\n' "$left" >&2
     printf '%s\033[97m( \033[92;1m%s\033[97m )\033[0m\n' "$left" "$eye" >&2
     printf '%s\033[97m > ^ <\033[0m\n' "$left" >&2
@@ -71,6 +79,24 @@ bootstrap_frame() {
   fi
   printf '\n%s\033[1m%s\033[0m\n' "$left" "$label" >&2
   printf '%s\033[2mEsc or Ctrl-C to cancel\033[0m' "$left" >&2
+}
+
+# Read the plugin PTY itself. `tput` falls back to terminfo's 80x24 when its
+# stdout is captured and stderr is redirected, which is exactly how the build
+# splash used to end up left-aligned in a wide Herdr pane.
+terminal_size() {
+  local rows="${LINES:-24}"
+  local cols="${COLUMNS:-80}"
+  local measured=""
+  if [[ -r /dev/tty ]]; then
+    measured="$(stty size </dev/tty 2>/dev/null || true)"
+  fi
+  if [[ "$measured" =~ ^([0-9]+)[[:space:]]+([0-9]+)$ ]] &&
+    ((10#${BASH_REMATCH[1]} > 0 && 10#${BASH_REMATCH[2]} > 0)); then
+    rows="${BASH_REMATCH[1]}"
+    cols="${BASH_REMATCH[2]}"
+  fi
+  printf '%s %s\n' "$rows" "$cols"
 }
 
 # Run a quiet bootstrap job while the cat animates. On failure the caller can
@@ -95,7 +121,9 @@ run_with_splash() {
   printf '\033[?25l' >&2
 
   while kill -0 "$child" 2>/dev/null; do
-    bootstrap_frame "$label" "$frame"
+    local rows cols
+    read -r rows cols < <(terminal_size)
+    bootstrap_frame "$label" "$frame" "$cols" "$rows"
     frame=$((frame + 1))
     key=""
     if read -rsn1 -t 0.08 key </dev/tty 2>/dev/null && [[ "$key" == $'\033' ]]; then

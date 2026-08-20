@@ -269,16 +269,12 @@ impl Drop for PortWorker {
 }
 
 pub fn main(cfg: Config, theme: Theme) -> Result<()> {
-    let normal = cfg.common.keymode == crate::config::KeyMode::Normal;
-    picker::run(
-        PortMode::new(
-            cfg.ports.refresh_interval_ms,
-            Notifier::new(&cfg),
-            cfg.keys.get("ports").cloned().unwrap_or_default(),
-        ),
-        theme,
-        normal,
-    )
+    let mode = PortMode::new(
+        cfg.ports.refresh_interval_ms,
+        Notifier::new(&cfg),
+        cfg.keys.get("ports").cloned().unwrap_or_default(),
+    );
+    picker::run(mode, theme, cfg)
 }
 
 struct PortMode {

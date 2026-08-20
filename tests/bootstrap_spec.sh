@@ -11,6 +11,24 @@ fail() {
   exit 1
 }
 
+# The Bash-owned build splash must centre against the plugin PTY dimensions,
+# not terminfo's common 80x24 fallback. `bootstrap_frame` accepts measured
+# dimensions so this assertion stays deterministic without a live Herdr pane.
+frame="$({ bootstrap_frame "Building Switchboard locally…" 0 180 40; } 2>&1)"
+frame="$(printf '%s' "$frame" | sed $'s/\033\\[2J\033\\[H//')"
+cat_geometry="$(
+  printf '%s\n' "$frame" |
+    awk '/\*.*\\_____/{ match($0, /[^ ]/); print NR ":" RSTART - 1; exit }'
+)"
+label_x="$(
+  printf '%s\n' "$frame" |
+    awk '/Building Switchboard locally/{ match($0, /[^ ]/); print RSTART - 1; exit }'
+)"
+[[ "$cat_geometry" == "15:74" ]] ||
+  fail "build splash cat must start at row 15, column 74 in a 180x40 pane (got $cat_geometry)"
+[[ "$label_x" == "74" ]] ||
+  fail "build splash label must start at column 74 in a 180-column pane (got $label_x)"
+
 [[ "$(target_for Darwin arm64)" == "aarch64-apple-darwin" ]] || fail "macOS arm target"
 [[ "$(target_for Darwin x86_64)" == "x86_64-apple-darwin" ]] || fail "macOS Intel target"
 [[ "$(target_for Linux aarch64)" == "aarch64-unknown-linux-musl" ]] || fail "Linux arm target"

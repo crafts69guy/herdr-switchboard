@@ -38,14 +38,13 @@ enum Target {
 }
 
 pub fn main(cfg: Config, theme: Theme) -> Result<()> {
-    let normal = cfg.common.keymode == crate::config::KeyMode::Normal;
     let mode = AgentsMode {
         origin_pane: env::var("SWITCHBOARD_ORIGIN_PANE_ID").unwrap_or_default(),
         origin_cwd: env::var("SWITCHBOARD_ORIGIN_CWD").unwrap_or_default(),
         bindings: cfg.keys.get("agents").cloned().unwrap_or_default(),
         integrations: Vec::new(),
     };
-    picker::run(mode, theme, normal)
+    picker::run(mode, theme, cfg)
 }
 
 struct AgentsMode {

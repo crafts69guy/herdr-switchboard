@@ -32,6 +32,23 @@ pub enum KeyMode {
     Normal,
 }
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Transparency {
+    #[default]
+    Transparent,
+    Opaque,
+}
+
+impl Transparency {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Transparent => "transparent",
+            Self::Opaque => "opaque",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default)]
 pub struct Common {
@@ -40,7 +57,7 @@ pub struct Common {
     pub notification_position: String,
     pub notification_sound: String,
     pub title_color: String,
-    pub transparency: String,
+    pub transparency: Transparency,
     pub update_check: bool,
 }
 
@@ -176,7 +193,7 @@ impl Default for Common {
             notification_position: "top-right".into(),
             notification_sound: "auto".into(),
             title_color: "peach".into(),
-            transparency: "auto".into(),
+            transparency: Transparency::Transparent,
             update_check: true,
         }
     }
@@ -267,7 +284,7 @@ impl Config {
             "notification_position" => self.common.notification_position.clone(),
             "notification_sound" => self.common.notification_sound.clone(),
             "title_color" => self.common.title_color.clone(),
-            "transparency" => self.common.transparency.clone(),
+            "transparency" => self.common.transparency.as_str().into(),
             "update_check" => self.common.update_check.to_string(),
             "default_target" => self.projects.default_target.clone(),
             "split_direction" => self.projects.split_direction.clone(),
@@ -384,6 +401,29 @@ keys.down = "ctrl-j,ctrl-n"
         let cfg = Config::default();
         assert_eq!(cfg.common.keymode, KeyMode::Normal);
         assert_eq!(cfg.value_for_cli("keymode").as_deref(), Some("normal"));
+    }
+
+    #[test]
+    fn transparency_is_strict_typed_and_canonical() {
+        let default = Config::default();
+        assert_eq!(default.common.transparency, Transparency::Transparent);
+        assert_eq!(
+            default.value_for_cli("transparency").as_deref(),
+            Some("transparent")
+        );
+
+        let opaque = Config::parse("[common]\ntransparency = \"opaque\"\n").unwrap();
+        assert_eq!(opaque.common.transparency, Transparency::Opaque);
+        assert!(toml::to_string(&opaque)
+            .unwrap()
+            .contains("transparency = \"opaque\""));
+
+        for removed in ["auto", "enabled", "disabled"] {
+            assert!(
+                Config::parse(&format!("[common]\ntransparency = \"{removed}\"\n")).is_err(),
+                "legacy value {removed:?} must be rejected"
+            );
+        }
     }
 
     #[test]

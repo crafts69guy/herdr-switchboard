@@ -14,8 +14,7 @@ use crate::picker::{self, ActionOutcome, ActionSpec, PickerItem, PickerMode};
 use crate::query::{Document, FieldSchema};
 
 pub fn main(cfg: Config, theme: Theme) -> Result<()> {
-    let normal = cfg.common.keymode == crate::config::KeyMode::Normal;
-    picker::run(MenuMode, theme, normal)
+    picker::run(MenuMode, theme, cfg)
 }
 
 struct MenuMode;

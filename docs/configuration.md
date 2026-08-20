@@ -28,7 +28,7 @@ The standalone settings action persists the same namespaced values for subsequen
 | --- | --- |
 | `keymode` | Start in `normal` (default) or `insert`. |
 | `title_color` | Theme slot used for picker captions. |
-| `transparency` | Picker background transparency behaviour. |
+| `transparency` | All Switchboard backgrounds: `transparent` (default) or `opaque`. |
 | `update_check` | Check daily for a newer tagged release. |
 | `notifications` | Enable Herdr notifications. |
 | `notification_position` | Choose the notification corner. |
@@ -36,6 +36,11 @@ The standalone settings action persists the same namespaced values for subsequen
 
 The daily update check displays the available version in the command bar; it never installs an
 update. `switchboard.update` is the explicit installation action.
+
+`transparent` leaves ordinary pane and floating-card cells at the terminal's default background;
+coloured pills, badges, and selected rows keep their intentional fills. `opaque` fills every
+Switchboard pane, gutter, and nested card with the theme's `panel_bg`. The former
+`auto`/`enabled`/`disabled` values are not accepted.
 
 ### `[projects]`
 

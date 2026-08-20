@@ -9,6 +9,13 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Switchboard backgrounds now follow one explicit policy.** Set
+  `common.transparency = "transparent"` (the default) to show the terminal through Projects,
+  mode pickers, Git, Usage, Settings, Changelog, the review splash, and their nested cards; set it
+  to `"opaque"` to fill every surface and gutter with `panel_bg`. The old
+  `auto`/`enabled`/`disabled` values are removed so parent panes and floating cards cannot silently
+  choose different behavior.
+
 - **Switchboard is now Vim-first and adapts as a persistent dashboard.** Projects opens in Normal
   mode by default; `i` or `/` enters filtering, and `common.keymode = "insert"` restores the old
   type-first start. Wide panes show a context rail beside the navigator and inspector, medium panes
@@ -23,6 +30,12 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the theme's semantic red, while the available arc uses semantic green. Loading and unavailable
   cards remain muted, and the per-window bars keep their existing provider severity and configured
   warning thresholds.
+
+### Fixed
+
+- **The local-build cat is centred in the real plugin pane.** Bootstrap now reads the Herdr PTY
+  size directly instead of falling back to terminfo's 80x24 dimensions, and its vertical padding
+  uses terminal rows rather than spaces on the first line.
 
 ## [1.3.0] - 2026-08-20
 

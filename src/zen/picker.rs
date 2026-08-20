@@ -15,8 +15,8 @@ use crate::query::{Document, FieldSchema, MatchKind};
 use crate::runner::SystemRunner;
 
 pub(super) fn run(cfg: Config, theme: Theme) -> Result<()> {
-    let normal = cfg.common.keymode == crate::config::KeyMode::Normal;
-    picker::run(ZenMode::new(cfg), theme, normal)
+    let mode = ZenMode::new(cfg.clone());
+    picker::run(mode, theme, cfg)
 }
 
 struct ZenMode {

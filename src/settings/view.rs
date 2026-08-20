@@ -4,13 +4,14 @@ use crossterm::event::KeyCode;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
+use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
 use super::catalog::SETTINGS;
 use super::document::setting_path;
 use super::Settings;
 use crate::data::Theme;
+use crate::tui::SurfaceBackground;
 use crate::tui::{self, Pill};
 
 pub(super) const TABS: [&str; 4] = ["Common", "Projects", "Commands", "Ports"];
@@ -119,8 +120,14 @@ fn column(
 
 /// Draw the settings card centred in `area`, over whatever is behind it. The picker
 /// owns `theme`/`title`, so the overlay matches the rest of its surfaces.
-pub fn draw(f: &mut Frame, area: Rect, theme: &Theme, title: Color, s: &mut Settings) {
-    let ink = theme.or("panel_bg", Color::Black);
+pub fn draw(
+    f: &mut Frame,
+    area: Rect,
+    theme: &Theme,
+    background: SurfaceBackground,
+    title: Color,
+    s: &mut Settings,
+) {
     let sub = theme.or("subtext0", Color::Gray);
     let border = theme.or("accent", Color::Cyan);
 
@@ -141,13 +148,9 @@ pub fn draw(f: &mut Frame, area: Rect, theme: &Theme, title: Color, s: &mut Sett
         w,
         h,
     );
-    f.render_widget(Clear, popup);
+    background.paint(f, popup);
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(border))
-        .style(Style::default().bg(ink))
+    let block = tui::framed(border)
         .title(Span::styled(
             " 󰒓 Switchboard Settings ",
             Style::default().fg(title).add_modifier(Modifier::BOLD),

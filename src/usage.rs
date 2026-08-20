@@ -126,6 +126,7 @@ fn level_color(theme: &Theme, pct: f64, cfg: &Config) -> Color {
 
 pub struct App {
     theme: Theme,
+    background: crate::tui::SurfaceBackground,
     title_color: Color,
     cfg: Config,
     slots: Vec<Slot>,
@@ -306,6 +307,7 @@ pub fn main(cfg: Config, theme: Theme) -> Result<()> {
         .resolve(&cfg.common.title_color)
         .unwrap_or_else(|| theme.or("peach", Color::Yellow));
     let mut app = App {
+        background: crate::tui::SurfaceBackground::resolve(&theme, cfg.common.transparency),
         theme,
         title_color,
         cfg,
@@ -930,9 +932,21 @@ mod tests {
             .join("\n")
     }
 
+    fn render_buffer(app: &mut App, w: u16, h: u16) -> ratatui::buffer::Buffer {
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(w, h)).unwrap();
+        terminal.draw(|f| draw(f, app)).unwrap();
+        terminal.backend().buffer().clone()
+    }
+
     fn app_with(slots: Vec<Slot>) -> App {
+        let theme = Theme::default();
         App {
-            theme: Theme::default(),
+            background: crate::tui::SurfaceBackground::resolve(
+                &theme,
+                crate::config::Transparency::Transparent,
+            ),
+            theme,
             title_color: Color::Yellow,
             cfg: Config::default(),
             slots,
@@ -944,6 +958,16 @@ mod tests {
             bar_row: 0,
             bar_zones: Vec::new(),
         }
+    }
+
+    #[test]
+    fn opaque_usage_fills_the_whole_popup() {
+        let mut app = app_with(Vec::new());
+        app.theme = Theme::from_slots(&[("panel_bg", "#101214")]);
+        app.background =
+            crate::tui::SurfaceBackground::resolve(&app.theme, crate::config::Transparency::Opaque);
+        let buffer = render_buffer(&mut app, 96, 26);
+        assert!(buffer.content.iter().all(|cell| cell.bg != Color::Reset));
     }
 
     fn codex_slot() -> Slot {
@@ -1043,9 +1067,8 @@ mod tests {
 
     #[test]
     fn a_gutter_actually_separates_two_cards_on_screen() {
-        // The pane paints no background and draws no divider, so the blank
-        // columns are the only thing that keeps two cards from reading as one
-        // wide table of rows.
+        // No mode draws a divider, so the blank columns are the only thing that
+        // keeps two cards from reading as one wide table of rows.
         let mut app = app_with(vec![codex_slot(), codex_slot()]);
         let screen = render(&mut app, 96, 26);
         let bar = screen

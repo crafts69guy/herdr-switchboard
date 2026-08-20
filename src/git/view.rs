@@ -4,13 +4,22 @@ use crossterm::event::KeyCode;
 use ratatui::layout::{Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Clear, Paragraph};
+use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
 use super::{Git, ListKind, View};
 use crate::data::Theme;
+use crate::tui::SurfaceBackground;
 
-pub(super) fn draw(f: &mut Frame, area: Rect, theme: &Theme, title: Color, g: &mut Git) {
+pub(super) fn draw(
+    f: &mut Frame,
+    area: Rect,
+    theme: &Theme,
+    background: SurfaceBackground,
+    title: Color,
+    g: &mut Git,
+) {
+    background.paint(f, area);
     let ink = theme.or("panel_bg", Color::Rgb(16, 18, 20));
     let text = theme.or("text", Color::Reset);
     let sub = theme.or("subtext0", Color::Gray);
@@ -21,11 +30,11 @@ pub(super) fn draw(f: &mut Frame, area: Rect, theme: &Theme, title: Color, g: &m
 
     // A sub-list is a fixed-size box with its own internal layout.
     if matches!(g.view, View::List) {
-        draw_list(f, area, theme, title, g);
+        draw_list(f, area, theme, background, title, g);
         return;
     }
     if matches!(g.view, View::Confirm) {
-        draw_confirm(f, area, theme, title, g);
+        draw_confirm(f, area, theme, background, title, g);
         return;
     }
 
@@ -47,7 +56,7 @@ pub(super) fn draw(f: &mut Frame, area: Rect, theme: &Theme, title: Color, g: &m
         w,
         h,
     );
-    f.render_widget(Clear, popup);
+    background.paint(f, popup);
 
     let cap = format!("󰊢 Git · {}", g.label);
     let block = crate::tui::boxed(&cap, title, border)
@@ -74,7 +83,14 @@ pub(super) fn draw(f: &mut Frame, area: Rect, theme: &Theme, title: Color, g: &m
 /// splash and `exec`s the review over itself — so a tree big enough to keep
 /// tuicr reading for minutes is indistinguishable from a hang. This is the only
 /// frame that can still say otherwise.
-fn draw_confirm(f: &mut Frame, area: Rect, theme: &Theme, title: Color, g: &mut Git) {
+fn draw_confirm(
+    f: &mut Frame,
+    area: Rect,
+    theme: &Theme,
+    background: SurfaceBackground,
+    title: Color,
+    g: &mut Git,
+) {
     let text = theme.or("text", Color::Reset);
     let sub = theme.or("subtext0", Color::Gray);
     let border = theme.or("overlay0", Color::DarkGray);
@@ -117,7 +133,7 @@ fn draw_confirm(f: &mut Frame, area: Rect, theme: &Theme, title: Color, g: &mut 
         w,
         h,
     );
-    f.render_widget(Clear, popup);
+    background.paint(f, popup);
 
     let cap = format!("󰊢 Git · {}", g.label);
     let block = crate::tui::boxed(&cap, title, border).title(
@@ -156,7 +172,14 @@ pub(super) fn thousands(n: usize) -> String {
 /// A sub-list, drawn as a **fixed-size** card so filtering never resizes it: a
 /// pinned detail header on top, a rounded search box just above the body, and —
 /// the only part that scrolls — the paged row list, then the bar.
-fn draw_list(f: &mut Frame, area: Rect, theme: &Theme, title: Color, g: &mut Git) {
+fn draw_list(
+    f: &mut Frame,
+    area: Rect,
+    theme: &Theme,
+    background: SurfaceBackground,
+    title: Color,
+    g: &mut Git,
+) {
     use ratatui::layout::Constraint::{Length, Min};
 
     let text = theme.or("text", Color::Reset);
@@ -177,7 +200,7 @@ fn draw_list(f: &mut Frame, area: Rect, theme: &Theme, title: Color, g: &mut Git
         w,
         h,
     );
-    f.render_widget(Clear, popup);
+    background.paint(f, popup);
 
     let what = g.kind.map(ListKind::title).unwrap_or("list");
     let tail = if g.rows.is_empty() {

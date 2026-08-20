@@ -11,9 +11,10 @@ use nucleo_matcher::{Config as MatcherConfig, Matcher};
 use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Clear, List, ListItem, ListState, Paragraph};
+use ratatui::widgets::{List, ListItem, ListState, Paragraph};
 use ratatui::Frame;
 
+use crate::config::Config;
 use crate::data::Theme;
 use crate::keymap::parse_chord;
 use crate::query::{CompiledQuery, Document, FieldSchema, QueryDiagnostic};
@@ -213,10 +214,9 @@ impl State {
 /// through the herdr theme, exactly as `App::new` resolves it for the projects
 /// picker. Read here rather than passed in, so all three modes agree without
 /// each caller having to remember to look it up.
-fn title_color(theme: &Theme) -> Color {
-    crate::config::Config::try_load()
-        .ok()
-        .and_then(|cfg| theme.resolve(&cfg.common.title_color))
+fn title_color(theme: &Theme, cfg: &Config) -> Color {
+    theme
+        .resolve(&cfg.common.title_color)
         .unwrap_or_else(|| theme.or("peach", Color::Yellow))
 }
 
@@ -228,6 +228,7 @@ enum PickerExit {
 struct PickerSurface<'a, M> {
     mode: &'a mut M,
     theme: &'a Theme,
+    background: tui::SurfaceBackground,
     title: Color,
     actions: &'a [ActionSpec],
     schema: &'a FieldSchema,
@@ -242,6 +243,7 @@ impl<M: PickerMode> Surface for PickerSurface<'_, M> {
             frame,
             self.mode,
             self.theme,
+            self.background,
             self.title,
             self.actions,
             self.state,
@@ -403,17 +405,20 @@ impl<M: PickerMode> PickerSurface<'_, M> {
     }
 }
 
-pub fn run<M: PickerMode>(mut mode: M, mut theme: Theme, normal: bool) -> Result<()> {
+pub fn run<M: PickerMode>(mut mode: M, mut theme: Theme, mut cfg: Config) -> Result<()> {
     let schema = mode.schema();
+    let normal = cfg.common.keymode == crate::config::KeyMode::Normal;
     let mut state = State::new(mode.initial()?, normal);
     state.recompute(&schema);
-    let mut title = title_color(&theme);
+    let mut title = title_color(&theme, &cfg);
+    let mut background = tui::SurfaceBackground::resolve(&theme, cfg.common.transparency);
     loop {
         let mut actions = mode.actions();
         apply_bindings(&mut actions, &mode.key_bindings());
         let outcome = crate::surface::run(&mut PickerSurface {
             mode: &mut mode,
             theme: &theme,
+            background,
             title,
             actions: &actions,
             schema: &schema,
@@ -423,9 +428,8 @@ pub fn run<M: PickerMode>(mut mode: M, mut theme: Theme, normal: bool) -> Result
             return Ok(());
         };
         if action == "__settings" {
-            let cfg = crate::config::Config::try_load()?;
-            crate::settings::main(cfg, Theme::load())?;
-            let cfg = crate::config::Config::try_load()?;
+            crate::settings::main(Config::try_load()?, Theme::load())?;
+            cfg = Config::try_load()?;
             mode.reload_config(&cfg)?;
             state.input_mode = if cfg.common.keymode == crate::config::KeyMode::Normal {
                 InputMode::Normal
@@ -433,6 +437,7 @@ pub fn run<M: PickerMode>(mut mode: M, mut theme: Theme, normal: bool) -> Result
                 InputMode::Insert
             };
             theme = Theme::load();
+            background = tui::SurfaceBackground::resolve(&theme, cfg.common.transparency);
             // `title_color` is one of the settings the overlay writes, so re-resolve
             // it against the reloaded theme rather than keeping the stale colour.
             title = theme
@@ -479,12 +484,13 @@ fn draw<M: PickerMode>(
     frame: &mut Frame,
     mode: &M,
     theme: &Theme,
+    background: tui::SurfaceBackground,
     title_color: Color,
     actions: &[ActionSpec],
     state: &mut State,
 ) {
     let area = frame.area();
-    frame.render_widget(Clear, area);
+    background.paint(frame, area);
     let rows = Layout::vertical([
         Constraint::Length(3),
         Constraint::Min(3),
@@ -824,19 +830,29 @@ mod tests {
     }
 
     fn render(state: &mut State) -> ratatui::buffer::Buffer {
+        render_with_background(state, crate::config::Transparency::Transparent)
+    }
+
+    fn render_with_background(
+        state: &mut State,
+        transparency: crate::config::Transparency,
+    ) -> ratatui::buffer::Buffer {
         let theme = Theme::from_slots(&[
             ("accent", "#6fd0a8"),
             ("overlay0", "#6c7e76"),
             ("peach", "#dcbb80"),
+            ("panel_bg", "#101214"),
         ]);
         let mut terminal =
             ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 12)).unwrap();
+        let background = tui::SurfaceBackground::resolve(&theme, transparency);
         terminal
             .draw(|f| {
                 draw(
                     f,
                     &TestMode,
                     &theme,
+                    background,
                     theme.or("peach", Color::Yellow),
                     &[],
                     state,
@@ -900,9 +916,6 @@ mod tests {
         assert_eq!(buffer[(caption, 3)].fg, peach, "list caption");
     }
 
-    /// Nothing paints a background: all three panes are transparent, so the
-    /// terminal shows through consistently instead of two opaque cards next to a
-    /// see-through list.
     /// A zone that does not sit on the pill it names sends a click to the wrong
     /// action — and does it silently, which is why this is measured rather than
     /// reasoned about.
@@ -962,6 +975,13 @@ mod tests {
         assert_eq!(buffer[(2, 4)].bg, Color::Indexed(236), "selection bar");
     }
 
+    #[test]
+    fn opaque_picker_leaves_no_transparent_holes() {
+        let mut state = State::new(vec![test_item("a"), test_item("b")], false);
+        let buffer = render_with_background(&mut state, crate::config::Transparency::Opaque);
+        assert!(buffer.content.iter().all(|cell| cell.bg != Color::Reset));
+    }
+
     struct WideMode(bool);
 
     impl PickerMode for WideMode {
@@ -995,8 +1015,20 @@ mod tests {
         let theme = Theme::from_slots(&[("accent", "#6fd0a8"), ("overlay0", "#6c7e76")]);
         let mut terminal =
             ratatui::Terminal::new(ratatui::backend::TestBackend::new(60, 10)).unwrap();
+        let background =
+            tui::SurfaceBackground::resolve(&theme, crate::config::Transparency::Transparent);
         terminal
-            .draw(|f| draw(f, &WideMode(emphasize), &theme, Color::Yellow, &[], state))
+            .draw(|f| {
+                draw(
+                    f,
+                    &WideMode(emphasize),
+                    &theme,
+                    background,
+                    Color::Yellow,
+                    &[],
+                    state,
+                )
+            })
             .unwrap();
         let buffer = terminal.backend().buffer().clone();
         (0..10)
@@ -1089,10 +1121,22 @@ mod tests {
                 false,
             );
             let t = Theme::from_slots(&[("accent", "#6fd0a8"), ("overlay0", "#6c7e76")]);
+            let background =
+                tui::SurfaceBackground::resolve(&t, crate::config::Transparency::Transparent);
             let mut terminal =
                 ratatui::Terminal::new(ratatui::backend::TestBackend::new(60, 10)).unwrap();
             terminal
-                .draw(|f| draw(f, &WideMode(emphasize), &t, Color::Yellow, &[], &mut state))
+                .draw(|f| {
+                    draw(
+                        f,
+                        &WideMode(emphasize),
+                        &t,
+                        background,
+                        Color::Yellow,
+                        &[],
+                        &mut state,
+                    )
+                })
                 .unwrap();
             let buffer = terminal.backend().buffer().clone();
             // Column 3 is the first letter of `docker`: past the border and the two

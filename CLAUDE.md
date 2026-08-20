@@ -78,13 +78,14 @@ order so the list stays stable.
   title is a **single icon** (`󰊢`, `󰍜`, `󰆍`, `󰛳`) and the human-readable mode name goes on
   the *list panel* inside — word titles on both produced `Ports` twice, two rows apart.
   For the same reason the plugin's own borders recede in `overlay0` while herdr's frame
-  keeps the accent, and **no panel paints a background**: the panes are transparent so the
-  terminal shows through all of them. `panel_bg` is for text sitting *on* a coloured pill or
-  mode chip, and for the floating popups (changelog/settings) that genuinely need to occlude
-  what is under them — not for the picker's own panels. Three tests in `picker.rs`
+  keeps the accent. **Background policy belongs only to `tui::SurfaceBackground`:**
+  `common.transparency = "transparent"` clears every root and floating card to the terminal
+  default, while `"opaque"` fills every one with `panel_bg`. A renderer never hand-writes
+  `Clear` or `.bg(panel_bg)` for a surface. `panel_bg` remains the foreground ink on coloured
+  pills and mode chips in either mode. Tests in `picker.rs`, `projects.rs`, and `git.rs`
   (`the_search_box_is_captioned_search_and_the_list_carries_the_mode_title`,
   `panels_use_the_projects_pickers_border_and_caption_slots`,
-  `no_panel_paints_an_opaque_background`) pin this down.
+  `no_panel_paints_an_opaque_background`, and the opaque-mode contracts) pin this down.
 - **There is one panel frame, `tui::framed`, and every framed surface goes through it or
   through `tui::boxed`** (the same frame plus a caption, and defined in terms of it, so the
   border style is spelled once). It lived in `ui.rs` while `picker.rs` hand-rolled its own
@@ -107,6 +108,11 @@ order so the list stays stable.
   previous animation imposed *was* the first-list latency. An empty result must be detected here
   too, before terminal claim, so the handoff to `bin/get.sh` never takes the screen and gives it
   back. Do not reintroduce a floor for visual feedback.
+- **The pre-build cat runs before Rust exists and sizes itself from the plugin PTY.**
+  `run_with_splash` reads `stty size </dev/tty` and passes those cells to `bootstrap_frame` on each
+  animation frame. Do not replace it with `tput`: redirecting `tput` away from the TTY makes it
+  return terminfo's 80x24 default in a wide Herdr pane. Horizontal padding is spaces; vertical
+  padding is rows. `tests/bootstrap_spec.sh` pins both coordinates.
 - **A list fetch runs outside `Git::on_key` and off the input thread.** `on_key` returns a `Step`;
   `GitSurface` turns `Step::Load` and `Step::CountFiles` into typed background effects, then applies
   their results from `on_tick`. That keeps the key interface IO-free and unit-testable through

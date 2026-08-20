@@ -650,6 +650,7 @@ pub fn main() -> Result<()> {
     let title = theme
         .resolve(&cfg.common.title_color)
         .unwrap_or_else(|| theme.or("accent", Color::Cyan));
+    let background = crate::tui::SurfaceBackground::resolve(&theme, cfg.common.transparency);
 
     // Not a repo: say so in one line and let the pane close, rather than opening
     // a menu whose every row would fail.
@@ -680,6 +681,7 @@ pub fn main() -> Result<()> {
         git: &mut g,
         cwd: &cwd,
         theme: &theme,
+        background,
         title,
         effect: None,
     })?;
@@ -691,7 +693,14 @@ pub fn main() -> Result<()> {
     // its lease, so every normal/error exit is safe; this short second lease is
     // deliberately handed to the review process after drawing its first frame.
     crate::surface::preroll(|frame| {
-        crate::splash::draw(frame, frame.area(), &theme, title, "Opening review")
+        crate::splash::draw(
+            frame,
+            frame.area(),
+            &theme,
+            background,
+            title,
+            "Opening review",
+        )
     });
 
     let script_dir = env::var("HERDR_PLUGIN_ROOT")
@@ -708,6 +717,7 @@ struct GitSurface<'a> {
     git: &'a mut Git,
     cwd: &'a str,
     theme: &'a Theme,
+    background: crate::tui::SurfaceBackground,
     title: Color,
     effect: Option<Receiver<GitEffect>>,
 }
@@ -721,7 +731,14 @@ impl Surface for GitSurface<'_> {
     type Output = ();
 
     fn draw(&mut self, frame: &mut Frame) {
-        draw(frame, frame.area(), self.theme, self.title, self.git);
+        draw(
+            frame,
+            frame.area(),
+            self.theme,
+            self.background,
+            self.title,
+            self.git,
+        );
     }
 
     fn tick_rate(&self) -> Duration {
@@ -872,8 +889,13 @@ mod tests {
 
     /// The whole screen as text, for the draw assertions.
     fn screen(g: &mut Git, w: u16, h: u16) -> String {
+        let theme = Theme::default();
+        let background = crate::tui::SurfaceBackground::resolve(
+            &theme,
+            crate::config::Transparency::Transparent,
+        );
         let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(w, h)).unwrap();
-        term.draw(|f| draw(f, f.area(), &Theme::default(), Color::Yellow, g))
+        term.draw(|f| draw(f, f.area(), &theme, background, Color::Yellow, g))
             .unwrap();
         let buf = term.backend().buffer().clone();
         (0..h)
@@ -889,8 +911,19 @@ mod tests {
     /// The same render `screen` does, handing back the cells rather than their
     /// symbols — what a background or a border colour has to be asserted against.
     fn buffer(g: &mut Git, theme: &Theme, w: u16, h: u16) -> ratatui::buffer::Buffer {
+        buffer_with(g, theme, crate::config::Transparency::Transparent, w, h)
+    }
+
+    fn buffer_with(
+        g: &mut Git,
+        theme: &Theme,
+        transparency: crate::config::Transparency,
+        w: u16,
+        h: u16,
+    ) -> ratatui::buffer::Buffer {
+        let background = crate::tui::SurfaceBackground::resolve(theme, transparency);
         let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(w, h)).unwrap();
-        term.draw(|f| draw(f, f.area(), theme, Color::Yellow, g))
+        term.draw(|f| draw(f, f.area(), theme, background, Color::Yellow, g))
             .unwrap();
         term.backend().buffer().clone()
     }
@@ -919,6 +952,29 @@ mod tests {
                     assert_ne!(buf[(x, y)].bg, fill, "{view} view fills ({x},{y})");
                 }
             }
+        }
+    }
+
+    #[test]
+    fn opaque_git_views_leave_no_transparent_holes() {
+        let theme = Theme::from_slots(&[("panel_bg", "#101214")]);
+        let mut g = Git::new();
+        open_default(&mut g);
+
+        for (view, buf) in [
+            (
+                "menu",
+                buffer_with(&mut g, &theme, crate::config::Transparency::Opaque, 60, 20),
+            ),
+            ("list", {
+                g.show_list(ListKind::PullRequests, rows());
+                buffer_with(&mut g, &theme, crate::config::Transparency::Opaque, 60, 20)
+            }),
+        ] {
+            assert!(
+                buf.content.iter().all(|cell| cell.bg != Color::Reset),
+                "{view} left a transparent cell"
+            );
         }
     }
 
@@ -1608,9 +1664,14 @@ z|Y|pull|git pull
 
         // The row of the card's bottom border (the lowest `╰`).
         let card_bottom = |g: &mut Git| -> usize {
+            let theme = Theme::default();
+            let background = crate::tui::SurfaceBackground::resolve(
+                &theme,
+                crate::config::Transparency::Transparent,
+            );
             let mut term =
                 ratatui::Terminal::new(ratatui::backend::TestBackend::new(90, 30)).unwrap();
-            term.draw(|f| draw(f, f.area(), &Theme::default(), Color::Yellow, g))
+            term.draw(|f| draw(f, f.area(), &theme, background, Color::Yellow, g))
                 .unwrap();
             let buf = term.backend().buffer().clone();
             (0..30u16)
@@ -1633,8 +1694,13 @@ z|Y|pull|git pull
         open_default(&mut g);
         g.show_list(ListKind::PullRequests, rows());
         g.on_key(key(KeyCode::Char('x'))); // query "x"
+        let theme = Theme::default();
+        let background = crate::tui::SurfaceBackground::resolve(
+            &theme,
+            crate::config::Transparency::Transparent,
+        );
         let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(90, 24)).unwrap();
-        term.draw(|f| draw(f, f.area(), &Theme::default(), Color::Yellow, &mut g))
+        term.draw(|f| draw(f, f.area(), &theme, background, Color::Yellow, &mut g))
             .unwrap();
         let pos = term.get_cursor_position().unwrap();
         // The cursor sits after the icon prefix and the one-char query, on the

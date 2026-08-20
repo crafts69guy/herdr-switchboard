@@ -4,7 +4,7 @@
 [common]
 keymode = "normal" # normal | insert
 title_color = "peach"
-transparency = "auto"
+transparency = "transparent" # transparent | opaque
 update_check = true
 notifications = true
 notification_position = "top-right"

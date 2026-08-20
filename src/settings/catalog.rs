@@ -129,9 +129,9 @@ pub(super) const SETTINGS: &[Setting] = &[
     Setting {
         group: "Appearance",
         key: "transparency",
-        default: "auto",
-        hint: "popup background transparency",
-        cycle: Cycle::Ring(&["auto", "enabled", "disabled"]),
+        default: "transparent",
+        hint: "all surface backgrounds",
+        cycle: Cycle::Ring(&["transparent", "opaque"]),
     },
     Setting {
         group: "Clone",

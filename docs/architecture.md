@@ -60,6 +60,7 @@ the module inventory.
 | Module | Interface | Implementation hides |
 | --- | --- | --- |
 | `surface` | `Surface`, `Transition`, `run` | Terminal lease, mouse capture, polling, ticks, redraw, teardown |
+| `tui` | `SurfaceBackground`, shared frames and pills | Transparent/opaque painting, clearing, frame and hit-zone vocabulary |
 | `config` | Typed section fields, `parse`, `try_load`, finite `value_for_cli` | Namespaced deserialization, defaults, validation |
 | `source::ProjectCatalog` | `new`, `load`, canonical `kinds` | Source enablement and load order |
 | `data` | Source loaders, entry and browse types, `Theme` | Response parsing and presentation mapping |
@@ -263,8 +264,8 @@ popups cannot be represented as several simultaneously active booleans.
   failure without executing real IO.
 - Adapter tests use `MockRunner` or a disposable file and assert observable commands, parsed
   results, failure behavior, and secret handling.
-- `TestBackend` render tests cover supported widths, transparent panels, live key labels, and hit
-  zones for any changed surface.
+- `TestBackend` render tests cover supported widths, both background modes, live key labels, and
+  hit zones for any changed surface.
 - Run the complete local/CI/release gate with `bash bin/check.sh`.
 - Manually exercise every affected Herdr pane. Attach a current screenshot when layout or
   interaction changes.

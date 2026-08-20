@@ -2,14 +2,46 @@
 //! form, coloured command-bar pills, and measured hit zones. Terminal lifetime
 //! and event scheduling live in the deep [`crate::surface`] module.
 
-use ratatui::layout::Position;
+use ratatui::layout::{Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Span;
-use ratatui::widgets::{Block, BorderType, Borders};
+use ratatui::widgets::{Block, BorderType, Borders, Clear};
+use ratatui::Frame;
+
+use crate::config::Transparency;
+use crate::data::Theme;
+
+/// The background policy for every Switchboard-owned rectangle. Callers only
+/// decide *where* they draw; this module owns how transparent and opaque modes
+/// clear that rectangle so roots and nested cards cannot drift apart.
+#[derive(Clone, Copy)]
+pub struct SurfaceBackground {
+    fill: Option<Color>,
+}
+
+impl SurfaceBackground {
+    pub fn resolve(theme: &Theme, transparency: Transparency) -> Self {
+        let fill = match transparency {
+            Transparency::Transparent => None,
+            Transparency::Opaque => Some(theme.or("panel_bg", Color::Rgb(16, 18, 20))),
+        };
+        Self { fill }
+    }
+
+    /// Erase the previous contents, then optionally fill the rectangle. Clearing
+    /// first prevents a nested card from leaving the parent's text beneath it;
+    /// a transparent card still shows the terminal, never the obscured widget.
+    pub fn paint(self, frame: &mut Frame, area: Rect) {
+        frame.render_widget(Clear, area);
+        if let Some(fill) = self.fill {
+            frame.render_widget(Block::default().style(Style::default().bg(fill)), area);
+        }
+    }
+}
 
 /// The frame every Switchboard surface wears: rounded, bordered in `border`,
-/// captionless, and — the part that keeps the panes transparent — carrying no
-/// background of its own. [`boxed`] is this plus a caption; a panel whose title
+/// captionless, and carrying no background decision of its own — that belongs
+/// to [`SurfaceBackground`]. [`boxed`] is this plus a caption; a panel whose title
 /// slot holds something richer than a word (the switcher's tab strip) builds
 /// from here rather than hand-rolling a `Block` and drifting away from it.
 pub fn framed(border: Color) -> Block<'static> {
@@ -83,4 +115,47 @@ pub fn zone_at<T: Copy>(zones: &[(u16, u16, T)], row: u16, at: Position) -> Opti
         .then(|| zones.iter().find(|(a, b, _)| at.x >= *a && at.x < *b))
         .flatten()
         .map(|(_, _, payload)| *payload)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::backend::TestBackend;
+    use ratatui::widgets::Paragraph;
+    use ratatui::Terminal;
+
+    fn painted(mode: Transparency) -> ratatui::buffer::Buffer {
+        let theme = Theme::from_slots(&[("panel_bg", "#101214")]);
+        let background = SurfaceBackground::resolve(&theme, mode);
+        let mut terminal = Terminal::new(TestBackend::new(6, 3)).unwrap();
+        terminal
+            .draw(|frame| {
+                frame.render_widget(
+                    Paragraph::new("parent")
+                        .style(Style::default().bg(Color::Red).fg(Color::White)),
+                    frame.area(),
+                );
+                background.paint(frame, Rect::new(1, 1, 3, 1));
+            })
+            .unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    #[test]
+    fn transparent_background_clears_to_the_terminal_default() {
+        let buffer = painted(Transparency::Transparent);
+        for x in 1..4 {
+            assert_eq!(buffer[(x, 1)].symbol(), " ");
+            assert_eq!(buffer[(x, 1)].bg, Color::Reset);
+        }
+    }
+
+    #[test]
+    fn opaque_background_clears_and_fills_with_panel_bg() {
+        let buffer = painted(Transparency::Opaque);
+        for x in 1..4 {
+            assert_eq!(buffer[(x, 1)].symbol(), " ");
+            assert_eq!(buffer[(x, 1)].bg, Color::Rgb(0x10, 0x12, 0x14));
+        }
+    }
 }
