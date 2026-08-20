@@ -30,7 +30,7 @@ use crossterm::event::{
 use ratatui::layout::{Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
+use ratatui::widgets::{Clear, Paragraph};
 use ratatui::Frame;
 
 use crate::data::{Config, Theme};
@@ -867,7 +867,9 @@ pub fn draw(f: &mut Frame, area: Rect, theme: &Theme, title: Color, g: &Git) {
     let text = theme.or("text", Color::Reset);
     let sub = theme.or("subtext0", Color::Gray);
     let accent = theme.or("accent", Color::Cyan);
-    let border = theme.or("accent", Color::Cyan);
+    // The border recedes: herdr frames the pane in the accent already, and a
+    // second accent box inside it reads as two competing frames.
+    let border = theme.or("overlay0", Color::DarkGray);
 
     // A sub-list is a fixed-size box with its own internal layout.
     if matches!(g.view, View::List) {
@@ -895,15 +897,8 @@ pub fn draw(f: &mut Frame, area: Rect, theme: &Theme, title: Color, g: &Git) {
     );
     f.render_widget(Clear, popup);
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(border))
-        .style(Style::default().bg(ink))
-        .title(Span::styled(
-            format!(" 󰊢 Git · {} ", g.label),
-            Style::default().fg(title).add_modifier(Modifier::BOLD),
-        ))
+    let cap = format!("󰊢 Git · {}", g.label);
+    let block = crate::tui::boxed(&cap, title, border)
         .title(Line::from(Span::styled(" · git ", Style::default().fg(sub))).right_aligned());
     let inner = block.inner(popup);
     f.render_widget(block, popup);
@@ -923,11 +918,10 @@ pub fn draw(f: &mut Frame, area: Rect, theme: &Theme, title: Color, g: &Git) {
 fn draw_list(f: &mut Frame, area: Rect, theme: &Theme, title: Color, g: &Git) {
     use ratatui::layout::Constraint::{Length, Min};
 
-    let ink = theme.or("panel_bg", Color::Rgb(16, 18, 20));
     let text = theme.or("text", Color::Reset);
     let sub = theme.or("subtext0", Color::Gray);
     let accent = theme.or("accent", Color::Cyan);
-    let border = theme.or("accent", Color::Cyan);
+    let border = theme.or("overlay0", Color::DarkGray);
 
     // Size from the terminal, not the content, so the box is stable across searches.
     let w = (LIST_W as u16 + 6).min(area.width.saturating_sub(2));
@@ -952,15 +946,8 @@ fn draw_list(f: &mut Frame, area: Rect, theme: &Theme, title: Color, g: &Git) {
     } else {
         format!(" · {what} · {}/{} ", g.lsel + 1, g.filtered.len())
     };
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(border))
-        .style(Style::default().bg(ink))
-        .title(Span::styled(
-            format!(" 󰊢 Git · {} ", g.label),
-            Style::default().fg(title).add_modifier(Modifier::BOLD),
-        ))
+    let cap = format!("󰊢 Git · {}", g.label);
+    let block = crate::tui::boxed(&cap, title, border)
         .title(Line::from(Span::styled(tail, Style::default().fg(sub))).right_aligned());
     let inner = block.inner(popup);
     f.render_widget(block, popup);
@@ -997,11 +984,7 @@ fn draw_list(f: &mut Frame, area: Rect, theme: &Theme, title: Color, g: &Git) {
     );
 
     // The search input, its own rounded box.
-    let sbox = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(sub))
-        .style(Style::default().bg(ink));
+    let sbox = crate::tui::framed(border);
     let sinner = sbox.inner(search_area);
     f.render_widget(sbox, search_area);
     let mut qline = vec![Span::styled(SEARCH_PREFIX, Style::default().fg(accent))];
@@ -1322,6 +1305,88 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    /// The same render `screen` does, handing back the cells rather than their
+    /// symbols — what a background or a border colour has to be asserted against.
+    fn buffer(g: &Git, theme: &Theme, w: u16, h: u16) -> ratatui::buffer::Buffer {
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(w, h)).unwrap();
+        term.draw(|f| draw(f, f.area(), theme, Color::Yellow, g))
+            .unwrap();
+        term.backend().buffer().clone()
+    }
+
+    /// The pane is transparent so the terminal shows through it, exactly like
+    /// every other Switchboard surface. `panel_bg` is allowed as the *ink* on a
+    /// key cap and on the command bar's pills — never as a fill, which is what
+    /// the three hand-rolled `Block`s here used to do to the menu card, the
+    /// sub-list card, and that list's search box.
+    #[test]
+    fn no_git_card_paints_an_opaque_background() {
+        let fill = Color::Rgb(0x10, 0x12, 0x14);
+        let theme = Theme::from_slots(&[("panel_bg", "#101214"), ("accent", "#6fd0a8")]);
+        let mut g = Git::new();
+        open_default(&mut g);
+
+        for (view, buf) in [
+            ("menu", buffer(&g, &theme, 60, 20)),
+            ("list", {
+                g.show_list(ListKind::PullRequests, rows());
+                buffer(&g, &theme, 60, 20)
+            }),
+        ] {
+            for y in 0..20 {
+                for x in 0..60 {
+                    assert_ne!(buf[(x, y)].bg, fill, "{view} view fills ({x},{y})");
+                }
+            }
+        }
+    }
+
+    /// The card body itself — everything inside the frame that is not a chip —
+    /// leaves the terminal showing through. Measured from the frame's own
+    /// corner so it cannot drift when the card is resized or recentred.
+    #[test]
+    fn the_git_menu_paints_nothing_but_its_key_caps() {
+        let theme = Theme::default();
+        let mut g = Git::new();
+        open_default(&mut g);
+        let buf = buffer(&g, &theme, 60, 20);
+
+        let corner = (0..20u16)
+            .flat_map(|y| (0..60u16).map(move |x| (x, y)))
+            .find(|&(x, y)| buf[(x, y)].symbol() == "╭")
+            .expect("the card draws a rounded corner");
+        let bottom = (corner.1..20)
+            .find(|&y| buf[(corner.0, y)].symbol() == "╰")
+            .expect("the card closes");
+        // Inside the border: one cell of selection gutter, then the three-cell
+        // key cap. The bar is the last inner row and is all pills.
+        let caps = corner.0 + 2..corner.0 + 5;
+        for y in corner.1 + 1..bottom - 1 {
+            for x in corner.0 + 1..60 {
+                if caps.contains(&x) {
+                    continue;
+                }
+                assert_eq!(buf[(x, y)].bg, Color::Reset, "menu paints ({x},{y})");
+            }
+        }
+    }
+
+    /// herdr frames the pane in the accent itself; the plugin's own border has
+    /// to recede behind it, or the card reads as a second competing frame.
+    #[test]
+    fn the_git_cards_border_recedes_in_overlay0() {
+        let theme = Theme::from_slots(&[("accent", "#6fd0a8"), ("overlay0", "#6c7e76")]);
+        let mut g = Git::new();
+        open_default(&mut g);
+        let buf = buffer(&g, &theme, 60, 20);
+
+        let corner = (0..20)
+            .flat_map(|y| (0..60).map(move |x| (x, y)))
+            .find(|&(x, y)| buf[(x, y)].symbol() == "╭")
+            .expect("the card draws a rounded corner");
+        assert_eq!(buf[corner].fg, Color::Rgb(0x6c, 0x7e, 0x76));
     }
 
     #[test]

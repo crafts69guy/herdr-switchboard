@@ -266,10 +266,10 @@ fn draw_list(
         format!(" sort: {} ", app.picker.sort.label()),
         Style::default().fg(border),
     );
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(border))
+    // `framed` rather than `boxed`: this panel's caption slot is the tab strip,
+    // a multi-span line, not a word — but the frame itself must still be the
+    // shared one, or it drifts the way the git card did.
+    let block = crate::tui::framed(border)
         .title(Line::from(tab_spans))
         .title(Line::from(sort_hint).right_aligned());
 

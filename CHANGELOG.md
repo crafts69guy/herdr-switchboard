@@ -40,6 +40,21 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the cards' own rows. The columns also fill the pane exactly, instead of `100 / n` leaving the
   remainder dark on the right.
 
+- **The Git pane stopped painting itself opaque.** Its menu card, its sub-list card and that
+  list's search box each filled themselves with `panel_bg` and drew their borders in the accent.
+  All three were hand-rolled `Block`s — exactly the drift `tui::boxed` exists to prevent — and the
+  result was one pane that looked like a solid dialog sitting next to five that the terminal shows
+  through. They go through the helper now: borders recede in `overlay0`, captions keep
+  `title_color`, and nothing paints a fill, so a translucent terminal stays translucent under the
+  Git pane too.
+
+  `panel_bg` keeps the places it belongs: as ink on key caps and pills, and as the fill of the
+  changelog, settings and cheatsheet popups, which float over the live picker and genuinely have
+  to occlude it. The switcher's own list panel was hand-rolling a `Block` as well — its caption
+  slot holds the tab strip rather than a word — so `tui` grew `framed`, the captionless half of
+  `boxed`, and both panels build from it. Three render tests now assert the absence of a fill,
+  because the one that existed only covered the mode pickers.
+
 ## [1.2.0] - 2026-08-19
 
 ### Added

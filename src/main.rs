@@ -1251,6 +1251,31 @@ mod tests {
             .join("\n")
     }
 
+    /// The same render as [`rendered`], handing back the cells themselves.
+    fn rendered_buffer(app: &mut App, w: u16, h: u16) -> ratatui::buffer::Buffer {
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(w, h)).unwrap();
+        terminal.draw(|f| ui::draw(f, app)).unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    /// The switcher's own panels are transparent, the way `picker.rs` pins its
+    /// mode pickers down. `panel_bg` belongs on chips and on the popups that
+    /// have to occlude the picker; a panel that fills itself with it blacks out
+    /// the terminal behind a pane that is meant to show through.
+    #[test]
+    fn no_switcher_panel_paints_an_opaque_background() {
+        let mut app = app_with_layout();
+        app.theme = Theme::from_slots(&[("panel_bg", "#101214")]);
+        let fill = Color::Rgb(0x10, 0x12, 0x14);
+        let buffer = rendered_buffer(&mut app, 80, 20);
+        for y in 0..20 {
+            for x in 0..80 {
+                assert_ne!(buffer[(x, y)].bg, fill, "cell ({x},{y}) filled the panel");
+            }
+        }
+    }
+
     #[test]
     fn the_help_popup_says_what_each_key_does_in_full() {
         let mut app = app_with_layout();

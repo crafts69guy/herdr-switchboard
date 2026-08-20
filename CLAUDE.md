@@ -152,11 +152,15 @@ order so the list stays stable.
   (`the_search_box_is_captioned_search_and_the_list_carries_the_mode_title`,
   `panels_use_the_projects_pickers_border_and_caption_slots`,
   `no_panel_paints_an_opaque_background`) pin this down.
-- **There is one panel helper, `tui::boxed`, and every framed surface goes through it.**
-  It lived in `ui.rs` while `picker.rs` hand-rolled its own `Block`s, and the two drifted
-  exactly as you would expect: accent borders instead of `overlay0`, and captions passed as
-  bare `&str` so they rendered in the terminal's default foreground rather than
-  `title_color`. A new framed surface calls `boxed`; it does not build a `Block` itself.
+- **There is one panel frame, `tui::framed`, and every framed surface goes through it or
+  through `tui::boxed`** (the same frame plus a caption, and defined in terms of it, so the
+  border style is spelled once). It lived in `ui.rs` while `picker.rs` hand-rolled its own
+  `Block`s, and the two drifted exactly as you would expect: accent borders instead of
+  `overlay0`, and captions passed as bare `&str` so they rendered in the terminal's default
+  foreground rather than `title_color`. `git.rs` drifted the same way and went further, filling
+  all three of its cards with `panel_bg` — the transparency bug that shipped in 1.2.0. A new
+  framed surface calls `boxed`, or `framed` when its caption slot holds something richer than a
+  word (the switcher's tab strip); it does not build a `Block` itself.
 - **The git menu is a pane, and a review `exec`s over that pane.** There is a manifest pane for
   the *menu* (`[[panes]] id = "git"`), but **none for the review**: `git::main` `exec`s
   `bin/review.sh` over itself the way the clone flow's `Accept::Clone` `exec`s `get.sh`, so tuicr

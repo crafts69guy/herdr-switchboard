@@ -1,5 +1,6 @@
-//! Shared TUI plumbing: the rounded panel block, the coloured command-bar pill
-//! row, and the plain draw/poll/read event loop the two popup modes run.
+//! Shared TUI plumbing: the rounded panel frame and its captioned form, the
+//! coloured command-bar pill row, and the plain draw/poll/read event loop the
+//! two popup modes run.
 //!
 //! The picker keeps its own loop in `main.rs` on purpose — it also drives a
 //! background preview worker, consumes mouse events, and returns a chosen
@@ -15,21 +16,29 @@ use ratatui::text::Span;
 use ratatui::widgets::{Block, BorderType, Borders};
 use ratatui::Frame;
 
-/// The one panel a Switchboard surface is allowed to draw: rounded, bordered in
-/// `border`, captioned in `title_color`. Every framed thing goes through here so
-/// the projects picker, the mode pickers, and the popups cannot drift into three
-/// different looks — the bug that shipped as accent boxes with unstyled captions.
-pub fn boxed(label: &str, title_color: Color, border: Color) -> Block<'_> {
+/// The frame every Switchboard surface wears: rounded, bordered in `border`,
+/// captionless, and — the part that keeps the panes transparent — carrying no
+/// background of its own. [`boxed`] is this plus a caption; a panel whose title
+/// slot holds something richer than a word (the switcher's tab strip) builds
+/// from here rather than hand-rolling a `Block` and drifting away from it.
+pub fn framed(border: Color) -> Block<'static> {
     Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(border))
-        .title(Span::styled(
-            format!(" {label} "),
-            Style::default()
-                .fg(title_color)
-                .add_modifier(Modifier::BOLD),
-        ))
+}
+
+/// The one panel a Switchboard surface is allowed to draw: [`framed`], captioned
+/// in `title_color`. Every framed thing goes through one of the two so the
+/// projects picker, the mode pickers, and the popups cannot drift into three
+/// different looks — the bug that shipped as accent boxes with unstyled captions.
+pub fn boxed(label: &str, title_color: Color, border: Color) -> Block<'_> {
+    framed(border).title(Span::styled(
+        format!(" {label} "),
+        Style::default()
+            .fg(title_color)
+            .add_modifier(Modifier::BOLD),
+    ))
 }
 
 /// One coloured command-bar pill: a bold key cap and its label, drawn in
