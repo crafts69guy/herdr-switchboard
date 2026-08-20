@@ -234,6 +234,25 @@ full verification suite, and leave the next phase optional.
    and shell-history ingestion from its picker adapter and terminal actions. Keep the shared picker
    intact unless concrete duplication demonstrates a better, smaller interface.
 
+### Implementation result
+
+The structural phases above were completed on 2026-08-20 without adding another event loop or an
+application-wide framework. Each feature keeps a narrow root module and private children:
+
+| Feature root | Root production lines | Private implementation children |
+| --- | ---: | --- |
+| `main.rs` | 138 | Projects moved behind `projects.rs`, `projects/view.rs`, and `projects/preview.rs` |
+| `git.rs` | 831 | `git/effect.rs`, `git/menu_config.rs`, `git/view.rs` |
+| `usage.rs` | 324 | domain, time, view, and Codex/Claude provider adapters under `usage/` |
+| `zen.rs` | 130 | geometry, session persistence, effect engine, and picker adapter under `zen/` |
+| `settings.rs` | 373 | catalogue, validated TOML document writer, and view under `settings/` |
+| `commands.rs` | 29 | catalogue, bounded history ingestion, terminal actions, and picker under `commands/` |
+
+The closed Projects overlay enum remains a separate behavioral refactor. The extraction did not
+need it to establish a module boundary, and the existing help, changelog, and settings state is
+covered by interaction and render tests. Introduce it only with explicit transition tests that make
+mutual exclusion the source of truth rather than mirroring the current booleans.
+
 ### Acceptance for every implementation phase
 
 - Reducer tests cover navigation, overlays, loading, confirmation, cancellation, completion, and
