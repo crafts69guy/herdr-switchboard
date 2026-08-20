@@ -69,10 +69,17 @@ All pickers retain the shared search and navigation controls. Their command-spec
 
 ## Mouse
 
-- The wheel scrolls the preview when the pointer is over it; elsewhere it moves the list.
-- Clicking a row selects it.
-- Clicking a group tab filters the list.
-- Clicking a command-bar pill runs that action.
+The pointer works on every surface: the switcher, the mode pickers, the Git menu and its
+sub-lists, the settings form, the changelog, and the Usage pane.
+
+- The wheel scrolls the preview when the pointer is over it; elsewhere it moves the selection.
+  Over the changelog and the settings form it walks their own content.
+- Clicking a row selects it. **Clicking the row that is already selected runs it** — what Enter
+  would do. Terminals report no double-click, so this is how a click both navigates and acts
+  without a stray one launching anything.
+- Clicking a group tab filters the list; clicking a settings tab switches groups.
+- Clicking a command-bar pill does what the key printed on its cap does.
+- Clicking outside the settings card closes it and discards the unsaved draft, exactly like `esc`.
 
 ## Remapping
 

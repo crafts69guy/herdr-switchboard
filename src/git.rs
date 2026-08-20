@@ -25,7 +25,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use crossterm::event::{
-    self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEventKind,
+    self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
 };
 use ratatui::layout::{Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -205,6 +205,28 @@ pub struct Git {
     count: usize,
     /// Ask before an all-files review over this many tracked files; 0 never asks.
     warn_at: usize,
+    /// Where the last draw put everything a pointer can land on.
+    zones: Zones,
+}
+
+/// Click targets published by the last draw. Written only by the draw functions
+/// and read only by [`Git::on_click`]: the card is recentred every frame, so
+/// this is the only thing that knows where it actually landed.
+#[derive(Default)]
+struct Zones {
+    /// The whole card. A click outside it is not this menu's business.
+    card: Rect,
+    /// The menu body. One item is one line and nothing wraps, so the row under
+    /// the pointer is `y - menu.y` with no offset to apply.
+    menu: Rect,
+    /// The sub-list body and the page it was drawn with — stored rather than
+    /// recomputed, so a click and its render cannot disagree about which page
+    /// is on screen.
+    body: Rect,
+    page_start: usize,
+    /// The command bar, each pill carrying the key its cap advertises.
+    bar_row: u16,
+    bar_zones: Vec<(u16, u16, KeyCode)>,
 }
 
 impl Git {
@@ -226,6 +248,7 @@ impl Git {
             pending: None,
             count: 0,
             warn_at: 0,
+            zones: Zones::default(),
         }
     }
 
@@ -535,9 +558,59 @@ impl Git {
     /// Wheel over the card: scroll a sub-list body by moving the selection (which
     /// pages the list). A no-op in the menu, which has nothing to scroll.
     pub fn on_wheel(&mut self, d: i32) {
-        if matches!(self.view, View::List) {
-            self.lstep(d);
+        match self.view {
+            View::List => self.lstep(d),
+            // The menu is a list too, and a wheel that moved nothing here read
+            // as a dead pane next to five pickers where it works.
+            View::Menu => self.step(d),
+            View::Confirm => {}
         }
+    }
+
+    /// A left click, resolved against the zones the last draw published.
+    ///
+    /// Returns a [`Step`] for the same reason [`Git::on_key`] does: a click on a
+    /// row can start a fetch or a review, and that IO belongs to the caller.
+    ///
+    /// One rule, shared with every other Switchboard surface: a click selects,
+    /// and a click on the row *already* selected does what Enter would. There is
+    /// no double-click event to lean on, and a single click that ran the row
+    /// would let a stray one `exec` tuicr over the pane.
+    pub fn on_click(&mut self, at: Position) -> Step {
+        // The bar first: a pill overlaps nothing else, and its payload is the
+        // key on its cap, so this is exactly the key path.
+        if let Some(code) = crate::tui::zone_at(&self.zones.bar_zones, self.zones.bar_row, at) {
+            return self.on_key(KeyEvent::from(code));
+        }
+        if !self.zones.card.contains(at) {
+            return Step::Stay;
+        }
+        match self.view {
+            View::Menu => {
+                if self.zones.menu.contains(at) {
+                    let row = (at.y - self.zones.menu.y) as usize;
+                    if row < self.items.len() {
+                        if row == self.sel {
+                            return self.activate();
+                        }
+                        self.sel = row;
+                    }
+                }
+            }
+            View::List => {
+                if self.zones.body.contains(at) {
+                    let row = self.zones.page_start + (at.y - self.zones.body.y) as usize;
+                    if row < self.filtered.len() {
+                        if row == self.lsel {
+                            return self.activate_row();
+                        }
+                        self.lsel = row;
+                    }
+                }
+            }
+            View::Confirm => {}
+        }
+        Step::Stay
     }
 
     fn lstep(&mut self, d: i32) {
@@ -843,7 +916,7 @@ pub fn main() -> Result<()> {
 
     let mut terminal = crate::init_terminal();
     let outcome = loop {
-        if let Err(e) = terminal.draw(|f| draw(f, f.area(), &theme, title, &g)) {
+        if let Err(e) = terminal.draw(|f| draw(f, f.area(), &theme, title, &mut g)) {
             break Err(anyhow::Error::from(e));
         }
         match event::poll(Duration::from_millis(200)) {
@@ -882,6 +955,21 @@ pub fn main() -> Result<()> {
             Ok(Event::Mouse(m)) => match m.kind {
                 MouseEventKind::ScrollDown => g.on_wheel(1),
                 MouseEventKind::ScrollUp => g.on_wheel(-1),
+                MouseEventKind::Down(MouseButton::Left) => {
+                    match g.on_click(Position::new(m.column, m.row)) {
+                        Step::Load(kind) => {
+                            let rows = load_rows(&runner, &cwd, kind);
+                            g.show_list(kind, rows);
+                        }
+                        Step::CountFiles => {
+                            if let Step::Chosen = g.show_count(count_tracked_files(&runner, &cwd)) {
+                                break Ok(());
+                            }
+                        }
+                        Step::Chosen => break Ok(()),
+                        Step::Stay => {}
+                    }
+                }
                 _ => {}
             },
             Ok(_) => {}
@@ -951,7 +1039,7 @@ pub fn parse_menu_conf(text: &str) -> Vec<Custom> {
 }
 
 /// Draw the git card centred in the pane, matching the settings/changelog shape.
-pub fn draw(f: &mut Frame, area: Rect, theme: &Theme, title: Color, g: &Git) {
+pub fn draw(f: &mut Frame, area: Rect, theme: &Theme, title: Color, g: &mut Git) {
     let ink = theme.or("panel_bg", Color::Rgb(16, 18, 20));
     let text = theme.or("text", Color::Reset);
     let sub = theme.or("subtext0", Color::Gray);
@@ -1002,6 +1090,9 @@ pub fn draw(f: &mut Frame, area: Rect, theme: &Theme, title: Color, g: &Git) {
     ])
     .split(inner);
     f.render_widget(Paragraph::new(lines), rows[0]);
+    g.zones.card = popup;
+    g.zones.menu = rows[0];
+    g.zones.body = Rect::default();
     draw_bar(f, g, rows[1], theme);
 }
 
@@ -1012,7 +1103,7 @@ pub fn draw(f: &mut Frame, area: Rect, theme: &Theme, title: Color, g: &Git) {
 /// splash and `exec`s the review over itself — so a tree big enough to keep
 /// tuicr reading for minutes is indistinguishable from a hang. This is the only
 /// frame that can still say otherwise.
-fn draw_confirm(f: &mut Frame, area: Rect, theme: &Theme, title: Color, g: &Git) {
+fn draw_confirm(f: &mut Frame, area: Rect, theme: &Theme, title: Color, g: &mut Git) {
     let text = theme.or("text", Color::Reset);
     let sub = theme.or("subtext0", Color::Gray);
     let border = theme.or("overlay0", Color::DarkGray);
@@ -1070,6 +1161,10 @@ fn draw_confirm(f: &mut Frame, area: Rect, theme: &Theme, title: Color, g: &Git)
     ])
     .split(inner);
     f.render_widget(Paragraph::new(lines), rows[0]);
+    // Nothing here is a row: only the bar can be clicked.
+    g.zones.card = popup;
+    g.zones.menu = Rect::default();
+    g.zones.body = Rect::default();
     draw_bar(f, g, rows[1], theme);
 }
 
@@ -1090,7 +1185,7 @@ fn thousands(n: usize) -> String {
 /// A sub-list, drawn as a **fixed-size** card so filtering never resizes it: a
 /// pinned detail header on top, a rounded search box just above the body, and —
 /// the only part that scrolls — the paged row list, then the bar.
-fn draw_list(f: &mut Frame, area: Rect, theme: &Theme, title: Color, g: &Git) {
+fn draw_list(f: &mut Frame, area: Rect, theme: &Theme, title: Color, g: &mut Git) {
     use ratatui::layout::Constraint::{Length, Min};
 
     let text = theme.or("text", Color::Reset);
@@ -1126,6 +1221,9 @@ fn draw_list(f: &mut Frame, area: Rect, theme: &Theme, title: Color, g: &Git) {
         .title(Line::from(Span::styled(tail, Style::default().fg(sub))).right_aligned());
     let inner = block.inner(popup);
     f.render_widget(block, popup);
+    g.zones.card = popup;
+    g.zones.menu = Rect::default();
+    g.zones.body = Rect::default();
 
     // Nothing came back: say which nothing, rather than an empty box.
     if g.rows.is_empty() {
@@ -1175,6 +1273,7 @@ fn draw_list(f: &mut Frame, area: Rect, theme: &Theme, title: Color, g: &Git) {
 
     // Only this scrolls: the page of rows holding the selection.
     let viewport = body_area.height as usize;
+    let start = page_start(g.lsel, g.filtered.len(), viewport);
     f.render_widget(
         Paragraph::new(list_body_lines(
             g,
@@ -1182,10 +1281,13 @@ fn draw_list(f: &mut Frame, area: Rect, theme: &Theme, title: Color, g: &Git) {
             sub,
             accent,
             viewport,
+            start,
             body_area.width as usize,
         )),
         body_area,
     );
+    g.zones.body = body_area;
+    g.zones.page_start = start;
 
     draw_bar(f, g, bar_area, theme);
 
@@ -1336,12 +1438,28 @@ fn list_header_lines(
 /// The scrolling body: the page of the filtered list holding the selection, each
 /// row a marker, id, date column, and clipped label. This is the only part of the
 /// card that moves; `viewport` is the body area's height.
+/// The first row of the page `sel` falls on. Paged rather than scrolled, so a
+/// long list moves a screen at a time instead of one row under the cursor.
+///
+/// Computed once per draw and stored in [`Zones`], because a click has to read
+/// the *same* page the render used — recomputing it in the hit test is how the
+/// two silently disagree.
+fn page_start(sel: usize, len: usize, viewport: usize) -> usize {
+    let viewport = viewport.max(1);
+    if len <= viewport {
+        0
+    } else {
+        (sel / viewport) * viewport
+    }
+}
+
 fn list_body_lines(
     g: &Git,
     text: Color,
     sub: Color,
     accent: Color,
     viewport: usize,
+    start: usize,
     width: usize,
 ) -> Vec<Line<'static>> {
     if g.filtered.is_empty() {
@@ -1352,11 +1470,6 @@ fn list_body_lines(
     }
     let viewport = viewport.max(1);
     let len = g.filtered.len();
-    let start = if len <= viewport {
-        0
-    } else {
-        (g.lsel / viewport) * viewport
-    };
     let end = (start + viewport).min(len);
     g.filtered
         .iter()
@@ -1424,11 +1537,30 @@ fn bar_width(pills: &[crate::tui::Pill]) -> u16 {
         .sum::<u16>()
 }
 
-fn draw_bar(f: &mut Frame, g: &Git, area: Rect, theme: &Theme) {
+fn draw_bar(f: &mut Frame, g: &mut Git, area: Rect, theme: &Theme) {
     let ink = theme.or("panel_bg", Color::Rgb(16, 18, 20));
     let pills = bar_pills(g, theme);
-    let (spans, _) = crate::tui::pill_row(&pills, ink, area.x);
+    let (spans, zones) = crate::tui::pill_row(&pills, ink, area.x);
+    // A pill's payload is the key printed on its cap, so clicking one and
+    // pressing it are the same code path and cannot drift apart. `↑ ↓` names a
+    // pair rather than a verb and is not clickable.
+    let codes = bar_keys(g);
+    g.zones.bar_row = area.y;
+    g.zones.bar_zones = zones
+        .into_iter()
+        .zip(codes)
+        .filter_map(|((a, b), code)| code.map(|c| (a, b, c)))
+        .collect();
     f.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+/// The key each pill in [`bar_pills`] stands for, in the same order. `None` for
+/// a pill that names a pair of keys rather than one action.
+fn bar_keys(g: &Git) -> Vec<Option<KeyCode>> {
+    match g.view {
+        View::Menu | View::List => vec![Some(KeyCode::Enter), None, Some(KeyCode::Esc)],
+        View::Confirm => vec![Some(KeyCode::Enter), Some(KeyCode::Esc)],
+    }
 }
 
 #[cfg(test)]
@@ -1473,7 +1605,7 @@ mod tests {
     }
 
     /// The whole screen as text, for the draw assertions.
-    fn screen(g: &Git, w: u16, h: u16) -> String {
+    fn screen(g: &mut Git, w: u16, h: u16) -> String {
         let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(w, h)).unwrap();
         term.draw(|f| draw(f, f.area(), &Theme::default(), Color::Yellow, g))
             .unwrap();
@@ -1490,7 +1622,7 @@ mod tests {
 
     /// The same render `screen` does, handing back the cells rather than their
     /// symbols — what a background or a border colour has to be asserted against.
-    fn buffer(g: &Git, theme: &Theme, w: u16, h: u16) -> ratatui::buffer::Buffer {
+    fn buffer(g: &mut Git, theme: &Theme, w: u16, h: u16) -> ratatui::buffer::Buffer {
         let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(w, h)).unwrap();
         term.draw(|f| draw(f, f.area(), theme, Color::Yellow, g))
             .unwrap();
@@ -1510,10 +1642,10 @@ mod tests {
         open_default(&mut g);
 
         for (view, buf) in [
-            ("menu", buffer(&g, &theme, 60, 20)),
+            ("menu", buffer(&mut g, &theme, 60, 20)),
             ("list", {
                 g.show_list(ListKind::PullRequests, rows());
-                buffer(&g, &theme, 60, 20)
+                buffer(&mut g, &theme, 60, 20)
             }),
         ] {
             for y in 0..20 {
@@ -1532,7 +1664,7 @@ mod tests {
         let theme = Theme::default();
         let mut g = Git::new();
         open_default(&mut g);
-        let buf = buffer(&g, &theme, 60, 20);
+        let buf = buffer(&mut g, &theme, 60, 20);
 
         let corner = (0..20u16)
             .flat_map(|y| (0..60u16).map(move |x| (x, y)))
@@ -1561,7 +1693,7 @@ mod tests {
         let theme = Theme::from_slots(&[("accent", "#6fd0a8"), ("overlay0", "#6c7e76")]);
         let mut g = Git::new();
         open_default(&mut g);
-        let buf = buffer(&g, &theme, 60, 20);
+        let buf = buffer(&mut g, &theme, 60, 20);
 
         let corner = (0..20)
             .flat_map(|y| (0..60).map(move |x| (x, y)))
@@ -1601,7 +1733,7 @@ mod tests {
         assert_eq!(g.show_count(Some(6699)), Step::Stay);
         assert!(g.show, "the card stays up");
         assert!(g.chosen.is_none());
-        let screen = screen(&g, 70, 20);
+        let screen = screen(&mut g, 70, 20);
         assert!(screen.contains("6,699 files"), "{screen}");
         assert!(screen.contains("open anyway"), "{screen}");
 
@@ -1668,6 +1800,94 @@ mod tests {
         ] {
             assert_eq!(thousands(n), want);
         }
+    }
+
+    /// One rule everywhere: a click selects, and a click on the row already
+    /// selected does what Enter would. A single click that ran the row would let
+    /// a stray one `exec` tuicr over the pane.
+    #[test]
+    fn clicking_the_selected_menu_row_runs_it_and_another_row_only_moves_the_cursor() {
+        let mut g = Git::new();
+        open_default(&mut g);
+        // Zones exist only after a draw — the card is recentred every frame.
+        let _ = screen(&mut g, 70, 24);
+        let menu = g.zones.menu;
+
+        let third = Position::new(menu.x + 3, menu.y + 2);
+        assert_eq!(g.on_click(third), Step::Stay);
+        assert_eq!(g.sel, 2, "the first click only moves the cursor");
+        assert!(g.chosen.is_none());
+
+        let _ = screen(&mut g, 70, 24);
+        assert_eq!(g.on_click(third), Step::Chosen);
+        assert_eq!(g.chosen.unwrap().mode, "commits");
+    }
+
+    /// The click has to read the *same* page the render used, or a list scrolled
+    /// past its first screenful selects the wrong row — silently.
+    #[test]
+    fn clicking_a_list_row_reads_through_the_page_the_draw_used() {
+        let many: Vec<Row> = (0..40)
+            .map(|i| Row {
+                id: format!("{i}"),
+                label: format!("row {i}"),
+                meta: "2026-08-01".into(),
+                detail: "x".into(),
+            })
+            .collect();
+        let mut g = Git::new();
+        open_default(&mut g);
+        g.show_list(ListKind::PullRequests, many);
+        let _ = screen(&mut g, 90, 30);
+        // Walk onto the second page, then redraw so the zones follow.
+        let viewport = g.zones.body.height as usize;
+        g.lsel = viewport + 1;
+        let _ = screen(&mut g, 90, 30);
+        assert_eq!(g.zones.page_start, viewport, "the draw paged over");
+
+        let body = g.zones.body;
+        assert_eq!(g.on_click(Position::new(body.x + 3, body.y)), Step::Stay);
+        assert_eq!(g.lsel, viewport, "the click lands on the page on screen");
+    }
+
+    #[test]
+    fn the_git_bar_pills_are_where_their_zones_say() {
+        let mut g = Git::new();
+        open_default(&mut g);
+        let screen = screen(&mut g, 70, 24);
+        let bar = screen.lines().nth(g.zones.bar_row as usize).unwrap();
+        let cells: Vec<char> = bar.chars().collect();
+        for &(a, b, code) in &g.zones.bar_zones {
+            let text: String = cells[a as usize..(b as usize).min(cells.len())]
+                .iter()
+                .collect();
+            assert!(!text.trim().is_empty(), "zone for {code:?} covers blanks");
+        }
+        // The first pill is the one that runs the row, and it says so.
+        let (a, b, code) = g.zones.bar_zones[0];
+        let text: String = cells[a as usize..b as usize].iter().collect();
+        assert_eq!(code, KeyCode::Enter);
+        assert!(text.contains("run"), "{text}");
+    }
+
+    /// esc on the size warning is reachable with the pointer too — it is the
+    /// only way back that does not open a minutes-long read.
+    #[test]
+    fn clicking_esc_on_the_confirmation_goes_back() {
+        let mut g = Git::new();
+        open_default(&mut g);
+        g.on_key(key(KeyCode::Char('a')));
+        g.show_count(Some(6699));
+        let _ = screen(&mut g, 70, 24);
+
+        let (a, _, code) = *g.zones.bar_zones.last().unwrap();
+        assert_eq!(code, KeyCode::Esc);
+        assert_eq!(
+            g.on_click(Position::new(a + 1, g.zones.bar_row)),
+            Step::Stay
+        );
+        assert_eq!(g.view, View::Menu);
+        assert!(g.pending.is_none());
     }
 
     #[test]
@@ -2002,7 +2222,7 @@ z|Y|pull|git pull
     fn draw_renders_the_menu_card() {
         let mut g = Git::new();
         open_default(&mut g);
-        let s = screen(&g, 80, 24);
+        let s = screen(&mut g, 80, 24);
         assert!(s.contains("Git"), "{s}");
         assert!(s.contains("review worktree"), "{s}");
         assert!(s.contains("review all files"), "{s}");
@@ -2018,7 +2238,7 @@ z|Y|pull|git pull
         let mut g = Git::new();
         open_default(&mut g);
         g.show_list(ListKind::PullRequests, rows());
-        let s = screen(&g, 80, 24);
+        let s = screen(&mut g, 80, 24);
         assert!(s.contains("2026-08-01"), "{s}");
         assert!(s.contains("ada"), "{s}");
         assert!(s.contains("review PR"), "{s}");
@@ -2030,7 +2250,7 @@ z|Y|pull|git pull
         let mut g = Git::new();
         open_default(&mut g);
         g.show_list(ListKind::Reviews, vec![]);
-        let s = screen(&g, 80, 24);
+        let s = screen(&mut g, 80, 24);
         assert!(s.contains("(no saved reviews)"), "{s}");
     }
 
@@ -2050,7 +2270,7 @@ z|Y|pull|git pull
                 detail: "2 comments".into(),
             }],
         );
-        let s = screen(&g, 80, 24);
+        let s = screen(&mut g, 80, 24);
         let row = s
             .lines()
             .find(|l| l.contains('▌'))
@@ -2085,18 +2305,20 @@ z|Y|pull|git pull
         g.show_list(ListKind::PullRequests, many);
         g.on_key(key(KeyCode::End)); // jump to the last row
 
-        let s = screen(&g, 90, 24);
+        let s = screen(&mut g, 90, 24);
         assert!(s.contains("60/60"), "{s}");
         assert!(s.contains("pull request number 59"), "{s}");
         assert!(!s.contains("pull request number 0 "), "{s}");
     }
 
     #[test]
-    fn wheel_scrolls_a_list_body_but_not_the_menu() {
+    fn wheel_moves_the_menu_selection_and_the_list_body() {
         let mut g = Git::new();
         open_default(&mut g);
         g.on_wheel(1);
-        assert_eq!(g.lsel, 0, "the menu has nothing to scroll");
+        assert_eq!(g.sel, 1, "wheel-down moves the menu selection");
+        g.on_wheel(-1);
+        assert_eq!(g.sel, 0, "wheel-up moves it back");
         g.show_list(ListKind::PullRequests, rows());
         g.on_wheel(1);
         assert_eq!(g.lsel, 1, "wheel-down moves the list selection");
@@ -2119,7 +2341,7 @@ z|Y|pull|git pull
         g.show_list(ListKind::PullRequests, many);
 
         // The row of the card's bottom border (the lowest `╰`).
-        let card_bottom = |g: &Git| -> usize {
+        let card_bottom = |g: &mut Git| -> usize {
             let mut term =
                 ratatui::Terminal::new(ratatui::backend::TestBackend::new(90, 30)).unwrap();
             term.draw(|f| draw(f, f.area(), &Theme::default(), Color::Yellow, g))
@@ -2131,12 +2353,12 @@ z|Y|pull|git pull
                 .unwrap() as usize
         };
 
-        let full = card_bottom(&g);
+        let full = card_bottom(&mut g);
         for ch in "thing 3".chars() {
             g.on_key(key(KeyCode::Char(ch))); // narrow to a handful of matches
         }
         assert!(g.filtered.len() < 40, "the filter should have narrowed");
-        assert_eq!(full, card_bottom(&g), "the box resized when filtering");
+        assert_eq!(full, card_bottom(&mut g), "the box resized when filtering");
     }
 
     #[test]
@@ -2146,7 +2368,7 @@ z|Y|pull|git pull
         g.show_list(ListKind::PullRequests, rows());
         g.on_key(key(KeyCode::Char('x'))); // query "x"
         let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(90, 24)).unwrap();
-        term.draw(|f| draw(f, f.area(), &Theme::default(), Color::Yellow, &g))
+        term.draw(|f| draw(f, f.area(), &Theme::default(), Color::Yellow, &mut g))
             .unwrap();
         let pos = term.get_cursor_position().unwrap();
         // The cursor sits after the icon prefix and the one-char query, on the

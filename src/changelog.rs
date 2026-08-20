@@ -13,7 +13,7 @@
 use std::fs;
 
 use anyhow::Result;
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
@@ -32,6 +32,11 @@ pub struct App {
     /// Total rendered rows at the last draw, so scrolling can stop at the end.
     height: u16,
     rows: u16,
+    /// The command bar's row and its pills, each carrying the key its cap
+    /// advertises — so a click does exactly what the label promises, and the two
+    /// cannot drift apart. Written by [`draw_bar`], the loop that lays them out.
+    bar_row: u16,
+    bar_zones: Vec<(u16, u16, KeyCode)>,
 }
 
 impl SimpleMode for App {
@@ -56,6 +61,31 @@ impl SimpleMode for App {
         }
         Flow::Continue
     }
+
+    fn on_mouse(&mut self, m: MouseEvent) -> Flow {
+        match m.kind {
+            // Three rows a notch: the conventional feel for text.
+            MouseEventKind::ScrollDown => {
+                for _ in 0..3 {
+                    self.on_key(KeyEvent::from(KeyCode::Down));
+                }
+            }
+            MouseEventKind::ScrollUp => {
+                for _ in 0..3 {
+                    self.on_key(KeyEvent::from(KeyCode::Up));
+                }
+            }
+            MouseEventKind::Down(MouseButton::Left) => {
+                if let Some(code) =
+                    tui::zone_at(&self.bar_zones, self.bar_row, (m.column, m.row).into())
+                {
+                    return self.on_key(KeyEvent::from(code));
+                }
+            }
+            _ => {}
+        }
+        Flow::Continue
+    }
 }
 
 fn draw(f: &mut Frame, app: &mut App) {
@@ -76,17 +106,41 @@ fn draw(f: &mut Frame, app: &mut App) {
     draw_bar(f, app, rows[1]);
 }
 
-fn draw_bar(f: &mut Frame, app: &App, area: Rect) {
+fn draw_bar(f: &mut Frame, app: &mut App, area: Rect) {
     let t = &app.theme;
     let ink = t.or("panel_bg", Color::Rgb(16, 18, 20));
     let sub = t.or("subtext0", Color::Gray);
 
-    let pills = [
-        Pill::new("↑ ↓", "scroll", t.or("accent", Color::Cyan)),
-        Pill::new("g G", "top / end", t.or("blue", Color::Blue)),
-        Pill::new("esc", "close", t.or("red", Color::Red)),
+    // Each pill beside the key it stands for: the cap *is* the behaviour, so a
+    // relabelled pill cannot start doing something else.
+    let caps = [
+        // A pill naming a *pair* of keys is not clickable: one click cannot mean
+        // both, and picking one would make the cap a half-truth. The wheel is
+        // the pointer's way to scroll.
+        (
+            Pill::new("↑ ↓", "scroll", t.or("accent", Color::Cyan)),
+            None,
+        ),
+        (
+            Pill::new("g G", "top / end", t.or("blue", Color::Blue)),
+            None,
+        ),
+        (
+            Pill::new("esc", "close", t.or("red", Color::Red)),
+            Some(KeyCode::Esc),
+        ),
     ];
-    let (mut spans, _) = tui::pill_row(&pills, ink, area.x);
+    let pills: Vec<Pill> = caps
+        .iter()
+        .map(|(p, _)| Pill::new(p.key, p.label, p.color))
+        .collect();
+    let (mut spans, zones) = tui::pill_row(&pills, ink, area.x);
+    app.bar_row = area.y;
+    app.bar_zones = zones
+        .into_iter()
+        .zip(caps.iter())
+        .filter_map(|((a, b), (_, code))| code.map(|c| (a, b, c)))
+        .collect();
     spans.push(Span::styled(
         format!("v{VERSION}"),
         Style::default().fg(sub),
@@ -117,6 +171,8 @@ pub fn main() -> Result<()> {
         scroll: 0,
         height: 0,
         rows: 1,
+        bar_row: 0,
+        bar_zones: Vec::new(),
     };
 
     tui::run_simple(&mut app)

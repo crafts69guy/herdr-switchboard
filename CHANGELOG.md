@@ -20,6 +20,22 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   created. A date already in the past reads as `unknown` too: the Codex claim only refreshes while
   Codex runs, and a stale date under a heading that says *renews* reads as one that is coming.
 
+- **The mouse reaches every surface, not just the switcher.** The pointer worked in the projects
+  picker and nowhere else: `--usage` and `--changelog` never turned mouse reporting on at all,
+  `--settings` read only keys, the Git pane took the wheel and ignored every click, and the mode
+  pickers moved the selection without ever running it. Now the wheel scrolls the changelog, moves
+  the selection in the Git menu and its sub-lists, walks the settings form, and scrolls a mode
+  picker's preview card when the pointer is over it — and a click reaches rows, tabs and
+  command-bar pills on all of them.
+
+  One rule everywhere, because terminals report no double-click: a click selects, a click on the
+  row already selected does what Enter would, and a click on a pill does what the key printed on
+  its cap does. So no stray click ever launches a review or writes a setting, and a pill's label
+  cannot drift from its behaviour — the label *is* the behaviour. Each zone is still measured by
+  the loop that draws the thing it points at; what is shared is the lookup, not the measurement.
+  Clicking outside the settings card now discards the draft as `esc` does, instead of closing over
+  a staged edit and leaving it alive.
+
 ### Changed
 
 - **A reset that is not today now names the day it falls on.** The status line reads

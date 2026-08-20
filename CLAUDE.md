@@ -226,11 +226,21 @@ order so the list stays stable.
   writes `?1000h`/`?1006h` itself rather than using crossterm's `EnableMouseCapture`, which
   also enables any-event tracking (`?1003h`) — every pointer move would wake the loop into
   a redraw for an event we discard. `?1000h` reports the wheel *and* buttons, which is
-  exactly what the picker consumes; drags stay herdr's, which runs with
+  exactly what every surface consumes; drags stay herdr's, which runs with
   `mouse_capture = true`. `init_terminal`/`restore_terminal` pair the escapes, and
   `init_terminal` chains the disable ahead of the panic hook `ratatui::init` installs,
   since that hook restores the screen but knows nothing about the mouse. Leaving it on
-  drops mouse escapes into the user's shell.
+  drops mouse escapes into the user's shell. **Every loop must claim the terminal through
+  `init_terminal`, never `ratatui::init`** — `tui::run_simple` called the latter, which is
+  why `--usage` and `--changelog` shipped with no mouse at all.
+- **A click selects; a click on the already-selected row acts.** Terminals report no
+  double-click (crossterm gives `Down` only), so single-click-to-run would let a stray
+  click `exec` tuicr over a pane or write a setting, and a timestamp heuristic would put
+  the same guesswork in five places. A command-bar pill carries the **key printed on its
+  cap** as its payload and routes through `on_key`, so the label cannot drift from the
+  behaviour. The rule is the same in `main.rs`, `picker.rs`, `git.rs` and `settings.rs`;
+  what is shared between them is `tui::zone_at`, the lookup — never the measurement, which
+  stays in the loop that draws the thing.
 - **The preview clips; it must never wrap.** Every body goes through `clip`/`clip_line`
   (`src/preview.rs`) so one card line is exactly one screen row — that is what makes
   `preview_scroll` mean what it says and `preview_len`/`preview_rows` bound it correctly.

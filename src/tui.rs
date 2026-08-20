@@ -3,14 +3,16 @@
 //! two popup modes run.
 //!
 //! The picker keeps its own loop in `main.rs` on purpose — it also drives a
-//! background preview worker, consumes mouse events, and returns a chosen
-//! action, none of which the settings/changelog popups do. What the two popups
-//! share verbatim is [`run_simple`]; what all three share is the pill row.
+//! background preview worker and returns a chosen action, neither of which the
+//! popup modes do. What the popups share verbatim is [`run_simple`]; what they
+//! all share is the pill row and [`zone_at`], the one-row hit test every command
+//! bar performs.
 
 use std::time::Duration;
 
 use anyhow::Result;
-use crossterm::event::{self, Event, KeyEvent, KeyEventKind};
+use crossterm::event::{self, Event, KeyEvent, KeyEventKind, MouseEvent};
+use ratatui::layout::Position;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Span;
 use ratatui::widgets::{Block, BorderType, Borders};
@@ -83,6 +85,17 @@ pub fn pill_row(pills: &[Pill], ink: Color, start_x: u16) -> (Vec<Span<'static>>
     (spans, zones)
 }
 
+/// The payload whose zone contains `at`, for a bar that occupies a single row.
+/// Every command bar's hit test is this line; only the payload differs, which is
+/// why the *lookup* is shared and the *measurement* is not — a zone is still
+/// built by the loop that lays the pills out, so the two cannot drift.
+pub fn zone_at<T: Copy>(zones: &[(u16, u16, T)], row: u16, at: Position) -> Option<T> {
+    (at.y == row)
+        .then(|| zones.iter().find(|(a, b, _)| at.x >= *a && at.x < *b))
+        .flatten()
+        .map(|(_, _, payload)| *payload)
+}
+
 /// What a popup mode's key handler decides.
 pub enum Flow {
     Continue,
@@ -94,13 +107,24 @@ pub enum Flow {
 pub trait SimpleMode {
     fn draw(&mut self, f: &mut Frame);
     fn on_key(&mut self, key: KeyEvent) -> Flow;
+    /// A pointer event. The default ignores it, so a popup with nothing to
+    /// scroll and nothing to click needs no arm.
+    fn on_mouse(&mut self, m: MouseEvent) -> Flow {
+        let _ = m;
+        Flow::Continue
+    }
 }
 
-/// The draw/poll/read loop the settings and changelog popups both run: claim the
-/// terminal, redraw on every wake, act on key presses, and restore on quit or
-/// error. No mouse, no background work — the picker's loop handles those itself.
+/// The draw/poll/read loop the popup modes run: claim the terminal, redraw on
+/// every wake, act on key and pointer events, and restore on quit or error. No
+/// background work — the picker's loop handles that itself.
+///
+/// It claims the mouse through [`crate::init_terminal`] rather than
+/// `ratatui::init`, which is the only thing that chains the mouse teardown ahead
+/// of the panic hook. Turning it on by hand means turning it off on every exit
+/// path, and this loop is two of them.
 pub fn run_simple<M: SimpleMode>(mode: &mut M) -> Result<()> {
-    let mut terminal = ratatui::init();
+    let mut terminal = crate::init_terminal();
     let outcome = loop {
         if let Err(e) = terminal.draw(|f| mode.draw(f)) {
             break Err(e.into());
@@ -116,10 +140,15 @@ pub fn run_simple<M: SimpleMode>(mode: &mut M) -> Result<()> {
                     break Ok(());
                 }
             }
+            Ok(Event::Mouse(m)) => {
+                if let Flow::Quit = mode.on_mouse(m) {
+                    break Ok(());
+                }
+            }
             Ok(_) => {}
             Err(e) => break Err(e.into()),
         }
     };
-    ratatui::restore();
+    crate::restore_terminal();
     outcome
 }

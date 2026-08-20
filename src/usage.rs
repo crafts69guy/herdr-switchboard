@@ -36,7 +36,7 @@ use std::sync::mpsc::{self, Receiver};
 use std::thread;
 
 use anyhow::{anyhow, Context, Result};
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::symbols::Marker;
@@ -1119,6 +1119,10 @@ pub struct App {
     now: u64,
     /// Seconds east of UTC, for the absolute reset times.
     offset: i64,
+    /// The command bar's row and its pills, each carrying the key its cap
+    /// names. Written by [`draw_bar`], the loop that lays them out.
+    bar_row: u16,
+    bar_zones: Vec<(u16, u16, KeyCode)>,
 }
 
 impl SimpleMode for App {
@@ -1137,6 +1141,19 @@ impl SimpleMode for App {
             }
             _ => Flow::Continue,
         }
+    }
+
+    /// Pills only. There is nothing here to scroll: `draw` lays every card to
+    /// fit the pane by construction, so a wheel would have nowhere to move to.
+    fn on_mouse(&mut self, m: MouseEvent) -> Flow {
+        if let MouseEventKind::Down(MouseButton::Left) = m.kind {
+            if let Some(code) =
+                tui::zone_at(&self.bar_zones, self.bar_row, (m.column, m.row).into())
+            {
+                return self.on_key(KeyEvent::from(code));
+            }
+        }
+        Flow::Continue
     }
 }
 
@@ -1268,7 +1285,7 @@ fn card_gap(width: u16, cards: usize) -> u16 {
     }
 }
 
-fn draw(f: &mut Frame, app: &App) {
+fn draw(f: &mut Frame, app: &mut App) {
     let rows = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).split(f.area());
     // Herdr frames and titles the popup pane already, so this draws no outer
     // border of its own — the same reason the changelog pane doesn't.
@@ -1564,15 +1581,33 @@ fn centered(area: Rect, width: u16, height: u16) -> Rect {
     )
 }
 
-fn draw_bar(f: &mut Frame, app: &App, area: Rect) {
+fn draw_bar(f: &mut Frame, app: &mut App, area: Rect) {
     let theme = &app.theme;
     let ink = theme.or("panel_bg", Color::Rgb(16, 18, 20));
     let muted = theme.or("subtext0", Color::Gray);
-    let pills = [
-        Pill::new("r", "refresh", theme.or("accent", Color::Cyan)),
-        Pill::new("esc", "close", theme.or("red", Color::Red)),
+    // Each pill beside the key its cap advertises, so a click cannot mean
+    // something other than what the label says.
+    let caps = [
+        (
+            Pill::new("r", "refresh", theme.or("accent", Color::Cyan)),
+            KeyCode::Char('r'),
+        ),
+        (
+            Pill::new("esc", "close", theme.or("red", Color::Red)),
+            KeyCode::Esc,
+        ),
     ];
-    let (mut spans, _) = tui::pill_row(&pills, ink, area.x);
+    let pills: Vec<Pill> = caps
+        .iter()
+        .map(|(p, _)| Pill::new(p.key, p.label, p.color))
+        .collect();
+    let (mut spans, zones) = tui::pill_row(&pills, ink, area.x);
+    app.bar_row = area.y;
+    app.bar_zones = zones
+        .into_iter()
+        .zip(caps.iter())
+        .map(|((a, b), (_, code))| (a, b, *code))
+        .collect();
     if app.inbox.is_some() {
         spans.push(Span::styled("fetching…", Style::default().fg(muted)));
     }
@@ -1592,6 +1627,8 @@ pub fn main(cfg: Config, theme: Theme) -> Result<()> {
         inbox: None,
         now: now(),
         offset: 0,
+        bar_row: 0,
+        bar_zones: Vec::new(),
     };
     // Load before claiming the terminal, like the projects picker: the offline
     // provider is already on screen in the first frame.
@@ -2198,6 +2235,8 @@ mod tests {
             // Fixed rather than local, so `resets 09:16 Fri` in a test means the
             // same thing on a machine in Saigon and one in CI.
             offset: 0,
+            bar_row: 0,
+            bar_zones: Vec::new(),
         }
     }
 

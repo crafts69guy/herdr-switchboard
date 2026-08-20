@@ -8,7 +8,7 @@ use crossterm::event::{
     self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
 };
 use nucleo_matcher::{Config as MatcherConfig, Matcher};
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Clear, List, ListItem, ListState, Paragraph};
@@ -105,6 +105,22 @@ struct State {
     list_area: Rect,
     list_state: ListState,
     preview_scroll: u16,
+    /// Where the preview card sat at the last draw, so a wheel turn can ask
+    /// whether the pointer is over it rather than over the list.
+    preview_area: Rect,
+    /// The command bar's row and its pills, each carrying what it runs.
+    bar_row: u16,
+    bar_zones: Vec<(u16, u16, PillAct)>,
+}
+
+/// What a command-bar pill does when clicked. `Run` carries the action *id*
+/// rather than an index, because the pill list is filtered by
+/// `action_disabled_reason` and an index into it is not an index into `actions`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum PillAct {
+    Run(&'static str),
+    Settings,
+    Close,
 }
 
 impl State {
@@ -126,6 +142,9 @@ impl State {
             list_area: Rect::default(),
             list_state: ListState::default(),
             preview_scroll: 0,
+            preview_area: Rect::default(),
+            bar_row: 0,
+            bar_zones: Vec::new(),
         };
         state.recompute(&FieldSchema::default());
         state
@@ -296,20 +315,65 @@ pub fn run<M: PickerMode>(mut mode: M, mut theme: Theme, normal: bool) -> Result
                         },
                     }
                 }
-                Event::Mouse(mouse) => match mouse.kind {
-                    MouseEventKind::ScrollDown => state.move_selection(1),
-                    MouseEventKind::ScrollUp => state.move_selection(-1),
-                    MouseEventKind::Down(MouseButton::Left)
-                        if state.list_area.contains((mouse.column, mouse.row).into()) =>
-                    {
-                        let relative = mouse.row.saturating_sub(state.list_area.y) as usize;
-                        let offset = state.list_state.offset();
-                        if offset + relative < state.filtered.len() {
-                            state.selected = offset + relative;
+                Event::Mouse(mouse) => {
+                    let at: Position = (mouse.column, mouse.row).into();
+                    match mouse.kind {
+                        // The wheel moves whatever the pointer is over: three
+                        // rows of the card, or one row of the list.
+                        MouseEventKind::ScrollDown if state.preview_area.contains(at) => {
+                            state.preview_scroll = state.preview_scroll.saturating_add(3);
                         }
+                        MouseEventKind::ScrollUp if state.preview_area.contains(at) => {
+                            state.preview_scroll = state.preview_scroll.saturating_sub(3);
+                        }
+                        MouseEventKind::ScrollDown => state.move_selection(1),
+                        MouseEventKind::ScrollUp => state.move_selection(-1),
+                        MouseEventKind::Down(MouseButton::Left) => {
+                            // The bar first: a pill overlaps nothing else, and it
+                            // runs what its cap advertises.
+                            if let Some(act) = tui::zone_at(&state.bar_zones, state.bar_row, at) {
+                                match act {
+                                    PillAct::Close => break Ok(None),
+                                    PillAct::Settings => {
+                                        break Ok(Some((String::new(), "__settings")))
+                                    }
+                                    PillAct::Run(id) => {
+                                        if let Some(item) = state.selected_item() {
+                                            if let Some(reason) =
+                                                mode.action_disabled_reason(&item.id, id)
+                                            {
+                                                state.runtime_error = Some(reason);
+                                            } else {
+                                                break Ok(Some((item.id.clone(), id)));
+                                            }
+                                        }
+                                    }
+                                }
+                            } else if state.list_area.contains(at) {
+                                let relative = mouse.row.saturating_sub(state.list_area.y) as usize;
+                                let offset = state.list_state.offset();
+                                let index = offset + relative;
+                                if index < state.filtered.len() {
+                                    // A click selects; a click on the row already
+                                    // selected does what Enter would. There is no
+                                    // double-click event to lean on, and a single
+                                    // click that ran the row would let a stray one
+                                    // launch something.
+                                    if index == state.selected {
+                                        if let Some(action) = first_enabled(&actions, &mode, &state)
+                                        {
+                                            if let Some(item) = state.selected_item() {
+                                                break Ok(Some((item.id.clone(), action)));
+                                            }
+                                        }
+                                    }
+                                    state.selected = index;
+                                }
+                            }
+                        }
+                        _ => {}
                     }
-                    _ => {}
-                },
+                }
                 _ => {}
             }
         })();
@@ -642,7 +706,12 @@ fn draw<M: PickerMode>(
         cols[1],
     );
 
-    let pills = actions
+    state.preview_area = cols[1];
+
+    // Each pill beside what it runs, built in the one chain that lays them out —
+    // the list is filtered per selection, so a payload paired anywhere else would
+    // point at the wrong action the moment a row disables one.
+    let caps: Vec<(Pill, PillAct)> = actions
         .iter()
         .filter(|action| {
             state
@@ -650,25 +719,51 @@ fn draw<M: PickerMode>(
                 .is_some_and(|item| mode.action_disabled_reason(&item.id, action.id).is_none())
         })
         .map(|action| {
-            Pill::new(
-                action.key_label,
-                action.label,
-                theme.or(action.color_slot, accent),
+            (
+                Pill::new(
+                    action.key_label,
+                    action.label,
+                    theme.or(action.color_slot, accent),
+                ),
+                PillAct::Run(action.id),
             )
         })
-        .chain(std::iter::once(Pill::new(
-            "⌥,",
-            "settings",
-            theme.or("yellow", Color::Yellow),
+        .chain(std::iter::once((
+            Pill::new("⌥,", "settings", theme.or("yellow", Color::Yellow)),
+            PillAct::Settings,
         )))
-        .chain(std::iter::once(Pill::new(
-            "esc",
-            "mode/close",
-            theme.or("red", Color::Red),
+        .chain(std::iter::once((
+            Pill::new("esc", "mode/close", theme.or("red", Color::Red)),
+            PillAct::Close,
         )))
-        .collect::<Vec<_>>();
-    let (spans, _) = tui::pill_row(&pills, ink, rows[2].x);
+        .collect();
+    let pills: Vec<Pill> = caps
+        .iter()
+        .map(|(p, _)| Pill::new(p.key, p.label, p.color))
+        .collect();
+    let (spans, zones) = tui::pill_row(&pills, ink, rows[2].x);
+    state.bar_row = rows[2].y;
+    state.bar_zones = zones
+        .into_iter()
+        .zip(caps.iter())
+        .map(|((a, b), (_, act))| (a, b, *act))
+        .collect();
     frame.render_widget(Paragraph::new(Line::from(spans)), rows[2]);
+}
+
+/// The primary action for the selected row: the first one the mode does not
+/// disable. That is what Enter runs, and so what a click on an already-selected
+/// row runs.
+fn first_enabled<M: PickerMode>(
+    actions: &[ActionSpec],
+    mode: &M,
+    state: &State,
+) -> Option<&'static str> {
+    let item = state.selected_item()?;
+    actions
+        .iter()
+        .find(|action| mode.action_disabled_reason(&item.id, action.id).is_none())
+        .map(|action| action.id)
 }
 
 pub fn fields(pairs: &[(&str, String)]) -> HashMap<String, String> {
@@ -785,6 +880,44 @@ mod tests {
     /// Nothing paints a background: all three panes are transparent, so the
     /// terminal shows through consistently instead of two opaque cards next to a
     /// see-through list.
+    /// A zone that does not sit on the pill it names sends a click to the wrong
+    /// action — and does it silently, which is why this is measured rather than
+    /// reasoned about.
+    #[test]
+    fn the_pill_zones_land_on_the_pills_they_name() {
+        let mut state = State::new(vec![test_item("a")], false);
+        let buffer = render(&mut state);
+        let row = state.bar_row;
+        assert!(!state.bar_zones.is_empty());
+        for &(a, b, act) in &state.bar_zones {
+            let text: String = (a..b).map(|x| buffer[(x, row)].symbol()).collect();
+            assert!(!text.trim().is_empty(), "zone for a pill covers blanks");
+            if act == PillAct::Close {
+                assert!(text.contains("esc"), "{text}");
+            }
+        }
+        assert_eq!(state.bar_zones.last().unwrap().2, PillAct::Close);
+    }
+
+    /// The preview's rect is what tells a wheel turn whether it is over the card
+    /// or over the list. It is published by the draw for exactly that reason.
+    #[test]
+    fn the_draw_publishes_where_the_preview_landed() {
+        let mut state = State::new(vec![test_item("a")], false);
+        let _ = render(&mut state);
+        assert!(
+            state.preview_area.width > 0,
+            "the preview pane was measured"
+        );
+        assert!(
+            state.preview_area.x > state.list_area.x,
+            "the card sits right of the list"
+        );
+        assert!(!state
+            .preview_area
+            .contains((state.list_area.x + 1, state.list_area.y + 1).into()));
+    }
+
     #[test]
     fn no_panel_paints_an_opaque_background() {
         let mut state = State::new(vec![test_item("a"), test_item("b")], false);

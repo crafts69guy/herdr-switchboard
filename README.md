@@ -102,9 +102,10 @@ Common Projects actions:
 | `alt-p` | `p` | Toggle the preview. |
 | `?` | `?` | Show the live cheatsheet. |
 
-Mouse input is supported: the wheel scrolls the pane beneath it, and a click selects a row, group,
-or command-bar action. See [Keybindings](docs/keybindings.md) for the complete Projects map and
-mode-specific actions for Commands, Ports, AI Agents, and Zen.
+Mouse input is supported on every surface: the wheel scrolls the pane beneath it, a click selects
+a row, group, or command-bar action, and a click on the row already selected runs it. See
+[Keybindings](docs/keybindings.md) for the complete Projects map and mode-specific actions for
+Commands, Ports, AI Agents, and Zen.
 
 ## Actions
 

@@ -533,19 +533,25 @@ impl App {
             self.changelog.show = false;
             return Flow::Continue;
         }
-        // A click while the settings form is open closes it, the way it is modal to
-        // keys — the pointer is not used to pick a row.
+        // The settings form is modal: inside the card the pointer picks a tab, a
+        // row or a pill; outside it the click dismisses. Dismissing goes through
+        // `close_discarding` so a staged edit cannot survive the close — `esc`
+        // discards, and a click that closed without discarding left the draft
+        // alive behind a form that looked shut.
         if self.settings.show {
-            self.settings.show = false;
+            if self.settings.hit(at) {
+                if self.settings.on_click(at) {
+                    self.reload_config();
+                }
+            } else {
+                self.settings.close_discarding();
+            }
             return Flow::Continue;
         }
         // The command bar: one row, so the x span is the whole test. A pill runs
         // its action, the same as its key would.
-        if let Some(&(_, _, action)) = self
-            .zones
-            .footer_zones
-            .iter()
-            .find(|&&(a, b, _)| at.y == self.zones.footer_row && at.x >= a && at.x < b)
+        if let Some(action) =
+            crate::tui::zone_at(&self.zones.footer_zones, self.zones.footer_row, at)
         {
             // Accepting on nothing would be a no-op with a confirmation prompt.
             if action.is_accept() && self.picker.selected_entry().is_none() {
@@ -580,6 +586,22 @@ impl App {
     /// the preview, the selection anywhere else. Reports whether anything moved,
     /// so the caller can skip a redraw for a wheel over dead space.
     fn on_wheel(&mut self, at: Position, delta: i32) -> bool {
+        // A modal popup takes the wheel first: it is what the pointer is over,
+        // whatever is drawn underneath.
+        if self.settings.show {
+            self.settings.on_wheel(delta as isize);
+            return true;
+        }
+        if self.changelog.show {
+            let c = &mut self.changelog;
+            let max = c.len.saturating_sub(c.rows);
+            c.scroll = if delta > 0 {
+                (c.scroll + 3).min(max)
+            } else {
+                c.scroll.saturating_sub(3)
+            };
+            return true;
+        }
         let over_preview =
             self.preview.enabled && self.preview.area.is_some_and(|a| a.contains(at));
         if over_preview {
@@ -1274,6 +1296,25 @@ mod tests {
                 assert_ne!(buffer[(x, y)].bg, fill, "cell ({x},{y}) filled the panel");
             }
         }
+    }
+
+    /// A click outside the settings card closes it — and must discard, the way
+    /// `esc` does. Closing without discarding left a staged edit alive behind a
+    /// form that looked shut, and the next open showed it as unsaved.
+    #[test]
+    fn a_click_outside_the_settings_card_discards_the_draft_and_closes() {
+        let mut app = app_with_layout();
+        app.settings
+            .redirect(std::env::temp_dir().join("switchboard-never-written.toml"));
+        app.settings.open();
+        let _ = rendered(&mut app, 120, 40);
+        app.settings
+            .on_key(crossterm::event::KeyEvent::from(KeyCode::Enter));
+        assert!(app.settings.dirty(), "the draft is staged");
+
+        app.on_click(Position::new(0, 0));
+        assert!(!app.settings.show);
+        assert!(!app.settings.dirty(), "the close rolled the draft back");
     }
 
     #[test]

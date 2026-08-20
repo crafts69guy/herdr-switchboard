@@ -22,11 +22,11 @@ use std::fs;
 use std::path::PathBuf;
 
 use anyhow::Result;
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
-use ratatui::layout::{Constraint, Layout, Rect};
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, MouseButton, MouseEventKind};
+use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Tabs};
+use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 use ratatui::Frame;
 
 use crate::data::{Config, Theme};
@@ -43,11 +43,20 @@ pub fn main(cfg: Config, theme: Theme) -> Result<()> {
     let mut terminal = crate::init_terminal();
     let outcome: Result<()> = (|| {
         while settings.show {
-            terminal.draw(|frame| draw(frame, frame.area(), &theme, title, &settings))?;
-            if let Event::Key(key) = event::read()? {
-                if key.kind == KeyEventKind::Press {
+            terminal.draw(|frame| draw(frame, frame.area(), &theme, title, &mut settings))?;
+            match event::read()? {
+                Event::Key(key) if key.kind == KeyEventKind::Press => {
                     settings.on_key(key);
                 }
+                Event::Mouse(m) => match m.kind {
+                    MouseEventKind::ScrollDown => settings.on_wheel(1),
+                    MouseEventKind::ScrollUp => settings.on_wheel(-1),
+                    MouseEventKind::Down(MouseButton::Left) => {
+                        settings.on_click(Position::new(m.column, m.row));
+                    }
+                    _ => {}
+                },
+                _ => {}
             }
         }
         Ok(())
@@ -436,6 +445,26 @@ pub struct Settings {
     path: PathBuf,
     /// Shown in the command bar when an apply fails; the form stays usable.
     error: Option<String>,
+    /// Where the last draw put everything a pointer can land on. Written by
+    /// [`draw`], read by [`Settings::on_click`] — the card is recentred every
+    /// frame, so nothing else knows where it landed.
+    zones: Zones,
+}
+
+/// The form's click targets, each measured by the loop that lays its row out.
+#[derive(Default)]
+struct Zones {
+    card: Rect,
+    tab_row: u16,
+    tab_zones: Vec<(u16, u16, usize)>,
+    /// The two settings columns and, per screen row, the `SETTINGS` index it
+    /// draws — `None` for a group heading or a spacer. That interleaving is why
+    /// a screen row is not a settings index and why the map is built by
+    /// [`column`] itself.
+    cols: [Rect; 2],
+    rows: [Vec<Option<usize>>; 2],
+    bar_row: u16,
+    bar_zones: Vec<(u16, u16, KeyCode)>,
 }
 
 impl Settings {
@@ -452,6 +481,7 @@ impl Settings {
             editing: None,
             path: config_path(),
             error: None,
+            zones: Zones::default(),
         }
     }
 
@@ -465,7 +495,7 @@ impl Settings {
     }
 
     /// True when the draft has unsaved changes.
-    fn dirty(&self) -> bool {
+    pub(crate) fn dirty(&self) -> bool {
         self.values != self.saved
     }
 
@@ -512,6 +542,78 @@ impl Settings {
     /// Handle a key while the overlay is open. `a` applies the draft; `esc`/`q`
     /// (outside an edit) discard it and close. The caller keeps `^c` as the picker's
     /// quit. Returns `true` when a key applied a change, so the caller reloads config.
+    /// Point the writer at a scratch file so a test can stage and discard drafts
+    /// without ever touching the real `config.toml`.
+    #[cfg(test)]
+    pub(crate) fn redirect(&mut self, path: PathBuf) {
+        self.path = path;
+    }
+
+    /// A wheel turn walks the form the way `j`/`k` do.
+    pub fn on_wheel(&mut self, delta: isize) {
+        if self.editing.is_none() {
+            self.move_in_tab(delta);
+        }
+    }
+
+    /// Whether the pointer is over the card at all. A click outside it is a
+    /// dismiss, which only the embedded overlay has to care about.
+    pub fn hit(&self, at: Position) -> bool {
+        self.zones.card.contains(at)
+    }
+
+    /// Discard the draft and close, the way `esc` does. Public so the picker's
+    /// click-outside path cannot close over a staged edit and leave it alive.
+    pub fn close_discarding(&mut self) {
+        self.discard();
+        self.editing = None;
+        self.show = false;
+    }
+
+    /// A left click, resolved against the zones the last draw published. Returns
+    /// what [`Settings::on_key`] returns: true when config was written.
+    ///
+    /// Same rule as everywhere else — a click selects, and a click on the row
+    /// already selected does what Enter would, so no stray click ever writes.
+    pub fn on_click(&mut self, at: Position) -> bool {
+        if let Some(code) = crate::tui::zone_at(&self.zones.bar_zones, self.zones.bar_row, at) {
+            return self.on_key(KeyEvent::from(code));
+        }
+        if self.editing.is_some() || !self.zones.card.contains(at) {
+            return false;
+        }
+        if at.y == self.zones.tab_row {
+            if let Some(tab) = self
+                .zones
+                .tab_zones
+                .iter()
+                .find(|&&(a, b, _)| at.x >= a && at.x < b)
+                .map(|&(_, _, i)| i)
+            {
+                if tab != self.tab {
+                    self.tab = tab;
+                    self.select_first_in_tab();
+                }
+                return false;
+            }
+        }
+        for (col, map) in self.zones.cols.iter().zip(self.zones.rows.iter()) {
+            if !col.contains(at) {
+                continue;
+            }
+            let row = (at.y - col.y) as usize;
+            // A heading or a spacer is `None`: the interleaving is why a screen
+            // row is not a settings index.
+            if let Some(Some(index)) = map.get(row).copied() {
+                if index == self.sel {
+                    return self.on_key(KeyEvent::from(KeyCode::Enter));
+                }
+                self.sel = index;
+            }
+        }
+        false
+    }
+
     pub fn on_key(&mut self, k: KeyEvent) -> bool {
         if let Some(buf) = self.editing.as_mut() {
             match k.code {
@@ -628,7 +730,12 @@ const COL_W: usize = 2 + NAME_W + 1 + (PILL_W + 2);
 
 /// One column's lines: a title-coloured heading when the group changes, then a
 /// `marker · key · value-pill` row per setting whose group belongs to this column.
-fn column(s: &Settings, theme: &Theme, title: Color, groups: &[&str]) -> Vec<Line<'static>> {
+fn column(
+    s: &Settings,
+    theme: &Theme,
+    title: Color,
+    groups: &[&str],
+) -> (Vec<Line<'static>>, Vec<Option<usize>>) {
     let ink = theme.or("panel_bg", Color::Black);
     let text = theme.or("text", Color::Reset);
     let sub = theme.or("subtext0", Color::Gray);
@@ -636,6 +743,8 @@ fn column(s: &Settings, theme: &Theme, title: Color, groups: &[&str]) -> Vec<Lin
     let peach = theme.or("peach", Color::Yellow);
 
     let mut lines: Vec<Line> = Vec::new();
+    // Parallel to `lines`: which `SETTINGS` entry each screen row draws.
+    let mut map: Vec<Option<usize>> = Vec::new();
     let mut last_group = "";
     for (i, setting) in SETTINGS.iter().enumerate() {
         if !groups.contains(&setting.group) || setting_tab(setting.key) != s.tab {
@@ -644,11 +753,13 @@ fn column(s: &Settings, theme: &Theme, title: Color, groups: &[&str]) -> Vec<Lin
         if setting.group != last_group {
             if !lines.is_empty() {
                 lines.push(Line::from(""));
+                map.push(None);
             }
             lines.push(Line::from(Span::styled(
                 format!(" {}", setting.group),
                 Style::default().fg(title).add_modifier(Modifier::BOLD),
             )));
+            map.push(None);
             last_group = setting.group;
         }
 
@@ -683,13 +794,14 @@ fn column(s: &Settings, theme: &Theme, title: Color, groups: &[&str]) -> Vec<Lin
                     .add_modifier(Modifier::BOLD),
             ),
         ]));
+        map.push(Some(i));
     }
-    lines
+    (lines, map)
 }
 
 /// Draw the settings card centred in `area`, over whatever is behind it. The picker
 /// owns `theme`/`title`, so the overlay matches the rest of its surfaces.
-pub fn draw(f: &mut Frame, area: Rect, theme: &Theme, title: Color, s: &Settings) {
+pub fn draw(f: &mut Frame, area: Rect, theme: &Theme, title: Color, s: &mut Settings) {
     let ink = theme.or("panel_bg", Color::Black);
     let sub = theme.or("subtext0", Color::Gray);
     let border = theme.or("accent", Color::Cyan);
@@ -697,8 +809,8 @@ pub fn draw(f: &mut Frame, area: Rect, theme: &Theme, title: Color, s: &Settings
     // A centred, rounded, ink-filled floating card — the `?` cheatsheet's shape — over
     // the picker. Two columns of settings, the selected row's hint spelled out below
     // them, and the command-bar pills at the foot.
-    let left = column(s, theme, title, LEFT_GROUPS);
-    let right = column(s, theme, title, RIGHT_GROUPS);
+    let (left, left_rows) = column(s, theme, title, LEFT_GROUPS);
+    let (right, right_rows) = column(s, theme, title, RIGHT_GROUPS);
     let body_h = left.len().max(right.len()) as u16;
 
     let want_w = (2 * COL_W + 4) as u16; // two columns + inner margin + border
@@ -746,20 +858,39 @@ pub fn draw(f: &mut Frame, area: Rect, theme: &Theme, title: Color, s: &Settings
     ])
     .split(inner);
 
-    f.render_widget(
-        Tabs::new(TABS)
-            .select(s.tab)
-            .style(Style::default().fg(sub))
-            .highlight_style(Style::default().fg(title).add_modifier(Modifier::BOLD))
-            .divider(" · "),
-        rows[0],
-    );
+    // Laid out here rather than by a `Tabs` widget, because a widget that
+    // positions itself internally cannot be measured from outside without the
+    // two drifting — the same reason the switcher builds its own tab strip.
+    let mut tab_spans: Vec<Span> = Vec::new();
+    let mut x = rows[0].x;
+    let mut tab_zones = Vec::new();
+    for (i, name) in TABS.iter().enumerate() {
+        if i > 0 {
+            tab_spans.push(Span::styled(" · ", Style::default().fg(sub)));
+            x += 3;
+        }
+        let style = if i == s.tab {
+            Style::default().fg(title).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(sub)
+        };
+        let w = name.chars().count() as u16;
+        tab_zones.push((x, x + w, i));
+        x += w;
+        tab_spans.push(Span::styled(*name, style));
+    }
+    f.render_widget(Paragraph::new(Line::from(tab_spans)), rows[0]);
 
     let cols = Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
         .horizontal_margin(1)
         .split(rows[1]);
     f.render_widget(Paragraph::new(left), cols[0]);
     f.render_widget(Paragraph::new(right), cols[1]);
+    s.zones.card = popup;
+    s.zones.tab_row = rows[0].y;
+    s.zones.tab_zones = tab_zones;
+    s.zones.cols = [cols[0], cols[1]];
+    s.zones.rows = [left_rows, right_rows];
 
     // The hint the narrow columns cannot carry, shown for the selected row only.
     f.render_widget(
@@ -774,7 +905,7 @@ pub fn draw(f: &mut Frame, area: Rect, theme: &Theme, title: Color, s: &Settings
 }
 
 /// The picker's coloured-pill command bar, with this form's verbs.
-fn draw_bar(f: &mut Frame, s: &Settings, area: Rect, theme: &Theme) {
+fn draw_bar(f: &mut Frame, s: &mut Settings, area: Rect, theme: &Theme) {
     let ink = theme.or("panel_bg", Color::Black);
 
     if let Some(err) = &s.error {
@@ -791,27 +922,66 @@ fn draw_bar(f: &mut Frame, s: &Settings, area: Rect, theme: &Theme) {
 
     // The verbs follow the state: typing an edit, an unsaved draft (apply/discard on
     // offer), or a clean form (nothing to save, so `esc` just closes).
-    let pills: Vec<Pill> = if s.editing.is_some() {
+    // Each pill beside the key its cap advertises, so clicking one and pressing
+    // it are the same code path. `↑ ↓` names a pair rather than one action.
+    let caps: Vec<(Pill, Option<KeyCode>)> = if s.editing.is_some() {
         vec![
-            Pill::new("↵", "set", theme.or("accent", Color::Cyan)),
-            Pill::new("esc", "cancel", theme.or("red", Color::Red)),
+            (
+                Pill::new("↵", "set", theme.or("accent", Color::Cyan)),
+                Some(KeyCode::Enter),
+            ),
+            (
+                Pill::new("esc", "cancel", theme.or("red", Color::Red)),
+                Some(KeyCode::Esc),
+            ),
         ]
     } else if s.dirty() {
         vec![
-            Pill::new("↵", "change", theme.or("accent", Color::Cyan)),
-            Pill::new("↑ ↓", "move", theme.or("blue", Color::Blue)),
-            Pill::new("a", "apply", theme.or("green", Color::Green)),
-            Pill::new("esc", "discard", theme.or("red", Color::Red)),
+            (
+                Pill::new("↵", "change", theme.or("accent", Color::Cyan)),
+                Some(KeyCode::Enter),
+            ),
+            (
+                Pill::new("↑ ↓", "move", theme.or("blue", Color::Blue)),
+                None,
+            ),
+            (
+                Pill::new("a", "apply", theme.or("green", Color::Green)),
+                Some(KeyCode::Char('a')),
+            ),
+            (
+                Pill::new("esc", "discard", theme.or("red", Color::Red)),
+                Some(KeyCode::Esc),
+            ),
         ]
     } else {
         vec![
-            Pill::new("↵", "change", theme.or("accent", Color::Cyan)),
-            Pill::new("↑ ↓", "move", theme.or("blue", Color::Blue)),
-            Pill::new("esc", "close", theme.or("red", Color::Red)),
+            (
+                Pill::new("↵", "change", theme.or("accent", Color::Cyan)),
+                Some(KeyCode::Enter),
+            ),
+            (
+                Pill::new("↑ ↓", "move", theme.or("blue", Color::Blue)),
+                None,
+            ),
+            (
+                Pill::new("esc", "close", theme.or("red", Color::Red)),
+                Some(KeyCode::Esc),
+            ),
         ]
     };
+    let pills: Vec<Pill> = caps
+        .iter()
+        .map(|(p, _)| Pill::new(p.key, p.label, p.color))
+        .collect();
 
-    let (spans, _) = tui::pill_row(&pills, ink, area.x);
+    let (spans, zones) = tui::pill_row(&pills, ink, area.x);
+    s.zones.bar_row = area.y;
+    s.zones.bar_zones = zones
+        .into_iter()
+        .zip(caps.iter())
+        .filter_map(|((a, b), (_, code))| code.map(|c| (a, b, c)))
+        .collect();
     f.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
@@ -828,9 +998,9 @@ mod tests {
 
     #[test]
     fn draw_renders_grouped_rows_with_heading_value_and_hint() {
-        let settings = Settings::new(&Config::default());
+        let mut settings = Settings::new(&Config::default());
         let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(90, 24)).unwrap();
-        term.draw(|f| draw(f, f.area(), &Theme::default(), Color::Yellow, &settings))
+        term.draw(|f| draw(f, f.area(), &Theme::default(), Color::Yellow, &mut settings))
             .unwrap();
         let buf = term.backend().buffer().clone();
         let screen: String = (0..24)
@@ -994,6 +1164,56 @@ mod tests {
             "a no-op apply must not reload"
         );
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Zones only exist after a draw — the card is recentred every frame.
+    fn drawn(s: &mut Settings) {
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(90, 24)).unwrap();
+        term.draw(|f| draw(f, f.area(), &Theme::default(), Color::Yellow, s))
+            .unwrap();
+    }
+
+    #[test]
+    fn clicking_a_settings_tab_selects_its_first_row() {
+        let mut s = Settings::new(&Config::default());
+        s.path = std::env::temp_dir().join("switchboard-never-written.toml");
+        s.open();
+        drawn(&mut s);
+
+        let (a, _, index) = s.zones.tab_zones[0];
+        assert_eq!(index, 0);
+        assert!(!s.on_click(Position::new(a, s.zones.tab_row)));
+        assert_eq!(s.tab, 0);
+        assert_eq!(s.sel, s.indices_in_tab()[0]);
+    }
+
+    /// The one rule: a click selects, and a click on the row already selected
+    /// does what Enter would — so a stray click can never write a setting.
+    #[test]
+    fn clicking_a_row_selects_it_and_clicking_it_again_cycles_it() {
+        let mut s = Settings::new(&Config::default());
+        s.path = std::env::temp_dir().join("switchboard-never-written.toml");
+        s.open();
+        drawn(&mut s);
+
+        // Find a row in the left column that is not the selected one.
+        let col = s.zones.cols[0];
+        let (row, index) = s.zones.rows[0]
+            .iter()
+            .enumerate()
+            .find_map(|(row, slot)| slot.filter(|&i| i != s.sel).map(|i| (row, i)))
+            .expect("the left column draws more than one setting");
+        let at = Position::new(col.x + 2, col.y + row as u16);
+
+        assert!(!s.on_click(at));
+        assert_eq!(s.sel, index, "the first click only moves the cursor");
+        assert!(!s.dirty(), "and it changes nothing");
+
+        let before = s.values[index].clone();
+        drawn(&mut s);
+        assert!(!s.on_click(at), "cycling stages a draft, it does not apply");
+        assert_ne!(s.values[index], before, "the second click cycles the value");
+        assert_eq!(s.saved[index], before, "nothing reached disk");
     }
 
     #[test]

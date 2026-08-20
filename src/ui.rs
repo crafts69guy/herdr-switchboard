@@ -79,7 +79,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         draw_changelog(f, app, f.area());
     }
     if app.settings.show {
-        crate::settings::draw(f, f.area(), &app.theme, app.title_color, &app.settings);
+        crate::settings::draw(f, f.area(), &app.theme, app.title_color, &mut app.settings);
     }
     if app.show_help {
         draw_help(f, app, f.area());
