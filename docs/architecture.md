@@ -243,15 +243,14 @@ application-wide framework. Each feature keeps a narrow root module and private 
 | --- | ---: | --- |
 | `main.rs` | 138 | Projects moved behind `projects.rs`, `projects/view.rs`, and `projects/preview.rs` |
 | `git.rs` | 831 | `git/effect.rs`, `git/menu_config.rs`, `git/view.rs` |
-| `usage.rs` | 324 | domain, time, view, and Codex/Claude provider adapters under `usage/` |
+| `usage.rs` | 324 | domain, time, view, shared provider primitives, and Codex/Claude adapters under `usage/` |
 | `zen.rs` | 130 | geometry, session persistence, effect engine, and picker adapter under `zen/` |
 | `settings.rs` | 373 | catalogue, validated TOML document writer, and view under `settings/` |
 | `commands.rs` | 29 | catalogue, bounded history ingestion, terminal actions, and picker under `commands/` |
 
-The closed Projects overlay enum remains a separate behavioral refactor. The extraction did not
-need it to establish a module boundary, and the existing help, changelog, and settings state is
-covered by interaction and render tests. Introduce it only with explicit transition tests that make
-mutual exclusion the source of truth rather than mirroring the current booleans.
+Projects now uses one closed `Overlay` enum for help, changelog, and settings ownership. Rendering,
+mouse routing, wheel routing, and keyboard routing all match that state, so mutually exclusive
+popups cannot be represented as several simultaneously active booleans.
 
 ### Acceptance for every implementation phase
 

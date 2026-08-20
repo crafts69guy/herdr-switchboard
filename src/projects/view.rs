@@ -11,7 +11,7 @@ use crate::action::Accept;
 use crate::keymap::{Action, Mode};
 use crate::projects::App;
 
-pub fn draw(f: &mut Frame, app: &mut App) {
+pub(super) fn draw(f: &mut Frame, app: &mut App) {
     let accent = app.theme.or("accent", Color::Cyan);
     let text = app.theme.or("text", Color::Reset);
     let sub = app.theme.or("subtext0", Color::DarkGray);
@@ -97,14 +97,13 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     }
     draw_footer(f, app, root[2]);
 
-    if app.changelog.show {
-        draw_changelog(f, app, f.area());
-    }
-    if app.settings.show {
-        crate::settings::draw(f, f.area(), &app.theme, app.title_color, &mut app.settings);
-    }
-    if app.show_help {
-        draw_help(f, app, f.area());
+    match app.overlay {
+        super::Overlay::Changelog => draw_changelog(f, app, f.area()),
+        super::Overlay::Settings => {
+            crate::settings::draw(f, f.area(), &app.theme, app.title_color, &mut app.settings)
+        }
+        super::Overlay::Help => draw_help(f, app, f.area()),
+        super::Overlay::None => {}
     }
 }
 

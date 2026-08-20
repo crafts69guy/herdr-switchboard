@@ -7,7 +7,7 @@
 /// considers close to the edge. Codex ships none, so its windows fall back to
 /// the configured `usage.warn_percent` / `usage.alert_percent`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Severity {
+pub(super) enum Severity {
     Normal,
     Warning,
     Critical,
@@ -26,7 +26,7 @@ impl Severity {
 
 /// One rate-limit window of one provider: a five-hour bucket, a weekly bucket.
 #[derive(Clone, Debug, PartialEq)]
-pub struct Window {
+pub(super) struct Window {
     pub label: String,
     /// 0..=100. Both sources are normalised to this scale on the way in.
     pub used_percent: f64,
@@ -39,7 +39,7 @@ pub struct Window {
 /// One `key  value` line under a card's windows: what the session spent, how
 /// much context the last turn used, whether credits are on.
 #[derive(Clone, Debug, PartialEq)]
-pub struct Fact {
+pub(super) struct Fact {
     pub key: String,
     pub value: String,
 }
@@ -55,7 +55,7 @@ impl Fact {
 
 /// What one provider's card shows.
 #[derive(Clone, Debug, PartialEq)]
-pub struct Report {
+pub(super) struct Report {
     pub name: String,
     pub plan: Option<String>,
     /// When the subscription itself renews, in epoch seconds.
@@ -80,7 +80,7 @@ pub struct Report {
 /// A provider's cell in the popup. `Loading` exists because Claude's number
 /// arrives over the network, so the first frame must be drawable without it.
 #[derive(Clone, Debug, PartialEq)]
-pub enum Slot {
+pub(super) enum Slot {
     Loading { name: String },
     Ready(Report),
     Unavailable { name: String, reason: String },

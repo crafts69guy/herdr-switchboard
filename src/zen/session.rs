@@ -12,7 +12,7 @@ use crate::state;
 const STATE_FILE: &str = "zen.json";
 const CHROME_ABSENT: &str = "-";
 #[derive(Debug, Clone, PartialEq)]
-pub struct Session {
+pub(super) struct Session {
     pub target: String,
     pub zen_tab: String,
     pub origin_tab: String,
@@ -116,7 +116,7 @@ pub(super) fn decode(text: &str) -> Option<Session> {
 /// out from under them mid-run. (It did, once — a `cargo test` between two
 /// toggles left a real zen'd pane stranded in an orphan tab.) Tests point it at
 /// a temp dir; production uses the state dir.
-pub struct SessionStore(Option<PathBuf>);
+pub(super) struct SessionStore(Option<PathBuf>);
 
 impl SessionStore {
     pub fn new() -> Self {

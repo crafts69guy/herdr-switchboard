@@ -121,10 +121,10 @@ must come from `herdr agent list`, `herdr workspace list`, or the captured origi
 - `commands.rs` — the Command Catalog feature interface; private `commands/catalog.rs`,
   `commands/history.rs`, `commands/action.rs`, and `commands/picker.rs` own privacy-aware catalogue
   persistence, bounded shell ingestion, terminal/clipboard effects, and the picker adapter
-- `settings.rs` — the `Settings` overlay: the `SETTINGS` form, its cycle rings, and `write_setting`,
-  a namespaced-config writer that preserves comments and hand-added keys. Opened with `⌥,` and drawn as a
-  floating two-column card **over** the picker (like the `⌥c` changelog), not a separate pane; the
-  picker embeds it as `App::settings` and routes keys to `Settings::on_key` while it is shown. Edits
+- `settings.rs` — the `Settings` draft/apply model and standalone `Surface`. Opened with `⌥,` and
+  drawn as a floating two-column card **over** the picker (like the `⌥c` changelog), not a separate
+  pane; the picker embeds it as `App::settings` and routes keys to `Settings::on_key` while it is
+  shown. Edits
   are **drafts** (`values` vs the `saved` baseline): cycling stages a value, `a` calls `apply`
   (writes only the changed keys, then adopts the draft), and `esc` calls `discard` — nothing hits
   `config.toml` until you apply
@@ -147,9 +147,10 @@ must come from `herdr agent list`, `herdr workspace list`, or the captured origi
 - `usage.rs` — the `--usage` feature interface, refresh runtime, braille geometry, and `Surface`
   implementation. Private `usage/domain.rs`, `usage/time.rs`, and `usage/view.rs` children own
   report states, date/reset formatting, and card rendering
-- `usage/provider.rs`, `usage/provider/codex.rs`, `usage/provider/claude.rs` — the feature-private
-  `Provider` registry and its offline rollout/identity and credential/HTTP adapters. Usage remains
-  the only credential-reading surface and the only in-process HTTP client; see the constraints below
+- `usage/provider.rs`, `usage/provider/common.rs`, `usage/provider/codex.rs`,
+  `usage/provider/claude.rs` — the feature-private `Provider` registry, shared parsing primitives,
+  and its offline rollout/identity and credential/HTTP adapters. Usage remains the only
+  credential-reading surface and the only in-process HTTP client; see the constraints below
 - `update.rs` — the `--update-check` mode plus the cache the picker reads
   (`$XDG_STATE_HOME/herdr-switchboard/update.tsv`, `checked_at<TAB>latest`, 24h TTL)
 
@@ -260,7 +261,7 @@ order so the list stays stable.
   `preview_scroll` mean what it says and `preview_len`/`preview_rows` bound it correctly.
   `draw_preview` therefore has no `Wrap`. Re-adding one, or emitting an unclipped line,
   breaks the scroll silently: the offset drifts from the content instead of erroring. The
-  pane's width reaches the worker through `App::preview_width`, published by `ui::draw`, which is
+  pane's width reaches the worker through `App::preview_width`, published by `projects/view.rs`, which is
   why `ProjectsSurface::after_draw` requests a preview only after the host has drawn geometry.
 - **Nothing uses `jq` — keep it that way.** No code path shells out to it: the bash layer reads
   herdr's JSON with the awk-based `json_string_value` / `json_bool_value` in `bin/lib.sh`, and the

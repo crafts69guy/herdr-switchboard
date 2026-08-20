@@ -16,9 +16,10 @@ in private `commands/` children. `tui.rs` is rendering vocabulary only. Zen keep
 geometry, session persistence, herdr effects, and its picker adapter in private `zen/`
 children. Settings keeps its catalogue, TOML writer, and view in private `settings/`
 children. `settings.rs`, `changelog.rs`, and `usage.rs`
-are popups hosted through `Surface`; Usage keeps domain values, providers, time formatting,
-and rendering in private `usage/` children. `git.rs` owns its pane and reducer, with external
-reads and rendering in `git/effect.rs` and `git/view.rs`. `chrome.rs`, `socket.rs`,
+are popups hosted through `Surface`; Usage keeps domain values, shared provider primitives,
+provider adapters, time formatting, and rendering in private `usage/` children. `git.rs`
+owns its pane and reducer, with external reads and rendering in `git/effect.rs` and
+`git/view.rs`. `chrome.rs`, `socket.rs`,
 `runner.rs`, `notify.rs`, `config.rs`, `keymap.rs`,
 `markdown.rs`, `state.rs`, `trace.rs`, `splash.rs`, and `update.rs` are supporting
 modules. Read `CLAUDE.md` before changing their non-obvious contracts.

@@ -2,6 +2,7 @@
 
 mod claude;
 mod codex;
+mod common;
 
 use anyhow::Result;
 
@@ -15,6 +16,8 @@ use codex::Codex;
 pub(super) use claude::*;
 #[cfg(test)]
 pub(super) use codex::*;
+#[cfg(test)]
+pub(super) use common::*;
 
 /// One source of quota numbers. Adding a provider is an impl plus a line in
 /// [`providers`] — the same shape as the entry sources in [`crate::source`].

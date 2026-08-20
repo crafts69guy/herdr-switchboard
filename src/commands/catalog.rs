@@ -15,13 +15,13 @@ use crate::state::{now, state_file};
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub enum SelectionAction {
+pub(super) enum SelectionAction {
     Fill,
     Run,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct CommandRecord {
+pub(super) struct CommandRecord {
     pub command: String,
     pub label: String,
     pub sources: Vec<String>,
@@ -49,12 +49,12 @@ impl CommandRecord {
 }
 
 #[derive(Clone, Debug)]
-pub struct Import {
+pub(super) struct Import {
     pub command: String,
     pub timestamp: u64,
 }
 
-pub struct CommandCatalog {
+pub(super) struct CommandCatalog {
     records: Vec<CommandRecord>,
     diagnostics: Vec<String>,
     denied: HashSet<String>,

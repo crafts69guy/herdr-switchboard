@@ -44,13 +44,13 @@ struct Job {
 }
 
 /// A finished preview, tagged with the `seq` of the job that produced it.
-pub struct Done {
+pub(super) struct Done {
     pub seq: u64,
     pub text: Text<'static>,
 }
 
 /// Renders previews off the UI thread, newest request first.
-pub struct Worker {
+pub(super) struct Worker {
     jobs: Sender<Job>,
     done: Receiver<Done>,
 }
@@ -99,7 +99,7 @@ impl Worker {
     }
 }
 
-pub fn render(
+pub(super) fn render(
     entry: &Entry,
     runner: &dyn CommandRunner,
     script_dir: &str,

@@ -4,7 +4,7 @@ use serde_json::Value;
 
 /// How to put the target back where it came from.
 #[derive(Debug, Clone, PartialEq)]
-pub struct Anchor {
+pub(super) struct Anchor {
     pub pane: String,
     /// `right` when the panes sat side by side, `down` when stacked.
     pub split: String,
@@ -37,7 +37,7 @@ pub struct Anchor {
 /// Both are ratios *for the target*, because that is what `pane split` takes.
 /// The width is clamped rather than rejected: a nonsensical config should make
 /// zen look odd, not refuse to open.
-pub fn gutter_ratios(width_pct: u16) -> (f32, f32) {
+pub(super) fn gutter_ratios(width_pct: u16) -> (f32, f32) {
     let width = (width_pct.clamp(20, 95) as f32) / 100.0;
     let gutter = (1.0 - width) / 2.0;
     (1.0 - gutter, gutter / (1.0 - gutter))
@@ -49,7 +49,7 @@ pub fn gutter_ratios(width_pct: u16) -> (f32, f32) {
 /// matters as soon as a tab has more than two panes: two panes can *look*
 /// adjacent while sitting in different branches, and rejoining the wrong one
 /// rebuilds the tab inside out.
-pub fn sibling_anchor(node: &Value, target: &str) -> Option<Anchor> {
+pub(super) fn sibling_anchor(node: &Value, target: &str) -> Option<Anchor> {
     let is_target = |child: &Value| child.get("pane_id").and_then(Value::as_str) == Some(target);
 
     if node.get("type").and_then(Value::as_str) == Some("split") {
@@ -95,7 +95,7 @@ fn first_leaf(node: &Value) -> Option<String> {
 /// Work out how the target sat relative to `other` from geometry alone — the
 /// fallback for when `layout.export` is unavailable (an older herdr, a closed
 /// socket). Less reliable than [`sibling_anchor`], so it never claims exactness.
-pub fn anchor_between(target: Rect, other: Rect, other_id: &str) -> Anchor {
+pub(super) fn anchor_between(target: Rect, other: Rect, other_id: &str) -> Anchor {
     let horizontal = target.x != other.x;
     let (split, span_a, span_b) = if horizontal {
         ("right", target.width, other.width)
@@ -118,7 +118,7 @@ pub fn anchor_between(target: Rect, other: Rect, other_id: &str) -> Anchor {
 
 /// A pane's cell rectangle, as `herdr pane layout` reports it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct Rect {
+pub(super) struct Rect {
     pub x: i64,
     pub y: i64,
     pub width: i64,

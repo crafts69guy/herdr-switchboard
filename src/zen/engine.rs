@@ -21,7 +21,7 @@ fn herdr_json<R: CommandRunner>(runner: &R, args: &[&str]) -> Option<Value> {
 }
 
 /// Every pane herdr knows about, as `(pane_id, tab_id)` plus its title and cwd.
-pub fn list_panes<R: CommandRunner>(runner: &R) -> Vec<PaneInfo> {
+pub(super) fn list_panes<R: CommandRunner>(runner: &R) -> Vec<PaneInfo> {
     let Some(value) = herdr_json(runner, &["pane", "list"]) else {
         return Vec::new();
     };
@@ -32,7 +32,7 @@ pub fn list_panes<R: CommandRunner>(runner: &R) -> Vec<PaneInfo> {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct PaneInfo {
+pub(super) struct PaneInfo {
     pub pane_id: String,
     pub tab_id: String,
     pub workspace_id: String,
@@ -100,7 +100,7 @@ fn layout<R: CommandRunner>(runner: &R, pane: &str) -> Option<(Rect, Vec<(String
 // ---------------------------------------------------------------------------
 
 /// Settings zen reads, resolved once so the CLI and the picker agree.
-pub struct ZenConfig {
+pub(super) struct ZenConfig {
     pub width: u16,
     pub scrim: bool,
     pub color: [u8; 4],
@@ -119,7 +119,7 @@ impl ZenConfig {
 }
 
 /// Move `target` into a tab of its own, flank it with gutters, and dim them.
-pub fn enter<R: CommandRunner>(
+pub(super) fn enter<R: CommandRunner>(
     runner: &R,
     target: &str,
     cfg: &ZenConfig,
@@ -296,7 +296,7 @@ fn paint_gutters<R: CommandRunner>(runner: &R, session: &Session, color: [u8; 4]
 /// close the zen tab, or move the pane by hand between enter and leave, and the
 /// worst outcome must be a no-op — never a wedged toggle that needs the state
 /// file deleted by hand.
-pub fn leave<R: CommandRunner>(
+pub(super) fn leave<R: CommandRunner>(
     runner: &R,
     session: &Session,
     notifier: &Notifier,
@@ -404,7 +404,7 @@ pub fn leave<R: CommandRunner>(
 /// Enter if there is no live session, leave if there is. The session counts as
 /// live only while its target pane still exists, so a stale file left by a
 /// crashed herdr resolves to "enter" rather than trapping the user.
-pub fn toggle<R: CommandRunner>(
+pub(super) fn toggle<R: CommandRunner>(
     runner: &R,
     target: &str,
     cfg: &ZenConfig,

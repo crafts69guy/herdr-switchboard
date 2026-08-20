@@ -81,7 +81,6 @@ pub struct PreviewState {
 /// The `⌥c` changelog popup: its parsed blocks and scroll position. Parsed on
 /// first open, not at startup — most sessions never press `⌥c`.
 pub struct ChangelogState {
-    pub show: bool,
     pub blocks: Vec<markdown::Block>,
     pub scroll: u16,
     /// Rendered rows and visible rows at the last draw, so scrolling can stop.
@@ -114,7 +113,7 @@ pub struct App {
     pub title_color: ratatui::style::Color,
     pub cfg: Config,
     pub script_dir: String,
-    pub show_help: bool,
+    overlay: Overlay,
     /// A newer version the cache knows about; shown, never acted on.
     pub update: Option<String>,
     /// Chord → action table, built from defaults + `keys.*` config overrides.
@@ -127,9 +126,18 @@ pub struct App {
     pub picker: Picker,
     pub preview: PreviewState,
     pub changelog: ChangelogState,
-    /// The settings form, drawn as a floating overlay when `settings.show`.
+    /// The settings form used when [`Overlay::Settings`] owns input.
     pub settings: settings::Settings,
     pub zones: HitZones,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) enum Overlay {
+    #[default]
+    None,
+    Help,
+    Changelog,
+    Settings,
 }
 
 enum Flow {
@@ -346,7 +354,6 @@ impl PreviewState {
 impl ChangelogState {
     fn new() -> Self {
         ChangelogState {
-            show: false,
             blocks: Vec::new(),
             scroll: 0,
             len: 0,
@@ -364,7 +371,6 @@ impl ChangelogState {
             };
         }
         self.scroll = 0;
-        self.show = true;
     }
 }
 
@@ -403,7 +409,7 @@ impl App {
             title_color,
             cfg,
             script_dir,
-            show_help: false,
+            overlay: Overlay::None,
             update,
             keymap,
             mode,
@@ -499,12 +505,8 @@ impl App {
     fn on_click(&mut self, at: Position) -> Flow {
         // A popup is modal: the click dismisses it and means nothing else, the
         // way any key does.
-        if self.show_help {
-            self.show_help = false;
-            return Flow::Continue;
-        }
-        if self.changelog.show {
-            self.changelog.show = false;
+        if matches!(self.overlay, Overlay::Help | Overlay::Changelog) {
+            self.overlay = Overlay::None;
             return Flow::Continue;
         }
         // The settings form is modal: inside the card the pointer picks a tab, a
@@ -512,13 +514,17 @@ impl App {
         // `close_discarding` so a staged edit cannot survive the close — `esc`
         // discards, and a click that closed without discarding left the draft
         // alive behind a form that looked shut.
-        if self.settings.show {
+        if self.overlay == Overlay::Settings {
             if self.settings.hit(at) {
                 if self.settings.on_click(at) {
                     self.reload_config();
                 }
             } else {
                 self.settings.close_discarding();
+                self.overlay = Overlay::None;
+            }
+            if !self.settings.show {
+                self.overlay = Overlay::None;
             }
             return Flow::Continue;
         }
@@ -559,11 +565,11 @@ impl App {
     fn on_wheel(&mut self, at: Position, delta: i32) -> bool {
         // A modal popup takes the wheel first: it is what the pointer is over,
         // whatever is drawn underneath.
-        if self.settings.show {
+        if self.overlay == Overlay::Settings {
             self.settings.on_wheel(delta as isize);
             return true;
         }
-        if self.changelog.show {
+        if self.overlay == Overlay::Changelog {
             let c = &mut self.changelog;
             let max = c.len.saturating_sub(c.rows);
             c.scroll = if delta > 0 {
@@ -658,9 +664,15 @@ fn apply_action(app: &mut App, action: keymap::Action) -> Flow {
     }
     match action {
         Action::Quit => return Flow::Quit,
-        Action::Help => app.show_help = true,
-        Action::Changelog => app.changelog.open(),
-        Action::Settings => app.settings.open(),
+        Action::Help => app.overlay = Overlay::Help,
+        Action::Changelog => {
+            app.changelog.open();
+            app.overlay = Overlay::Changelog;
+        }
+        Action::Settings => {
+            app.settings.open();
+            app.overlay = Overlay::Settings;
+        }
         Action::NextGroup => app.picker.cycle_group(1),
         Action::PrevGroup => app.picker.cycle_group(-1),
         Action::Down => app.picker.move_sel(1),
@@ -704,7 +716,7 @@ fn handle_key(app: &mut App, k: crossterm::event::KeyEvent) -> Flow {
     // The settings overlay is a form: while open it owns navigation, Enter (cycle),
     // and the in-place split_ratio edit, so route every key to it. `esc`/`q` close it
     // from inside `on_key`; `^c` still quits the picker so you are never trapped.
-    if app.settings.show {
+    if app.overlay == Overlay::Settings {
         if ctrl && matches!(k.code, KeyCode::Char('c')) {
             return Flow::Quit;
         }
@@ -713,18 +725,21 @@ fn handle_key(app: &mut App, k: crossterm::event::KeyEvent) -> Flow {
         if app.settings.on_key(k) {
             app.reload_config();
         }
+        if !app.settings.show {
+            app.overlay = Overlay::None;
+        }
         return Flow::Continue;
     }
 
     // The changelog popup scrolls, so it cannot dismiss on any key the way the help
     // cheatsheet does; esc/q closes it and the movement keys drive it.
-    if app.changelog.show {
+    if app.overlay == Overlay::Changelog {
         let c = &mut app.changelog;
         let page = c.rows.saturating_sub(2).max(1);
         let max = c.len.saturating_sub(c.rows);
         match k.code {
             KeyCode::Char('c') if ctrl => return Flow::Quit,
-            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('c') => c.show = false,
+            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('c') => app.overlay = Overlay::None,
             KeyCode::Down | KeyCode::Char('j') => c.scroll = (c.scroll + 1).min(max),
             KeyCode::Up | KeyCode::Char('k') => c.scroll = c.scroll.saturating_sub(1),
             KeyCode::PageDown | KeyCode::Char(' ') => c.scroll = (c.scroll + page).min(max),
@@ -738,11 +753,11 @@ fn handle_key(app: &mut App, k: crossterm::event::KeyEvent) -> Flow {
 
     // While the help popup is open, swallow every key: the first press just
     // dismisses it (^c still quits, so you're never trapped).
-    if app.show_help {
+    if app.overlay == Overlay::Help {
         if ctrl && matches!(k.code, KeyCode::Char('c')) {
             return Flow::Quit;
         }
-        app.show_help = false;
+        app.overlay = Overlay::None;
         return Flow::Continue;
     }
 
@@ -1136,12 +1151,14 @@ mod tests {
         app.settings
             .redirect(std::env::temp_dir().join("switchboard-never-written.toml"));
         app.settings.open();
+        app.overlay = Overlay::Settings;
         let _ = rendered(&mut app, 120, 40);
         app.settings
             .on_key(crossterm::event::KeyEvent::from(KeyCode::Enter));
         assert!(app.settings.dirty(), "the draft is staged");
 
         app.on_click(Position::new(0, 0));
+        assert_eq!(app.overlay, Overlay::None);
         assert!(!app.settings.show);
         assert!(!app.settings.dirty(), "the close rolled the draft back");
     }
@@ -1149,7 +1166,7 @@ mod tests {
     #[test]
     fn the_help_popup_says_what_each_key_does_in_full() {
         let mut app = app_with_layout();
-        app.show_help = true;
+        app.overlay = Overlay::Help;
         // A description too wide for the column is cut with no ellipsis to warn
         // anyone — `wheel  Scroll whatever is under it` reached a screenshot as
         // `Scroll whatever is`. `row`'s debug_assert fires here if it recurs.
@@ -1201,6 +1218,7 @@ mod tests {
         // ⌥, opens it, and the card draws *over* the list rather than replacing it —
         // the picker's Search box is still framed behind the overlay.
         handle_key(&mut app, key(KeyCode::Char(','), KeyModifiers::ALT));
+        assert_eq!(app.overlay, Overlay::Settings);
         assert!(app.settings.show);
         let screen = rendered(&mut app, 120, 40);
         assert!(screen.contains("Switchboard Settings"), "{screen}");
@@ -1290,10 +1308,10 @@ mod tests {
     #[test]
     fn a_click_dismisses_the_help_popup_and_nothing_else() {
         let mut app = app_with_layout();
-        app.show_help = true;
+        app.overlay = Overlay::Help;
         // Aimed straight at a pill: the popup is modal, so it must swallow this.
         assert!(!is_accept(app.on_click(Position::new(3, 30))));
-        assert!(!app.show_help);
+        assert_eq!(app.overlay, Overlay::None);
     }
 
     #[test]
@@ -1398,8 +1416,19 @@ mod tests {
     fn question_mark_opens_help_rather_than_typing() {
         let mut app = App::new(sample(), Theme::default(), Config::default(), ".".into());
         handle_key(&mut app, key(KeyCode::Char('?'), KeyModifiers::NONE));
-        assert!(app.show_help);
+        assert_eq!(app.overlay, Overlay::Help);
         assert_eq!(app.picker.query, "", "? must not land in the query");
+    }
+
+    #[test]
+    fn opening_an_overlay_replaces_the_previous_modal_owner() {
+        let mut app = App::new(sample(), Theme::default(), Config::default(), ".".into());
+        apply_action(&mut app, keymap::Action::Help);
+        assert_eq!(app.overlay, Overlay::Help);
+
+        apply_action(&mut app, keymap::Action::Settings);
+        assert_eq!(app.overlay, Overlay::Settings);
+        assert!(app.settings.show);
     }
 
     #[test]

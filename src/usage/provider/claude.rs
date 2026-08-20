@@ -1,10 +1,10 @@
 //! Claude credential and usage endpoint adapter.
 
 use std::fs;
-use std::path::PathBuf;
 
 use anyhow::{anyhow, Context, Result};
 
+use super::common::{clamp_percent, home, parse_rfc3339_epoch};
 use super::Provider;
 use crate::config::Config;
 use crate::runner::CommandRunner;
@@ -287,54 +287,4 @@ pub(in crate::usage) fn money(value: &serde_json::Value) -> String {
         Some(other) => return format!("{amount:.2} {other}"),
     };
     format!("{symbol}{amount:.2}")
-}
-
-/// Both sources report on a 0..=100 scale — measured, not assumed: Codex writes
-/// `used_percent: 41.0` and the usage endpoint answers `utilization: 51.0` for
-/// an account half through its window.
-///
-/// So this only clamps. An earlier version guessed that a value at or below 1.0
-/// was a fraction and multiplied it by 100, which reads a genuine `0.8%` — the
-/// state of every plan at the start of its window — as `80%`. Guessing the scale
-/// silently turns a quiet morning into a red card; clamping cannot.
-pub(in crate::usage) fn clamp_percent(raw: f64) -> f64 {
-    if raw.is_finite() {
-        raw.clamp(0.0, 100.0)
-    } else {
-        0.0
-    }
-}
-
-/// Enough of RFC 3339 to turn `2026-08-18T14:22:03Z` into epoch seconds.
-///
-/// Hand-rolled because this is the only date this plugin parses, and a date
-/// crate would be a dependency for one field of one undocumented endpoint.
-pub(in crate::usage) fn parse_rfc3339_epoch(text: &str) -> Option<u64> {
-    let (date, rest) = text.split_once('T')?;
-    let time = rest
-        .split(['Z', '+', '.'])
-        .next()
-        .filter(|time| !time.is_empty())?;
-    let mut date = date.split('-');
-    let year: i64 = date.next()?.parse().ok()?;
-    let month: i64 = date.next()?.parse().ok()?;
-    let day: i64 = date.next()?.parse().ok()?;
-    let mut time = time.split(':');
-    let hour: i64 = time.next()?.parse().ok()?;
-    let minute: i64 = time.next()?.parse().ok()?;
-    let second: i64 = time.next().unwrap_or("0").parse().ok()?;
-    // Howard Hinnant's days-from-civil, the standard branch-free conversion.
-    let year = year - i64::from(month <= 2);
-    let era = if year >= 0 { year } else { year - 399 } / 400;
-    let year_of_era = year - era * 400;
-    let day_of_year = (153 * (month + if month > 2 { -3 } else { 9 }) + 2) / 5 + day - 1;
-    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
-    let days = era * 146_097 + day_of_era - 719_468;
-    u64::try_from(days * 86_400 + hour * 3_600 + minute * 60 + second).ok()
-}
-
-pub(in crate::usage) fn home() -> Result<PathBuf> {
-    std::env::var("HOME")
-        .map(PathBuf::from)
-        .map_err(|_| anyhow!("HOME is not set"))
 }

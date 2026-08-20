@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Context, Result};
 
-use super::claude::{clamp_percent, home, parse_rfc3339_epoch};
+use super::common::{clamp_percent, home, parse_rfc3339_epoch};
 use super::Provider;
 use crate::config::Config;
 use crate::runner::CommandRunner;
