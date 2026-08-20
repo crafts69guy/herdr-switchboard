@@ -69,8 +69,9 @@ must come from `herdr agent list`, `herdr workspace list`, or the captured origi
 
 **Module split (`src/`):**
 
-- `main.rs` — the Projects composition root and argv dispatcher: `App`, `ProjectsSurface`,
-  `handle_key` → `Flow` (Continue/Quit/Accept), and `browse_order`
+- `main.rs` — the argv composition root: parses startup arguments and dispatches each CLI mode
+- `projects.rs` — the Projects feature interface and host: `App`, `ProjectsSurface`,
+  `handle_key` → `Flow` (Continue/Quit/Accept), startup loading, dispatch, and `browse_order`
 - `keymap.rs` — the `Chord → Action` tables (Insert + Normal), built from defaults and overridden
   by `[keys.projects]`; `Mode` (Insert/Normal) and the typed `common.keymode`. `chord_of`
   reduces a key event; `parse_chord` reads a config spec
@@ -95,16 +96,16 @@ must come from `herdr agent list`, `herdr workspace list`, or the captured origi
 - `state.rs` — `state_dir()` + `now()`, shared by `history` and `update`
 - `tui.rs` — rendering vocabulary only: `boxed()` (the one rounded-panel helper — rounded border in
   `overlay0`, caption in `title_color`) and the command-bar `pill_row` widget
-- `ui.rs` — responsive Projects Picker layout built from `tui::boxed`: wide panes show Context /
+- `projects/view.rs` — responsive Projects Picker layout built from `tui::boxed`: wide panes show Context /
   Navigator / Inspector, medium panes show Navigator / Inspector, and compact panes prioritize
   Navigator; Search and the full-width bar remain fixed rows. It also draws the in-picker `⌥c`
   changelog, the `?` cheatsheet, and — via `settings::draw` — the `⌥,` settings form
 - `picker.rs` — the shared engine behind the **mode** pickers (`menu` / `agents` / `commands` /
   `ports` / `zen`):
   the `PickerMode` trait, the fuzzy/query state, and a `draw` that renders the same three
-  panels as `ui.rs` through `tui::boxed`. Its chrome is not free-styled — see the
+  panels as `projects/view.rs` through `tui::boxed`. Its chrome is not free-styled — see the
   constraint below
-- `preview.rs` — the preview card (header + pills / meta column / captioned rules). Reads
+- `projects/preview.rs` — the preview card (header + pills / meta column / captioned rules). Reads
   agents and workspaces from herdr's JSON with `serde_json` and styles everything from
   `Theme`; shells out to `bin/preview.sh` only for the repo file tree, which arrives as
   ANSI already and passes through `ansi-to-tui`
@@ -207,16 +208,16 @@ order so the list stays stable.
   lookup interface. `settings.rs` writes namespaced values through `toml_edit`, preserving comments
   and hand-added keys before validating the complete result.
 - **A click zone is measured by the loop that draws the thing.** `tab_zones` and
-  `footer_zones` (`src/ui.rs`) are built inside the same loops that lay out the tab strip
+  `footer_zones` (`src/projects/view.rs`) are built inside the same loops that lay out the tab strip
   and the command bar, because a zone computed separately drifts the moment a label
   changes — and drifts _silently_, into clicking the wrong action. `list_state` is kept
   on the `App` for the same reason: its scroll offset is the only thing that turns a
   clicked row back into an entry, so it cannot be a fresh `ListState` per frame.
-- **The cheatsheet's descriptions must fit `HELP_DESC`** (`src/ui.rs`) — the popup's half
+- **The cheatsheet's descriptions must fit `HELP_DESC`** (`src/projects/view.rs`) — the popup's half
   width less the key pill, around 19 columns. A longer one is cut with no ellipsis, so it
   ships looking like a shorter phrase; `wheel  Scroll whatever is under it` reached a
   README screenshot as `Scroll whatever is`. `row` asserts, and a `TestBackend` render
-  test in `main.rs` fires it.
+  test in `projects.rs` fires it.
 - **Keys are a config-driven keymap, not hardcoded `match` arms.** `handle_key` resolves a
   `Chord` through `App::keymap` (`src/keymap.rs`) and runs `apply_action`. Two ordered tables
   (Insert + Normal) plus a `␣` leader table; typed `common.keymode` defaults to Normal and `esc`
@@ -243,11 +244,11 @@ order so the list stays stable.
   click `exec` tuicr over a pane or write a setting, and a timestamp heuristic would put
   the same guesswork in five places. A command-bar pill carries the **key printed on its
   cap** as its payload and routes through `on_key`, so the label cannot drift from the
-  behaviour. The rule is the same in `main.rs`, `picker.rs`, `git.rs` and `settings.rs`;
+  behaviour. The rule is the same in `projects.rs`, `picker.rs`, `git.rs` and `settings.rs`;
   what is shared between them is `tui::zone_at`, the lookup — never the measurement, which
   stays in the loop that draws the thing.
 - **The preview clips; it must never wrap.** Every body goes through `clip`/`clip_line`
-  (`src/preview.rs`) so one card line is exactly one screen row — that is what makes
+  (`src/projects/preview.rs`) so one card line is exactly one screen row — that is what makes
   `preview_scroll` mean what it says and `preview_len`/`preview_rows` bound it correctly.
   `draw_preview` therefore has no `Wrap`. Re-adding one, or emitting an unclipped line,
   breaks the scroll silently: the offset drifts from the content instead of erroring. The
@@ -255,7 +256,7 @@ order so the list stays stable.
   why `ProjectsSurface::after_draw` requests a preview only after the host has drawn geometry.
 - **Nothing uses `jq` — keep it that way.** No code path shells out to it: the bash layer reads
   herdr's JSON with the awk-based `json_string_value` / `json_bool_value` in `bin/lib.sh`, and the
-  Rust layer uses `serde_json` (`data.rs`, `preview.rs`). It is not a documented requirement, so a
+  Rust layer uses `serde_json` (`data.rs`, `projects/preview.rs`). It is not a documented requirement, so a
   new jq call would be a new hard dependency on a machine that may not have it — and a silent one,
   since a missing jq fails the same way a wrong filter does: empty output, no error.
 - **`SWITCHBOARD_FORCE_TARGET` overrides `default_target` for Enter, repos only.** `bin/action.sh` exports it

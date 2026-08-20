@@ -3,7 +3,7 @@
 //! `ProjectCatalog` keeps inclusion and ordering policy explicit while leaving
 //! the individual entry parsers in `data`.
 //!
-//! The preview card ([`crate::preview::render`]) and the accept dispatch
+//! The preview card (`projects::preview`) and the accept dispatch
 //! ([`crate::action::dispatch`]) stay as compiler-checked `match`es in their own
 //! modules on purpose: routing them through here would make `preview`/`action`
 //! depend on this module and this module on them — a cycle — for no safety gain.

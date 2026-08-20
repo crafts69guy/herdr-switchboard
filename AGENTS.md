@@ -4,11 +4,12 @@
 
 The Rust TUI lives in `src/`. `surface.rs` is the universal host for terminal claim,
 mouse capture, polling, redraw, and teardown; no other module owns an event loop.
-`main.rs` composes the Projects Picker and dispatches argv modes. `source.rs` holds
-the explicit `ProjectCatalog` load policy, while `data.rs` parses source responses
-and carries entry presentation data. `query.rs`, `ui.rs`, `preview.rs`, `action.rs`,
-and `history.rs` carry query compilation, responsive Projects Picker rendering, previews,
-accepted effects, and recency state. `picker.rs` is the shared engine behind the
+`main.rs` dispatches argv modes, while `projects.rs` composes and hosts the Projects
+Picker. `source.rs` holds the explicit `ProjectCatalog` load policy, while `data.rs`
+parses source responses and carries entry presentation data. `query.rs`,
+`projects/view.rs`, `projects/preview.rs`, `action.rs`, and `history.rs` carry query
+compilation, responsive Projects Picker rendering, previews, accepted effects, and
+recency state. `picker.rs` is the shared engine behind the
 mode pickers (`menu.rs`, `agents.rs`, `commands.rs`, `ports.rs`, `zen.rs`), and
 `tui.rs` is rendering vocabulary only. `settings.rs`, `changelog.rs`, and `usage.rs`
 are popups hosted through `Surface`; `git.rs` is its own pane with typed background

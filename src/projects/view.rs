@@ -9,7 +9,7 @@ use ratatui::Frame;
 
 use crate::action::Accept;
 use crate::keymap::{Action, Mode};
-use crate::App;
+use crate::projects::App;
 
 pub fn draw(f: &mut Frame, app: &mut App) {
     let accent = app.theme.or("accent", Color::Cyan);

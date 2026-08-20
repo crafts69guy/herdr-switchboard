@@ -59,7 +59,7 @@ detached child, and Clone remains an explicitly invoked Bash flow in `bin/get.sh
 | `source::ProjectCatalog` | `new`, `load`, canonical `kinds` | Source enablement and load order |
 | `data` | Source loaders, entry and browse types, `Theme` | Response parsing and presentation mapping |
 | `keymap` | `Chord`, `Action`, `Keymap`, canonical chord conversion | Mode tables, overrides, labels |
-| `main` / `picker` / `git` | `Surface` adapters and typed outputs | Surface-specific state reduction and composition |
+| `projects` / `picker` / `git` | `Surface` adapters and typed outputs | Surface-specific state reduction and composition |
 | `action` | `Accept`, `dispatch`, `open_target` | Restored-terminal effects and process replacement |
 | `runner` | `CommandRunner` | `SystemRunner` and `MockRunner` process adapters |
 

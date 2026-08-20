@@ -3,8 +3,8 @@
 //!
 //! It lives on its own because three surfaces share it: the standalone
 //! `--changelog` mode ([`crate::changelog`]), the picker's `⌥c` popup
-//! ([`crate::ui`]), and the preview card's README excerpt
-//! ([`crate::preview`]). Keeping the parser and renderer here means those three
+//! (`projects::view`), and the preview card's README excerpt
+//! (`projects::preview`). Keeping the parser and renderer here means those three
 //! cannot drift, and neither `ui` nor `preview` has to depend on the changelog
 //! *feature* module just to reuse a span splitter.
 

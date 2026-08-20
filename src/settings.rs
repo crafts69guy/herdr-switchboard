@@ -14,7 +14,7 @@
 //! Edits are **drafts**: cycling a value stages it (a peach dot marks a changed row) but
 //! writes nothing. `a` applies the whole draft to `config.toml` at once; `esc` discards
 //! it. `on_key`/`apply` return `true` on a successful apply so the picker re-reads the
-//! config and updates its live state (see `App::reload_config`) — an applied change takes
+//! config and updates its live state (see `projects::App::reload_config`) — an applied change takes
 //! effect in the running session, no relaunch or server reload needed.
 
 use std::fs;
