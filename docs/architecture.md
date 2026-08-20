@@ -62,6 +62,7 @@ detached child, and Clone remains an explicitly invoked Bash flow in `bin/get.sh
 | `projects` / `picker` / `git` | `Surface` adapters and typed outputs | Surface-specific state reduction and composition |
 | `action` | `Accept`, `dispatch`, `open_target` | Restored-terminal effects and process replacement |
 | `runner` | `CommandRunner` | `SystemRunner` and `MockRunner` process adapters |
+| `usage` | `main`, feature-private `Provider` | Refresh runtime, quota adapters, time formatting, rendering |
 
 ## Interaction model
 

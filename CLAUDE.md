@@ -138,11 +138,12 @@ must come from `herdr agent list`, `herdr workspace list`, or the captured origi
   `CommandRunner`
 - `socket.rs` — **the only** code that talks to herdr's unix socket instead of the CLI, and only
   because `pane.graphics.set`/`.clear` have no CLI subcommand. Everything in it fails soft
-- `usage.rs` — the whole `--usage` pane: the `Provider` registry (Codex reads its rate limits off
-  the tail of the newest rollout JSONL; Claude asks the endpoint behind the in-session `/usage`),
-  the braille donut (`donut_points` is pure and tested), the per-window bars and `Fact` rows, and
-  its `Surface` implementation. It is the only credential-reading surface and the only in-process
-  HTTP client; see the constraints below
+- `usage.rs` — the `--usage` feature interface, refresh runtime, braille geometry, and `Surface`
+  implementation. Private `usage/domain.rs`, `usage/time.rs`, and `usage/view.rs` children own
+  report states, date/reset formatting, and card rendering
+- `usage/provider.rs`, `usage/provider/codex.rs`, `usage/provider/claude.rs` — the feature-private
+  `Provider` registry and its offline rollout/identity and credential/HTTP adapters. Usage remains
+  the only credential-reading surface and the only in-process HTTP client; see the constraints below
 - `update.rs` — the `--update-check` mode plus the cache the picker reads
   (`$XDG_STATE_HOME/herdr-switchboard/update.tsv`, `checked_at<TAB>latest`, 24h TTL)
 
