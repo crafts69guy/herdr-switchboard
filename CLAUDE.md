@@ -118,6 +118,9 @@ must come from `herdr agent list`, `herdr workspace list`, or the captured origi
   `git` interface
 - `action.rs` — `Accept` enum → herdr CLI verbs, plus `run_review` (`exec`s `bin/review.sh`)
 - `history.rs` — recency state at `$XDG_STATE_HOME/herdr-switchboard/recent.tsv`, atomic write, cap 200
+- `commands.rs` — the Command Catalog feature interface; private `commands/catalog.rs`,
+  `commands/history.rs`, `commands/action.rs`, and `commands/picker.rs` own privacy-aware catalogue
+  persistence, bounded shell ingestion, terminal/clipboard effects, and the picker adapter
 - `settings.rs` — the `Settings` overlay: the `SETTINGS` form, its cycle rings, and `write_setting`,
   a namespaced-config writer that preserves comments and hand-added keys. Opened with `⌥,` and drawn as a
   floating two-column card **over** the picker (like the `⌥c` changelog), not a separate pane; the

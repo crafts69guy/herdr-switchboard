@@ -65,6 +65,7 @@ detached child, and Clone remains an explicitly invoked Bash flow in `bin/get.sh
 | `usage` | `main`, feature-private `Provider` | Refresh runtime, quota adapters, time formatting, rendering |
 | `zen` | `main`, `cli` | Geometry, recoverable session state, herdr effects, picker adapter |
 | `settings` | `Settings`, `draw`, `main` | Catalogue, validated document persistence, draft model, rendering |
+| `commands` | `main`, `copy_text` | Privacy-aware catalogue, shell ingestion, terminal effects, picker adapter |
 
 ## Interaction model
 

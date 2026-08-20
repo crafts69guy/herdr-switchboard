@@ -10,10 +10,12 @@ parses source responses and carries entry presentation data. `query.rs`,
 `projects/view.rs`, `projects/preview.rs`, `action.rs`, and `history.rs` carry query
 compilation, responsive Projects Picker rendering, previews, accepted effects, and
 recency state. `picker.rs` is the shared engine behind the
-mode pickers (`menu.rs`, `agents.rs`, `commands.rs`, `ports.rs`, `zen.rs`), and
-`tui.rs` is rendering vocabulary only. Zen keeps geometry, session persistence, herdr effects,
-and its picker adapter in private `zen/` children. Settings keeps its catalogue, TOML writer, and
-view in private `settings/` children. `settings.rs`, `changelog.rs`, and `usage.rs`
+mode pickers (`menu.rs`, `agents.rs`, `commands.rs`, `ports.rs`, `zen.rs`); Commands
+keeps catalogue state, bounded shell ingestion, terminal effects, and its picker adapter
+in private `commands/` children. `tui.rs` is rendering vocabulary only. Zen keeps
+geometry, session persistence, herdr effects, and its picker adapter in private `zen/`
+children. Settings keeps its catalogue, TOML writer, and view in private `settings/`
+children. `settings.rs`, `changelog.rs`, and `usage.rs`
 are popups hosted through `Surface`; Usage keeps domain values, providers, time formatting,
 and rendering in private `usage/` children. `git.rs` owns its pane and reducer, with external
 reads and rendering in `git/effect.rs` and `git/view.rs`. `chrome.rs`, `socket.rs`,
