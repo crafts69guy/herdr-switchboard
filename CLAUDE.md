@@ -125,6 +125,8 @@ must come from `herdr agent list`, `herdr workspace list`, or the captured origi
   are **drafts** (`values` vs the `saved` baseline): cycling stages a value, `a` calls `apply`
   (writes only the changed keys, then adopts the draft), and `esc` calls `discard` — nothing hits
   `config.toml` until you apply
+- `settings/catalog.rs`, `settings/document.rs`, `settings/view.rs` — the feature-private setting
+  definitions, comment-preserving namespaced TOML writer, and shared embedded/standalone card view
 - `changelog.rs` — the `--changelog` mode: parses `$HERDR_PLUGIN_ROOT/CHANGELOG.md` and renders it
   (inline markdown, hanging-indent wrap, `← installed` marker from `CARGO_PKG_VERSION`). `parse` +
   `render` are shared with the picker's `⌥c` popup, so both surfaces stay identical

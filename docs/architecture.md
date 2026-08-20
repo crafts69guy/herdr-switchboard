@@ -64,6 +64,7 @@ detached child, and Clone remains an explicitly invoked Bash flow in `bin/get.sh
 | `runner` | `CommandRunner` | `SystemRunner` and `MockRunner` process adapters |
 | `usage` | `main`, feature-private `Provider` | Refresh runtime, quota adapters, time formatting, rendering |
 | `zen` | `main`, `cli` | Geometry, recoverable session state, herdr effects, picker adapter |
+| `settings` | `Settings`, `draw`, `main` | Catalogue, validated document persistence, draft model, rendering |
 
 ## Interaction model
 
