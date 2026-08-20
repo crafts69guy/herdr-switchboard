@@ -72,7 +72,7 @@ chrome = "off"
 # needs its OAuth token out of the keychain and one HTTPS request.
 providers = ["codex", "claude"]
 timeout_ms = 3000
-# Where a donut turns yellow, then red.
+# Where an ungraded window bar turns yellow, then red.
 warn_percent = 60
 alert_percent = 85
 

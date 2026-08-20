@@ -7,6 +7,13 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **Usage donuts now separate spent quota from what remains.** The used arc and its percentage use
+  the theme's semantic red, while the available arc uses semantic green. Loading and unavailable
+  cards remain muted, and the per-window bars keep their existing provider severity and configured
+  warning thresholds.
+
 ## [1.3.0] - 2026-08-20
 
 ### Added

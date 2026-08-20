@@ -68,8 +68,8 @@ update. `switchboard.update` is the explicit installation action.
   names are ignored, so a config written for a later version still opens.
 - `timeout_ms` bounds the one networked provider (Claude Code). Codex is read from disk and is not
   affected.
-- `warn_percent` and `alert_percent` are where a window turns yellow, then red. They apply only to
-  windows the provider does not grade itself — Claude ships a severity per limit and that wins.
+- `warn_percent` and `alert_percent` are where a window bar turns yellow, then red. They apply only
+  to windows the provider does not grade itself — Claude ships a severity per limit and that wins.
 
 ### `[zen]`
 

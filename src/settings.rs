@@ -296,14 +296,14 @@ const SETTINGS: &[Setting] = &[
         group: "Usage",
         key: "usage_warn_percent",
         default: "60",
-        hint: "quota level that turns a donut yellow",
+        hint: "ungraded bar level that turns yellow",
         cycle: Cycle::Ring(&["50", "60", "70", "80"]),
     },
     Setting {
         group: "Usage",
         key: "usage_alert_percent",
         default: "85",
-        hint: "quota level that turns a donut red",
+        hint: "ungraded bar level that turns red",
         cycle: Cycle::Ring(&["75", "85", "90", "95"]),
     },
     Setting {

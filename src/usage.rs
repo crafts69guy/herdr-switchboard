@@ -1093,7 +1093,8 @@ fn freshness(now: u64, measured_at: Option<u64>) -> String {
 }
 
 /// Green while there is room, yellow once the end is in sight, red when it is
-/// close enough to change what you do next.
+/// close enough to change what you do next. This grades the per-window bars;
+/// the donut uses fixed used/available semantic colours instead.
 fn level_color(theme: &Theme, pct: f64, cfg: &Config) -> Color {
     if pct >= cfg.usage.alert_percent as f64 {
         theme.or("red", Color::Red)
@@ -1402,10 +1403,8 @@ fn draw_card(f: &mut Frame, app: &App, slot: &Slot, facts: &[Fact], area: Rect, 
 
     let hottest = slot.hottest();
     let pct = hottest.map(|window| window.used_percent);
-    let color = hottest
-        .map(|window| window_color(theme, window, &app.cfg))
-        .unwrap_or(track);
-    draw_donut(f, pct, color, track, rows[1]);
+    let (used_color, available_color) = donut_colors(theme, pct);
+    draw_donut(f, pct, used_color, available_color, rows[1]);
     // The number sits in the hole rather than beside the ring, so the eye lands
     // on the figure and the colour reads as context around it.
     let label = match slot {
@@ -1419,7 +1418,7 @@ fn draw_card(f: &mut Frame, app: &App, slot: &Slot, facts: &[Fact], area: Rect, 
     f.render_widget(
         Paragraph::new(Line::from(Span::styled(
             label,
-            Style::default().fg(color).add_modifier(Modifier::BOLD),
+            Style::default().fg(used_color).add_modifier(Modifier::BOLD),
         )))
         .centered(),
         hole,
@@ -1532,6 +1531,18 @@ fn window_color(theme: &Theme, window: &Window, cfg: &Config) -> Color {
     }
 }
 
+/// A ready donut is a composition rather than a severity gauge: red is quota
+/// already spent and green is quota still available. Without a reading both
+/// arcs stay muted so an unavailable provider cannot look fully available.
+fn donut_colors(theme: &Theme, pct: Option<f64>) -> (Color, Color) {
+    if pct.is_some() {
+        (theme.or("red", Color::Red), theme.or("green", Color::Green))
+    } else {
+        let muted = theme.or("overlay0", Color::DarkGray);
+        (muted, muted)
+    }
+}
+
 fn clip(s: &str, width: usize) -> String {
     if s.chars().count() <= width {
         return s.to_string();
@@ -1539,7 +1550,13 @@ fn clip(s: &str, width: usize) -> String {
     s.chars().take(width.saturating_sub(1)).collect::<String>() + "…"
 }
 
-fn draw_donut(f: &mut Frame, pct: Option<f64>, color: Color, track: Color, area: Rect) {
+fn draw_donut(
+    f: &mut Frame,
+    pct: Option<f64>,
+    used_color: Color,
+    available_color: Color,
+    area: Rect,
+) {
     // A terminal cell is about twice as tall as it is wide, so a ring drawn on
     // equal x/y bounds comes out as an ellipse unless the canvas is given twice
     // the columns it has rows. Squaring it here is what makes it look round.
@@ -1557,12 +1574,12 @@ fn draw_donut(f: &mut Frame, pct: Option<f64>, color: Color, track: Color, area:
         .paint(move |ctx| {
             ctx.draw(&Points {
                 coords: &rest,
-                color: track,
+                color: available_color,
             });
             if pct.is_some() {
                 ctx.draw(&Points {
                     coords: &used,
-                    color,
+                    color: used_color,
                 });
             }
         });
@@ -2186,6 +2203,26 @@ mod tests {
             .1
             .is_empty());
         assert!(donut_points(-5.0, RING_INNER, RING_OUTER, 360).0.is_empty());
+    }
+
+    #[test]
+    fn the_donut_uses_semantic_colors_and_missing_data_stays_muted() {
+        let theme = Theme::from_slots(&[
+            ("red", "#ff0000"),
+            ("green", "#00ff00"),
+            ("overlay0", "#777777"),
+        ]);
+
+        for pct in [0.0, 52.0, 100.0] {
+            assert_eq!(
+                donut_colors(&theme, Some(pct)),
+                (Color::Rgb(255, 0, 0), Color::Rgb(0, 255, 0))
+            );
+        }
+        assert_eq!(
+            donut_colors(&theme, None),
+            (Color::Rgb(119, 119, 119), Color::Rgb(119, 119, 119))
+        );
     }
 
     #[test]

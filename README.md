@@ -155,7 +155,7 @@ Common settings include:
 | `zen.width` / `zen.scrim` | Control the focused pane and its gutters. |
 | `zen.chrome` | Optionally hide Herdr pane chrome during a Zen session. |
 | `usage.providers` / `usage.timeout_ms` | Which AI subscriptions the Usage popup reads, and how long the networked one may take. |
-| `usage.warn_percent` / `usage.alert_percent` | Where a quota donut turns yellow, then red. |
+| `usage.warn_percent` / `usage.alert_percent` | Where an ungraded quota bar turns yellow, then red. |
 
 The plugin reads only its namespaced config; legacy top-level keys are not accepted. See the
 [configuration guide](docs/configuration.md) for every section, remapping, state paths, and update

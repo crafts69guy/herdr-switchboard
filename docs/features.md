@@ -88,10 +88,15 @@ under a heading that says *renews* reads as one that is coming.
 
 ### Colour
 
-Claude grades each of its limits itself, and the card uses that grade — the provider knows what its
-own plan considers close to the edge. Codex grades nothing, so its windows use
-`usage.warn_percent` (yellow) and `usage.alert_percent` (red). The two cards can therefore colour by
-two different rules, which is deliberate: a provider's own word beats a threshold invented here.
+The donut uses semantic colours for its composition: red is quota already used, and green is quota
+still available. Its percentage uses the same red as the used arc. Loading or unavailable cards
+stay muted rather than looking fully available.
+
+The bars remain warning gauges. Claude grades each limit itself, and the card uses that grade — the
+provider knows what its own plan considers close to the edge. Codex grades nothing, so its bars use
+`usage.warn_percent` (yellow) and `usage.alert_percent` (red). The two cards can therefore grade
+bars by different rules, which is deliberate: a provider's own word beats a threshold invented
+here.
 
 ### When something cannot be read
 

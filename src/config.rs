@@ -134,7 +134,7 @@ pub struct Usage {
     pub providers: Vec<String>,
     /// How long the one networked provider may take before its card gives up.
     pub timeout_ms: u64,
-    /// The percentages a window turns yellow and then red at.
+    /// The percentages an ungraded window bar turns yellow and then red at.
     pub warn_percent: u16,
     pub alert_percent: u16,
 }
