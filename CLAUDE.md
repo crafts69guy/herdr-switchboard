@@ -109,6 +109,11 @@ order so the list stays stable.
   only exact session slugs and changes Switchboard visibility, never tuicr's session JSON. Comment
   bodies never enter Switchboard state, logs, notifications, or another command line.
   `docs/git-menu.md` owns the user-facing archive, target-selection, and fallback behaviour.
+- **Agent handoffs share one target seam and never wait for a turn.** `agent_handoff.rs` is the only
+  owner of promptable-agent parsing, same-worktree/origin selection, and `herdr agent prompt`;
+  neither Git nor Projects adds `--wait`. Projects sends only JSON-escaped item kind, label, and
+  absolute path as data-only context. Paths and labels never enter notifications or traces, and a
+  Workspace never pretends its several pane directories are one selectable path.
 - **The picker loads its sources synchronously, before `surface::run` claims the terminal.** There
   is no worker, channel, or minimum-visible floor: `load_all` costs ~35ms, and the 420ms floor the
   previous animation imposed *was* the first-list latency. An empty result must be detected here

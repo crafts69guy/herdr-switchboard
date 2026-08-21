@@ -10,8 +10,6 @@ mod catalog;
 mod history;
 mod picker;
 
-pub(crate) use action::copy_text;
-
 #[cfg(test)]
 use crate::{config::Preset, state::now};
 #[cfg(test)]

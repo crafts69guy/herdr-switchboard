@@ -7,8 +7,9 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use crossterm::event::{KeyCode, KeyModifiers};
 
-use super::action::{confirm_multiline, copy_text, send_to_pane, shell_quote};
+use super::action::{confirm_multiline, send_to_pane, shell_quote};
 use super::catalog::{ago, fingerprint, stamp, CommandCatalog, CommandRecord, SelectionAction};
+use crate::clipboard::copy_text;
 use crate::config::Config;
 use crate::data::Theme;
 use crate::notify::{Event as NotifyEvent, Notifier};

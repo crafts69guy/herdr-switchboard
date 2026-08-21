@@ -9,6 +9,12 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Navigator paths can be copied or handed to a running agent.** Select an Agent, Repo, or
+  Worktree in Projects, then press `ctrl-y` to copy its absolute path or `ctrl-s` to share that
+  path as context. Agent delivery uses the origin agent when it shares the worktree, otherwise
+  offers matching promptable agents and falls back to all running agents; Workspace rows remain
+  disabled because they do not have one unambiguous path.
+
 - **Saved tuicr reviews can be archived without deleting review data.** Press `ctrl-d` in the Git
   menu's saved-review list to hide a session, open `R` archived reviews to find it, and press
   `ctrl-d` again to restore it. Reading comments and sending them to an agent remain available in

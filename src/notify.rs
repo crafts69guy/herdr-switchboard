@@ -10,6 +10,7 @@ pub enum Event {
     AgentLaunchFailed,
     CommandDeliveryFailed,
     ReviewHandoffSucceeded,
+    PathHandoffSucceeded,
     TermSucceeded,
     KillSucceeded,
     SignalFailed,
@@ -92,6 +93,7 @@ impl Notifier {
             Event::ReviewHandoffSucceeded => {
                 ("Sent review comments to the selected agent.".into(), "done")
             }
+            Event::PathHandoffSucceeded => ("Sent the selected path to the agent.".into(), "done"),
             Event::TermSucceeded => (
                 format!("Sent TERM{}.", suffix(safe_subject.as_deref())),
                 "request",
@@ -218,6 +220,22 @@ mod tests {
             .unwrap();
         let rendered = args.join(" ");
         assert!(rendered.contains("Sent review comments to the selected agent."));
+        assert!(!rendered.contains("/private"));
+        assert!(!rendered.contains("secret"));
+        assert!(rendered.contains("--sound done"));
+    }
+
+    #[test]
+    fn path_handoff_notification_never_contains_the_path_or_label() {
+        let notifier = Notifier::new(&Config::default());
+        let args = notifier
+            .args(
+                Event::PathHandoffSucceeded,
+                Some("repo /private/path token=secret"),
+            )
+            .unwrap();
+        let rendered = args.join(" ");
+        assert!(rendered.contains("Sent the selected path to the agent."));
         assert!(!rendered.contains("/private"));
         assert!(!rendered.contains("secret"));
         assert!(rendered.contains("--sound done"));

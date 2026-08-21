@@ -1,9 +1,11 @@
 //! herdr-switchboard — argv composition root for every Switchboard mode.
 
 mod action;
+mod agent_handoff;
 mod agents;
 mod changelog;
 mod chrome;
+mod clipboard;
 mod commands;
 mod config;
 mod data;

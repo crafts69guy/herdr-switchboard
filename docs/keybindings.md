@@ -18,6 +18,7 @@ Set `common.keymode = "insert"` to restore a type-first start.
 | `ctrl-t` / `ctrl-v` / `ctrl-o` | Open in a tab / split / current pane. |
 | `alt-w` | Open in a workspace. |
 | `ctrl-r` / `ctrl-x` | Update / remove the selected repo. |
+| `ctrl-y` / `ctrl-s` | Copy the selected absolute path / send it to an agent. |
 | `tab` / `shift-tab` | Move through All, Agents, Workspaces, Repos, and Worktrees. |
 | `alt-p` / `alt-s` | Toggle preview / cycle sort order. |
 | `alt-j`, `alt-k` | Scroll the preview. |
@@ -39,6 +40,7 @@ repository name as typed confirmation.
 | `enter` | Use the selection's default action. |
 | `t` / `v` / `o` / `w` | Open in a tab / split / current pane / workspace. |
 | `p` / `alt-j`, `alt-k` | Toggle / scroll the preview. |
+| `ctrl-y` / `ctrl-s` | Copy the selected absolute path / send it to an agent. |
 | `space u` / `space x` / `space c` | Update repo / remove repo / Clone flow. |
 | `space s` / `space l` / `space ,` | Sort / changelog / settings. |
 | `space U` | Update Switchboard. |
@@ -55,6 +57,15 @@ repository name as typed confirmation.
 
 The resting Projects list uses `projects.sort`; a non-empty query switches to fuzzy-score order.
 Successful opens update `${XDG_STATE_HOME:-~/.local/state}/herdr-switchboard/recent.tsv`.
+
+Copy and send are available for Agent, Repo, and Worktree rows with an absolute path. Agent rows
+refresh `foreground_cwd` before acting; Repo and Worktree rows use the path shown in the Inspector.
+The copied value is fully expanded even when the Inspector renders the home prefix as `~`.
+Workspace rows keep both actions disabled because they can contain more than one repository.
+
+`ctrl-s` sends directly to the captured origin agent only when it remains promptable in the same
+worktree. Otherwise an agent picker prefers that worktree and falls back to all promptable running
+agents. A failed prompt stays open for retry; success closes Projects.
 
 ## Other pickers
 

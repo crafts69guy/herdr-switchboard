@@ -101,8 +101,15 @@ Common Projects actions:
 | `ctrl-v` | `v` | Open it in a split. |
 | `ctrl-o` | `o` | Open it in the current pane. |
 | `alt-w` | `w` | Open it in a workspace. |
+| `ctrl-y` | `ctrl-y` | Copy the selected Agent, Repo, or Worktree absolute path. |
+| `ctrl-s` | `ctrl-s` | Share that path as context with a running agent. |
 | `alt-p` | `p` | Toggle the preview. |
 | `?` | `?` | Show the live cheatsheet. |
+
+Path actions use the full absolute path even when the Inspector abbreviates the home directory as
+`~`. Workspace rows disable them because a workspace may contain several unrelated repositories.
+Sending follows the saved-review handoff policy: use the origin agent when it shares the worktree,
+otherwise choose a matching promptable agent, falling back to all running agents.
 
 Mouse input is supported on every surface: the wheel scrolls the pane beneath it, a click selects
 a row, group, or command-bar action, and a click on the row already selected runs it. See

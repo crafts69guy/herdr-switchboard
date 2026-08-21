@@ -136,6 +136,8 @@ pub enum Action {
     PreviewDown,
     PreviewUp,
     CycleSort,
+    CopyPath,
+    SendToAgent,
     Backspace,
     ClearQuery,
     DeleteWord,
@@ -148,6 +150,10 @@ impl Action {
     /// An accept returns out of the TUI; everything else stays in it.
     pub fn is_accept(&self) -> bool {
         matches!(self, Action::Accept(_))
+    }
+
+    pub fn needs_selection(&self) -> bool {
+        self.is_accept() || matches!(self, Action::CopyPath | Action::SendToAgent)
     }
 }
 
@@ -170,6 +176,8 @@ const NAMES: &[(&str, Action)] = &[
     ("preview_down", Action::PreviewDown),
     ("preview_up", Action::PreviewUp),
     ("cycle_sort", Action::CycleSort),
+    ("copy_path", Action::CopyPath),
+    ("send_to_agent", Action::SendToAgent),
     ("clear_query", Action::ClearQuery),
     ("delete_word", Action::DeleteWord),
     ("insert_mode", Action::EnterInsert),
@@ -269,6 +277,13 @@ impl Keymap {
             self.insert.retain(|(_, a)| a != act);
             self.normal.retain(|(_, a)| a != act);
             self.leader.retain(|(_, a)| a != act);
+            // A configured chord owns its slot. This also lets an existing
+            // remap such as `tab = "ctrl-y"` override a newly introduced default
+            // without leaving two footer pills that advertise the same key.
+            for chord in &chords {
+                self.insert.retain(|(bound, _)| bound != chord);
+                self.normal.retain(|(bound, _)| bound != chord);
+            }
             // Prepend so the override wins as the displayed chord.
             for ch in chords.into_iter().rev() {
                 self.insert.insert(0, (ch, *act));
@@ -329,6 +344,8 @@ fn default_insert() -> Vec<(Chord, Action)> {
         (alt(Key::Char('j')), PreviewDown),
         (alt(Key::Char('k')), PreviewUp),
         (alt(Key::Char('s')), CycleSort),
+        (ctrl(Key::Char('y')), CopyPath),
+        (ctrl(Key::Char('s')), SendToAgent),
         (alt(Key::Char('c')), Changelog),
         (alt(Key::Char('u')), Accept(AcceptKind::UpdatePlugin)),
         (alt(Key::Char(',')), Settings),
@@ -368,6 +385,8 @@ fn default_normal() -> Vec<(Chord, Action)> {
         (chord(Key::Char('o')), Accept(AcceptKind::Pane)),
         (chord(Key::Char('w')), Accept(AcceptKind::Workspace)),
         (chord(Key::Char('p')), TogglePreview),
+        (ctrl(Key::Char('y')), CopyPath),
+        (ctrl(Key::Char('s')), SendToAgent),
         (alt(Key::Char('j')), PreviewDown),
         (alt(Key::Char('k')), PreviewUp),
         (chord(Key::Char('?')), Help),
@@ -559,6 +578,18 @@ mod tests {
                 .as_deref(),
             Some("␣ u")
         );
+        assert_eq!(
+            km.action(Mode::Normal, ctrl(Key::Char('y'))),
+            Some(Action::CopyPath)
+        );
+        assert_eq!(
+            km.action(Mode::Normal, ctrl(Key::Char('s'))),
+            Some(Action::SendToAgent)
+        );
+        assert_eq!(
+            km.label_for(Mode::Normal, Action::CopyPath).as_deref(),
+            Some("^y")
+        );
     }
 
     #[test]
@@ -600,6 +631,7 @@ mod tests {
         );
         // The default ^t is gone, and the footer would now show ^y.
         assert_eq!(km.action(Mode::Insert, ctrl(Key::Char('t'))), None);
+        assert_eq!(km.label_for(Mode::Insert, Action::CopyPath), None);
         assert_eq!(
             km.label_for(Mode::Insert, Action::Accept(AcceptKind::Tab))
                 .as_deref(),

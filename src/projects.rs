@@ -1,5 +1,6 @@
 //! Projects Picker model, reduction, terminal hosting, and restored effects.
 
+mod handoff;
 mod preview;
 mod view;
 
@@ -8,6 +9,7 @@ use std::collections::HashMap;
 use std::env;
 use std::os::unix::process::CommandExt;
 use std::process::Command;
+use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -19,12 +21,17 @@ use ratatui::text::Text;
 use ratatui::widgets::ListState;
 
 use crate::action::Accept;
+#[cfg(test)]
+use crate::agent_handoff::AgentTarget;
+use crate::agent_handoff::{discover_targets, TargetResolution, TargetScope};
 use crate::data::{Config, Entry, GroupFilter, Kind, SortMode, Theme};
+use crate::notify::{Event as NotifyEvent, Notifier};
 use crate::surface::{Surface as HostedSurface, Transition as SurfaceTransition};
 use crate::{
     action, changelog, data, history, keymap, markdown, runner, settings, source, surface, trace,
     update,
 };
+use handoff::{HandoffAction, HandoffRequest, HandoffState, ItemContext};
 use view as ui;
 
 /// The searchable model: the entries, the query and its result, and the two
@@ -127,6 +134,7 @@ pub struct App {
     pub picker: Picker,
     pub preview: PreviewState,
     pub changelog: ChangelogState,
+    handoff: HandoffState,
     /// The settings form used when [`Overlay::Settings`] owns input.
     pub settings: settings::Settings,
     pub zones: HitZones,
@@ -139,12 +147,16 @@ pub(super) enum Overlay {
     Help,
     Changelog,
     Settings,
+    Handoff,
 }
 
 enum Flow {
     Continue,
     Quit,
     Accept(Accept),
+    CopyPath(Entry),
+    DiscoverTargets(Entry),
+    Deliver(HandoffRequest),
 }
 
 impl Picker {
@@ -420,6 +432,7 @@ impl App {
             picker,
             preview,
             changelog: ChangelogState::new(),
+            handoff: HandoffState::new(),
             settings,
             zones: HitZones::new(),
         }
@@ -514,6 +527,9 @@ impl App {
             self.overlay = Overlay::None;
             return Flow::Continue;
         }
+        if self.overlay == Overlay::Handoff {
+            return self.on_handoff_click(at);
+        }
         // The settings form is modal: inside the card the pointer picks a tab, a
         // row or a pill; outside it the click dismisses. Dismissing goes through
         // `close_discarding` so a staged edit cannot survive the close — `esc`
@@ -539,7 +555,7 @@ impl App {
             crate::tui::zone_at(&self.zones.footer_zones, self.zones.footer_row, at)
         {
             // Accepting on nothing would be a no-op with a confirmation prompt.
-            if action.is_accept() && self.picker.selected_entry().is_none() {
+            if action.needs_selection() && self.picker.selected_entry().is_none() {
                 return Flow::Continue;
             }
             return apply_action(self, action);
@@ -574,6 +590,10 @@ impl App {
             self.settings.on_wheel(delta as isize);
             return true;
         }
+        if self.overlay == Overlay::Handoff {
+            self.handoff.move_selection(delta.signum());
+            return true;
+        }
         if self.overlay == Overlay::Changelog {
             let c = &mut self.changelog;
             let max = c.len.saturating_sub(c.rows);
@@ -600,6 +620,46 @@ impl App {
         }
     }
 
+    fn on_handoff_click(&mut self, at: Position) -> Flow {
+        if let Some(action) =
+            crate::tui::zone_at(&self.handoff.footer_zones, self.handoff.footer_row, at)
+        {
+            return match action {
+                HandoffAction::Back => {
+                    self.overlay = Overlay::None;
+                    Flow::Continue
+                }
+                HandoffAction::Send => self
+                    .handoff
+                    .selected_target()
+                    .and_then(|target| self.handoff.begin_delivery(target))
+                    .map(Flow::Deliver)
+                    .unwrap_or(Flow::Continue),
+            };
+        }
+        if !self.handoff.list_area.contains(at) {
+            return Flow::Continue;
+        }
+        let first = self.handoff.list_area.y + 1;
+        let Some(row) = at.y.checked_sub(first).map(usize::from) else {
+            return Flow::Continue;
+        };
+        let selected = self.handoff.list_state.offset() + row;
+        if selected >= self.handoff.filtered.len() {
+            return Flow::Continue;
+        }
+        if selected == self.handoff.selected {
+            return self
+                .handoff
+                .selected_target()
+                .and_then(|target| self.handoff.begin_delivery(target))
+                .map(Flow::Deliver)
+                .unwrap_or(Flow::Continue);
+        }
+        self.handoff.selected = selected;
+        Flow::Continue
+    }
+
     /// Worktrees are openable and reviewable, but repository update/removal has
     /// different semantics and is intentionally unavailable for them.
     pub fn action_available(&self, action: keymap::Action) -> bool {
@@ -607,11 +667,27 @@ impl App {
             action,
             keymap::Action::Accept(Accept::Update | Accept::Remove)
         );
-        !(unsupported
+        if unsupported
             && self
                 .picker
                 .selected_entry()
-                .is_some_and(|entry| entry.kind == Kind::Worktree))
+                .is_some_and(|entry| entry.kind == Kind::Worktree)
+        {
+            return false;
+        }
+        if matches!(
+            action,
+            keymap::Action::CopyPath | keymap::Action::SendToAgent
+        ) {
+            return self.picker.selected_entry().is_some_and(|entry| {
+                entry.kind != Kind::Workspace
+                    && entry
+                        .dir
+                        .as_deref()
+                        .is_some_and(|path| std::path::Path::new(path).is_absolute())
+            });
+        }
+        true
     }
 }
 
@@ -693,6 +769,18 @@ fn apply_action(app: &mut App, action: keymap::Action) -> Flow {
             app.picker.sort = app.picker.sort.next();
             app.picker.recompute();
         }
+        Action::CopyPath => {
+            if let Some(entry) = app.picker.selected_entry().cloned() {
+                return Flow::CopyPath(entry);
+            }
+        }
+        Action::SendToAgent => {
+            if let Some(entry) = app.picker.selected_entry().cloned() {
+                app.handoff.finding();
+                app.overlay = Overlay::Handoff;
+                return Flow::DiscoverTargets(entry);
+            }
+        }
         Action::Backspace => {
             app.picker.query.pop();
             app.picker.recompute();
@@ -717,6 +805,45 @@ fn apply_action(app: &mut App, action: keymap::Action) -> Flow {
 
 fn handle_key(app: &mut App, k: crossterm::event::KeyEvent) -> Flow {
     let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
+
+    if app.overlay == Overlay::Handoff {
+        match k.code {
+            KeyCode::Char('c') if ctrl => return Flow::Quit,
+            KeyCode::Esc => {
+                if app.handoff.query.is_empty() {
+                    app.overlay = Overlay::None;
+                } else {
+                    app.handoff.query.clear();
+                    app.handoff.refilter();
+                }
+            }
+            KeyCode::Down | KeyCode::Char('n') if ctrl => app.handoff.move_selection(1),
+            KeyCode::Up | KeyCode::Char('p') if ctrl => app.handoff.move_selection(-1),
+            KeyCode::Down => app.handoff.move_selection(1),
+            KeyCode::Up => app.handoff.move_selection(-1),
+            KeyCode::Home => app.handoff.selected = 0,
+            KeyCode::End => app.handoff.selected = app.handoff.filtered.len().saturating_sub(1),
+            KeyCode::Enter => {
+                if let Some(request) = app
+                    .handoff
+                    .selected_target()
+                    .and_then(|target| app.handoff.begin_delivery(target))
+                {
+                    return Flow::Deliver(request);
+                }
+            }
+            KeyCode::Backspace => {
+                app.handoff.query.pop();
+                app.handoff.refilter();
+            }
+            KeyCode::Char(c) if !ctrl && !k.modifiers.contains(KeyModifiers::ALT) => {
+                app.handoff.query.push(c);
+                app.handoff.refilter();
+            }
+            _ => {}
+        }
+        return Flow::Continue;
+    }
 
     // The settings overlay is a form: while open it owns navigation, Enter (cycle),
     // and the in-place split_ratio edit, so route every key to it. `esc`/`q` close it
@@ -812,13 +939,26 @@ const PLACEHOLDER_FRAME: Duration = Duration::from_millis(80);
 
 struct ProjectsSurface<'a> {
     app: &'a mut App,
+    origin_pane: String,
+    notifier: Notifier,
+    effect: Option<Receiver<ProjectEffect>>,
     first_list_drawn: bool,
     key_at: Option<Instant>,
     placeholder_frame: Option<usize>,
 }
 
+enum ProjectOutcome {
+    Accept(Option<Entry>, Accept),
+    CopyPath(Entry),
+}
+
+enum ProjectEffect {
+    Targets(Result<(ItemContext, TargetResolution), String>),
+    Delivered(Result<(), String>),
+}
+
 impl HostedSurface for ProjectsSurface<'_> {
-    type Output = Option<(Option<Entry>, Accept)>;
+    type Output = Option<ProjectOutcome>;
 
     fn terminal_claimed(&mut self) {
         trace::mark("terminal.claimed");
@@ -849,7 +989,7 @@ impl HostedSurface for ProjectsSurface<'_> {
     }
 
     fn tick_rate(&self) -> Duration {
-        if self.app.preview.pending() {
+        if self.app.preview.pending() || self.effect.is_some() {
             PREVIEW_TICK
         } else {
             IDLE_TICK
@@ -857,6 +997,40 @@ impl HostedSurface for ProjectsSurface<'_> {
     }
 
     fn on_tick(&mut self) -> Result<SurfaceTransition<Self::Output>> {
+        if let Some(receiver) = &self.effect {
+            let effect = match receiver.try_recv() {
+                Ok(effect) => effect,
+                Err(TryRecvError::Empty) => return Ok(SurfaceTransition::Wait),
+                Err(TryRecvError::Disconnected) => {
+                    self.effect = None;
+                    self.app.handoff.delivery_failed("");
+                    return Ok(SurfaceTransition::Redraw);
+                }
+            };
+            self.effect = None;
+            return Ok(match effect {
+                ProjectEffect::Targets(Ok((item, targets))) => {
+                    if let Some(request) = self.app.handoff.show_targets(item, targets) {
+                        self.apply_flow(Flow::Deliver(request))
+                    } else {
+                        SurfaceTransition::Redraw
+                    }
+                }
+                ProjectEffect::Targets(Err(error)) => {
+                    self.app.handoff.status = None;
+                    self.app.handoff.error = Some(error);
+                    SurfaceTransition::Redraw
+                }
+                ProjectEffect::Delivered(Ok(())) => {
+                    self.notifier.send(NotifyEvent::PathHandoffSucceeded, None);
+                    SurfaceTransition::Exit(None)
+                }
+                ProjectEffect::Delivered(Err(error)) => {
+                    self.app.handoff.delivery_failed(&error);
+                    SurfaceTransition::Redraw
+                }
+            });
+        }
         // Poll at 16ms while work is pending, but repaint only for a completed
         // preview or an actual 80ms placeholder-frame change.
         let absorbed = self.app.preview.absorb();
@@ -869,6 +1043,17 @@ impl HostedSurface for ProjectsSurface<'_> {
     }
 
     fn on_event(&mut self, event: Event) -> Result<SurfaceTransition<Self::Output>> {
+        if self.effect.is_some() {
+            if let Event::Key(k) = event {
+                if k.kind == KeyEventKind::Press
+                    && k.modifiers.contains(KeyModifiers::CONTROL)
+                    && matches!(k.code, KeyCode::Char('c'))
+                {
+                    return Ok(SurfaceTransition::Exit(None));
+                }
+            }
+            return Ok(SurfaceTransition::Wait);
+        }
         match event {
             Event::Mouse(m) => {
                 let at = Position::new(m.column, m.row);
@@ -879,16 +1064,10 @@ impl HostedSurface for ProjectsSurface<'_> {
                     MouseEventKind::ScrollUp => {
                         self.app.on_wheel(at, -1);
                     }
-                    MouseEventKind::Down(MouseButton::Left) => match self.app.on_click(at) {
-                        Flow::Continue => {}
-                        Flow::Quit => return Ok(SurfaceTransition::Exit(None)),
-                        Flow::Accept(a) => {
-                            return Ok(SurfaceTransition::Exit(Some((
-                                self.app.picker.selected_entry().cloned(),
-                                a,
-                            ))));
-                        }
-                    },
+                    MouseEventKind::Down(MouseButton::Left) => {
+                        let flow = self.app.on_click(at);
+                        return Ok(self.apply_flow(flow));
+                    }
                     // Releases and drags: nothing here acts on them, and
                     // redrawing for them would be churn.
                     _ => return Ok(SurfaceTransition::Wait),
@@ -902,16 +1081,51 @@ impl HostedSurface for ProjectsSurface<'_> {
                 if trace::enabled() {
                     self.key_at = Some(Instant::now());
                 }
-                Ok(match handle_key(self.app, k) {
-                    Flow::Continue => SurfaceTransition::Redraw,
-                    Flow::Quit => SurfaceTransition::Exit(None),
-                    Flow::Accept(a) => SurfaceTransition::Exit(Some((
-                        self.app.picker.selected_entry().cloned(),
-                        a,
-                    ))),
-                })
+                let flow = handle_key(self.app, k);
+                Ok(self.apply_flow(flow))
             }
             _ => Ok(SurfaceTransition::Wait),
+        }
+    }
+}
+
+impl ProjectsSurface<'_> {
+    fn apply_flow(&mut self, flow: Flow) -> SurfaceTransition<Option<ProjectOutcome>> {
+        match flow {
+            Flow::Continue => SurfaceTransition::Redraw,
+            Flow::Quit => SurfaceTransition::Exit(None),
+            Flow::Accept(accept) => SurfaceTransition::Exit(Some(ProjectOutcome::Accept(
+                self.app.picker.selected_entry().cloned(),
+                accept,
+            ))),
+            Flow::CopyPath(entry) => SurfaceTransition::Exit(Some(ProjectOutcome::CopyPath(entry))),
+            Flow::DiscoverTargets(entry) => {
+                let (sender, receiver) = mpsc::channel();
+                let origin_pane = self.origin_pane.clone();
+                std::thread::spawn(move || {
+                    let runner = runner::SystemRunner;
+                    let result = handoff::resolve_item(&runner, &entry)
+                        .ok_or_else(|| "Selected item has no absolute path.".to_string())
+                        .map(|item| {
+                            let targets =
+                                discover_targets(&runner, &item.absolute_path, &origin_pane);
+                            (item, targets)
+                        });
+                    let _ = sender.send(ProjectEffect::Targets(result));
+                });
+                self.effect = Some(receiver);
+                SurfaceTransition::Redraw
+            }
+            Flow::Deliver(request) => {
+                let (sender, receiver) = mpsc::channel();
+                std::thread::spawn(move || {
+                    let result = handoff::deliver(&runner::SystemRunner, &request)
+                        .map_err(|error| error.to_string());
+                    let _ = sender.send(ProjectEffect::Delivered(result));
+                });
+                self.effect = Some(receiver);
+                SurfaceTransition::Redraw
+            }
         }
     }
 }
@@ -955,44 +1169,56 @@ pub(crate) fn main(cfg: Config, theme: Theme) -> Result<()> {
     }
 
     let mut app = App::new(entries, theme, cfg, script_dir.clone());
+    let notifier = Notifier::new(&app.cfg);
     let outcome = surface::run(&mut ProjectsSurface {
         app: &mut app,
+        origin_pane: origin.clone(),
+        notifier,
+        effect: None,
         first_list_drawn: false,
         key_at: None,
         placeholder_frame: None,
     });
 
-    if let Some((entry, accept)) = outcome? {
-        let id = entry.as_ref().map(|e| e.id.clone());
+    match outcome? {
+        Some(ProjectOutcome::CopyPath(entry)) => {
+            let item = handoff::resolve_item(&runner, &entry)
+                .ok_or_else(|| anyhow::anyhow!("selected item has no absolute path"))?;
+            crate::clipboard::copy_text(&item.absolute_path)?;
+        }
+        Some(ProjectOutcome::Accept(entry, accept)) => {
+            let id = entry.as_ref().map(|e| e.id.clone());
 
-        // Resolve where Enter lands a repo from the (possibly just-applied) config, so a
-        // `default_target` change made in the settings overlay is honoured this session.
-        let default_target = action::resolve_default_target(
-            action::forced_target().as_deref(),
-            &app.cfg.projects.default_target,
-        );
-        action::dispatch(
-            &runner,
-            entry,
-            accept,
-            &origin,
-            &app.cfg,
-            &script_dir,
-            &default_target,
-        )?;
-        // Record recency only for successful opens (dispatch returned Ok above).
-        if let Some(id) = id {
-            match accept {
-                Accept::Default
-                | Accept::Workspace
-                | Accept::Tab
-                | Accept::Split
-                | Accept::Pane => history::touch(&id),
-                Accept::Remove => history::forget(&id),
-                // Clone / UpdatePlugin exec away and never come back here.
-                Accept::Update | Accept::Clone | Accept::UpdatePlugin => {}
+            // Resolve where Enter lands a repo from the (possibly just-applied) config, so a
+            // `default_target` change made in the settings overlay is honoured this session.
+            let default_target = action::resolve_default_target(
+                action::forced_target().as_deref(),
+                &app.cfg.projects.default_target,
+            );
+            action::dispatch(
+                &runner,
+                entry,
+                accept,
+                &origin,
+                &app.cfg,
+                &script_dir,
+                &default_target,
+            )?;
+            // Record recency only for successful opens (dispatch returned Ok above).
+            if let Some(id) = id {
+                match accept {
+                    Accept::Default
+                    | Accept::Workspace
+                    | Accept::Tab
+                    | Accept::Split
+                    | Accept::Pane => history::touch(&id),
+                    Accept::Remove => history::forget(&id),
+                    // Clone / UpdatePlugin exec away and never come back here.
+                    Accept::Update | Accept::Clone | Accept::UpdatePlugin => {}
+                }
             }
         }
+        None => {}
     }
     Ok(())
 }
@@ -1149,7 +1375,12 @@ mod tests {
     #[test]
     fn every_projects_overlay_obeys_the_transparent_background() {
         let fill = Color::Rgb(0x10, 0x12, 0x14);
-        for overlay in [Overlay::Help, Overlay::Changelog, Overlay::Settings] {
+        for overlay in [
+            Overlay::Help,
+            Overlay::Changelog,
+            Overlay::Settings,
+            Overlay::Handoff,
+        ] {
             let mut app = app_with_layout();
             app.theme = Theme::from_slots(&[("panel_bg", "#101214")]);
             app.background = crate::tui::SurfaceBackground::resolve(
@@ -1173,6 +1404,7 @@ mod tests {
             Overlay::Help,
             Overlay::Changelog,
             Overlay::Settings,
+            Overlay::Handoff,
         ] {
             let mut app = app_with_layout();
             app.theme = Theme::from_slots(&[("panel_bg", "#101214")]);
@@ -1275,6 +1507,25 @@ mod tests {
             screen.contains("Search"),
             "the picker must stay behind the overlay: {screen}"
         );
+    }
+
+    #[test]
+    fn a_path_selection_offers_copy_and_send_in_the_footer_and_help() {
+        let mut app = App::new(
+            vec![path_entry(Kind::Repo, "/repo")],
+            Theme::default(),
+            Config::default(),
+            ".".into(),
+        );
+        let screen = rendered(&mut app, 180, 40);
+        let footer = screen.lines().last().unwrap();
+        assert!(footer.contains("^y copy"), "{footer}");
+        assert!(footer.contains("^s send"), "{footer}");
+
+        app.overlay = Overlay::Help;
+        let help = rendered(&mut app, 120, 40);
+        assert!(help.contains("Copy path"), "{help}");
+        assert!(help.contains("Send to agent"), "{help}");
     }
 
     #[test]
@@ -1442,6 +1693,43 @@ mod tests {
         assert!(app.action_available(keymap::Action::Accept(Accept::Tab)));
     }
 
+    fn path_entry(kind: Kind, path: &str) -> Entry {
+        let mut selected = entry(kind, "id", "selected");
+        selected.dir = Some(path.into());
+        selected
+    }
+
+    #[test]
+    fn path_actions_require_an_absolute_non_workspace_path() {
+        let action = keymap::Action::CopyPath;
+        let send = keymap::Action::SendToAgent;
+        for kind in [Kind::Agent, Kind::Repo, Kind::Worktree] {
+            let app = App::new(
+                vec![path_entry(kind, "/absolute/path")],
+                Theme::default(),
+                Config::default(),
+                ".".into(),
+            );
+            assert!(app.action_available(action));
+            assert!(app.action_available(send));
+        }
+        let workspace = App::new(
+            vec![path_entry(Kind::Workspace, "/ambiguous/path")],
+            Theme::default(),
+            Config::default(),
+            ".".into(),
+        );
+        assert!(!workspace.action_available(action));
+        assert!(!workspace.action_available(send));
+        let relative = App::new(
+            vec![path_entry(Kind::Repo, "relative")],
+            Theme::default(),
+            Config::default(),
+            ".".into(),
+        );
+        assert!(!relative.action_available(action));
+    }
+
     fn key(code: KeyCode, mods: KeyModifiers) -> crossterm::event::KeyEvent {
         crossterm::event::KeyEvent::new(code, mods)
     }
@@ -1458,6 +1746,89 @@ mod tests {
         let mut app = app_with_preview(0, 0);
         let flow = handle_key(&mut app, key(KeyCode::Char('t'), KeyModifiers::CONTROL));
         assert!(matches!(flow, Flow::Accept(Accept::Tab)));
+    }
+
+    #[test]
+    fn ctrl_y_returns_a_typed_copy_outcome_and_ctrl_s_opens_handoff() {
+        let mut cfg = Config::default();
+        cfg.common.keymode = crate::config::KeyMode::Insert;
+        let mut app = App::new(
+            vec![path_entry(Kind::Repo, "/repo")],
+            Theme::default(),
+            cfg,
+            ".".into(),
+        );
+        let copy = handle_key(&mut app, key(KeyCode::Char('y'), KeyModifiers::CONTROL));
+        assert!(matches!(copy, Flow::CopyPath(entry) if entry.dir.as_deref() == Some("/repo")));
+
+        let send = handle_key(&mut app, key(KeyCode::Char('s'), KeyModifiers::CONTROL));
+        assert!(matches!(send, Flow::DiscoverTargets(_)));
+        assert_eq!(app.overlay, Overlay::Handoff);
+        assert_eq!(app.handoff.status.as_deref(), Some("Finding agents…"));
+    }
+
+    fn target(pane_id: &str, cwd: &str) -> AgentTarget {
+        AgentTarget {
+            pane_id: pane_id.into(),
+            agent: "codex".into(),
+            status: "idle".into(),
+            cwd: cwd.into(),
+        }
+    }
+
+    fn item() -> ItemContext {
+        ItemContext {
+            kind: "repository",
+            label: "repo".into(),
+            absolute_path: "/repo".into(),
+        }
+    }
+
+    #[test]
+    fn exact_origin_bypasses_the_picker_and_other_targets_remain_filterable() {
+        let mut handoff = HandoffState::new();
+        let direct = handoff
+            .show_targets(
+                item(),
+                TargetResolution {
+                    origin: Some(target("origin", "/repo")),
+                    choices: Vec::new(),
+                    scope: TargetScope::SameWorktree,
+                },
+            )
+            .unwrap();
+        assert_eq!(direct.target.pane_id, "origin");
+
+        assert!(handoff
+            .show_targets(
+                item(),
+                TargetResolution {
+                    origin: None,
+                    choices: vec![target("one", "/repo"), target("two", "/other")],
+                    scope: TargetScope::AllAgents,
+                },
+            )
+            .is_none());
+        handoff.query = "other".into();
+        handoff.refilter();
+        assert_eq!(handoff.selected_target().unwrap().pane_id, "two");
+    }
+
+    #[test]
+    fn handoff_overlay_renders_scope_empty_state_and_live_hit_zones() {
+        let mut app = App::new(
+            vec![path_entry(Kind::Repo, "/repo")],
+            Theme::default(),
+            Config::default(),
+            ".".into(),
+        );
+        app.overlay = Overlay::Handoff;
+        app.handoff.item = Some(item());
+        app.handoff.scope = Some(TargetScope::AllAgents);
+        let screen = rendered(&mut app, 120, 40);
+        assert!(screen.contains("Send path to agent"), "{screen}");
+        assert!(screen.contains("no promptable agents"), "{screen}");
+        assert_eq!(app.handoff.footer_zones.len(), 2);
     }
 
     #[test]

@@ -37,14 +37,13 @@ use ratatui::layout::{Position, Rect};
 use ratatui::style::Color;
 use ratatui::Frame;
 
+use crate::agent_handoff::{discover_targets, AgentTarget, TargetResolution, TargetScope};
 use crate::data::{Config, Theme};
 use crate::notify::{Event as NotifyEvent, Notifier};
 use crate::runner::{CommandRunner, SystemRunner};
 use crate::surface::{Surface, Transition};
 use effect::{count_tracked_files, detect_base_branch, load_rows, read_menu_conf, repo_cwd};
-use handoff::{
-    deliver, discover_targets, AgentTarget, HandoffRequest, TargetResolution, TargetScope,
-};
+use handoff::{deliver, HandoffRequest};
 use view::{draw, fuzzy_match};
 
 #[cfg(test)]
@@ -449,6 +448,7 @@ impl Git {
     fn list_title(&self) -> &'static str {
         match (self.kind, self.target_scope) {
             (Some(ListKind::Agents), Some(TargetScope::SameWorktree)) => "agents · same worktree",
+            (Some(ListKind::Agents), Some(TargetScope::SameDirectory)) => "agents · same directory",
             (Some(ListKind::Agents), Some(TargetScope::AllAgents)) => "agents · all running",
             (Some(kind), _) => kind.title(),
             _ => "list",

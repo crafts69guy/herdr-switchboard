@@ -425,7 +425,7 @@ impl PickerMode for PortMode {
             .context("listener disappeared")?;
         let endpoint = format!("localhost:{}", entry.identity.port);
         match action {
-            "copy" => crate::commands::copy_text(&endpoint)?,
+            "copy" => crate::clipboard::copy_text(&endpoint)?,
             "http" => open_url(&format!("http://{endpoint}"))?,
             "https" => open_url(&format!("https://{endpoint}"))?,
             "workspace" => {

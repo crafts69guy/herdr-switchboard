@@ -83,6 +83,8 @@ alert_percent = 85
 # tab = "ctrl-t"
 # split = "ctrl-v"
 # down = "ctrl-j,ctrl-n"
+# copy_path = "ctrl-y"
+# send_to_agent = "ctrl-s"
 
 [keys.agents]
 # pane = "enter"

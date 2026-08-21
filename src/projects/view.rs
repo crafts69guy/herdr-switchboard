@@ -109,8 +109,139 @@ pub(super) fn draw(f: &mut Frame, app: &mut App) {
             &mut app.settings,
         ),
         super::Overlay::Help => draw_help(f, app, f.area()),
+        super::Overlay::Handoff => draw_handoff(f, app, f.area()),
         super::Overlay::None => {}
     }
+}
+
+fn draw_handoff(f: &mut Frame, app: &mut App, area: Rect) {
+    let t = &app.theme;
+    let title = app.title_color;
+    let text = t.or("text", Color::Reset);
+    let sub = t.or("subtext0", Color::DarkGray);
+    let border = t.or("overlay0", Color::DarkGray);
+    let accent = t.or("accent", Color::Cyan);
+    let red = t.or("red", Color::Red);
+    let ink = t.or("panel_bg", Color::Rgb(16, 18, 20));
+
+    let width = area.width.saturating_sub(10).clamp(48, 92);
+    let height = area.height.saturating_sub(6).clamp(10, 24);
+    let popup = Rect::new(
+        area.x + (area.width.saturating_sub(width)) / 2,
+        area.y + (area.height.saturating_sub(height)) / 2,
+        width,
+        height,
+    );
+    app.background.paint(f, popup);
+
+    let scope = match app.handoff.scope {
+        Some(super::TargetScope::SameWorktree) => "same worktree",
+        Some(super::TargetScope::SameDirectory) => "same directory",
+        Some(super::TargetScope::AllAgents) => "all running",
+        None => "resolving",
+    };
+    let outer = crate::tui::framed(accent)
+        .title(Span::styled(
+            " Send path to agent ",
+            Style::default().fg(title).add_modifier(Modifier::BOLD),
+        ))
+        .title(
+            Line::from(Span::styled(format!(" {scope} "), Style::default().fg(sub)))
+                .right_aligned(),
+        );
+    let inner = outer.inner(popup);
+    f.render_widget(outer, popup);
+    let rows = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Min(4),
+        Constraint::Length(1),
+        Constraint::Length(1),
+    ])
+    .split(inner);
+
+    let query = if app.handoff.query.is_empty() {
+        "type to filter".to_string()
+    } else {
+        format!("{}▏", app.handoff.query)
+    };
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(" Search  ", Style::default().fg(title)),
+            Span::styled(query, Style::default().fg(text)),
+        ])),
+        rows[0],
+    );
+
+    app.handoff.list_area = rows[1];
+    app.handoff
+        .list_state
+        .select((!app.handoff.filtered.is_empty()).then_some(app.handoff.selected));
+    let items: Vec<ListItem> = if app.handoff.filtered.is_empty() {
+        let empty = if app.handoff.status.is_some() {
+            "  finding promptable agents…"
+        } else {
+            "  no promptable agents; blocked agents cannot receive prompts"
+        };
+        vec![ListItem::new(Line::from(Span::styled(
+            empty,
+            Style::default().fg(sub),
+        )))]
+    } else {
+        app.handoff
+            .filtered
+            .iter()
+            .filter_map(|&index| app.handoff.targets.get(index))
+            .map(|target| {
+                ListItem::new(Line::from(vec![
+                    Span::styled(
+                        format!(" {:<12} ", target.agent),
+                        Style::default().fg(text).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(format!("{:<9} ", target.status), Style::default().fg(sub)),
+                    Span::styled(target.cwd.clone(), Style::default().fg(sub)),
+                ]))
+            })
+            .collect()
+    };
+    let list = List::new(items)
+        .block(crate::tui::boxed("Agents", title, border))
+        .highlight_symbol("▌")
+        .highlight_style(Style::default().fg(title));
+    f.render_stateful_widget(list, rows[1], &mut app.handoff.list_state);
+
+    let feedback = app
+        .handoff
+        .error
+        .as_ref()
+        .map(|message| (message.as_str(), red))
+        .or_else(|| {
+            app.handoff
+                .status
+                .as_ref()
+                .map(|message| (message.as_str(), sub))
+        });
+    if let Some((message, color)) = feedback {
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                format!(" {message}"),
+                Style::default().fg(color),
+            ))),
+            rows[2],
+        );
+    }
+
+    let pills = [
+        crate::tui::Pill::new("↵", "send", t.or("green", Color::Green)),
+        crate::tui::Pill::new("esc", "back", red),
+    ];
+    let (spans, zones) = crate::tui::pill_row(&pills, ink, rows[3].x);
+    app.handoff.footer_row = rows[3].y;
+    app.handoff.footer_zones = zones
+        .into_iter()
+        .zip([super::HandoffAction::Send, super::HandoffAction::Back])
+        .map(|((start, end), action)| (start, end, action))
+        .collect();
+    f.render_widget(Paragraph::new(Line::from(spans)), rows[3]);
 }
 
 fn draw_context(
@@ -462,7 +593,7 @@ fn draw_footer(f: &mut Frame, app: &mut App, area: Rect) {
     // from the keymap for the *current mode*, so a remap or an Insert↔Normal
     // switch re-labels every pill (e.g. `update` shows `^r` in Insert, `␣u` in
     // Normal). An action with no binding in this mode drops out of the bar.
-    let items: [(Action, &str, Color); 10] = [
+    let items: [(Action, &str, Color); 12] = [
         (
             Action::Accept(Accept::Default),
             "open",
@@ -488,6 +619,8 @@ fn draw_footer(f: &mut Frame, app: &mut App, area: Rect) {
             "workspace",
             t.or("mauve", Color::Magenta),
         ),
+        (Action::CopyPath, "copy", t.or("peach", Color::Yellow)),
+        (Action::SendToAgent, "send", t.or("green", Color::Green)),
         (
             Action::Accept(Accept::Update),
             "update",
@@ -660,6 +793,8 @@ fn draw_help(f: &mut Frame, app: &App, area: Rect) {
             opt(Action::Accept(Accept::Tab), green, "Open in tab"),
             opt(Action::Accept(Accept::Split), yellow, "Open in split"),
             opt(Action::Accept(Accept::Pane), blue, "cd pane here"),
+            opt(Action::CopyPath, peach, "Copy path"),
+            opt(Action::SendToAgent, green, "Send to agent"),
         ],
     );
     right.push(blank());
