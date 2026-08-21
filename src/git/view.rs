@@ -222,13 +222,22 @@ fn draw_list(
     // Nothing came back: say which nothing, rather than an empty box.
     if g.rows.is_empty() {
         let rows = ratatui::layout::Layout::vertical([Min(1), Length(1)]).split(inner);
-        f.render_widget(
-            Paragraph::new(Line::from(Span::styled(
-                g.kind.map(ListKind::empty).unwrap_or("  (nothing here)"),
-                Style::default().fg(sub),
-            ))),
-            rows[0],
-        );
+        let mut lines = vec![Line::from(Span::styled(
+            g.kind.map(ListKind::empty).unwrap_or("  (nothing here)"),
+            Style::default().fg(sub),
+        ))];
+        if let Some(message) = g.error_message.as_deref() {
+            lines.push(Line::from(Span::styled(
+                format!("  {message}"),
+                Style::default().fg(theme.or("red", Color::Red)),
+            )));
+        } else if let Some(message) = g.status_message.as_deref() {
+            lines.push(Line::from(Span::styled(
+                format!("  {message}"),
+                Style::default().fg(theme.or("yellow", Color::Yellow)),
+            )));
+        }
+        f.render_widget(Paragraph::new(lines), rows[0]);
         draw_bar(f, g, rows[1], theme);
         return;
     }
@@ -510,12 +519,19 @@ fn bar_pills(g: &Git, theme: &Theme) -> Vec<crate::tui::Pill<'static>> {
             crate::tui::Pill::new("↑ ↓", "move", theme.or("blue", Color::Blue)),
             crate::tui::Pill::new("esc", "close", theme.or("red", Color::Red)),
         ],
-        View::List if g.kind == Some(ListKind::Reviews) => vec![
-            crate::tui::Pill::new("↵", "read comments", theme.or("accent", Color::Cyan)),
-            crate::tui::Pill::new("^s", "send to agent", theme.or("green", Color::Green)),
-            crate::tui::Pill::new("↑ ↓", "move", theme.or("blue", Color::Blue)),
-            crate::tui::Pill::new("esc", "back", theme.or("red", Color::Red)),
-        ],
+        View::List if matches!(g.kind, Some(ListKind::Reviews | ListKind::ArchivedReviews)) => {
+            let archive_verb = if g.kind == Some(ListKind::Reviews) {
+                "archive"
+            } else {
+                "restore"
+            };
+            vec![
+                crate::tui::Pill::new("↵", "read comments", theme.or("accent", Color::Cyan)),
+                crate::tui::Pill::new("^s", "send to agent", theme.or("green", Color::Green)),
+                crate::tui::Pill::new("^d", archive_verb, theme.or("yellow", Color::Yellow)),
+                crate::tui::Pill::new("esc", "back", theme.or("red", Color::Red)),
+            ]
+        }
         View::List => vec![
             crate::tui::Pill::new(
                 "↵",
@@ -564,12 +580,14 @@ fn draw_bar(f: &mut Frame, g: &mut Git, area: Rect, theme: &Theme) {
 fn bar_keys(g: &Git) -> Vec<Option<KeyEvent>> {
     let plain = |code| Some(KeyEvent::new(code, KeyModifiers::NONE));
     match g.view {
-        View::List if g.kind == Some(ListKind::Reviews) => vec![
-            plain(KeyCode::Enter),
-            Some(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL)),
-            None,
-            plain(KeyCode::Esc),
-        ],
+        View::List if matches!(g.kind, Some(ListKind::Reviews | ListKind::ArchivedReviews)) => {
+            vec![
+                plain(KeyCode::Enter),
+                Some(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL)),
+                Some(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL)),
+                plain(KeyCode::Esc),
+            ]
+        }
         View::Menu | View::List => vec![plain(KeyCode::Enter), None, plain(KeyCode::Esc)],
         View::Confirm => vec![plain(KeyCode::Enter), plain(KeyCode::Esc)],
     }

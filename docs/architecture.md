@@ -65,7 +65,7 @@ the module inventory.
 | `source::ProjectCatalog` | `new`, `load`, canonical `kinds` | Source enablement and load order |
 | `data` | Source loaders, entry and browse types, `Theme` | Response parsing and presentation mapping |
 | `keymap` | `Chord`, `Action`, `Keymap`, canonical chord conversion | Mode tables, overrides, labels |
-| `projects` / `picker` / `git` | `Surface` adapters and typed outputs | Surface-specific state reduction and composition |
+| `projects` / `picker` / `git` | `Surface` adapters and typed outputs | Surface-specific reduction, composition, and Git's saved-review visibility state |
 | `action` | `Accept`, `dispatch`, `open_target` | Restored-terminal effects and process replacement |
 | `runner` | `CommandRunner` | `SystemRunner` and `MockRunner` process adapters |
 | `usage` | `main`, feature-private `Provider` | Refresh runtime, quota adapters, time formatting, rendering |
@@ -248,7 +248,7 @@ application-wide framework. Each feature keeps a narrow root module and private 
 | Feature root | Root production lines | Private implementation children |
 | --- | ---: | --- |
 | `main.rs` | 138 | Projects moved behind `projects.rs`, `projects/view.rs`, and `projects/preview.rs` |
-| `git.rs` | 1,023 | `git/effect.rs`, `git/handoff.rs`, `git/menu_config.rs`, `git/view.rs` |
+| `git.rs` | 1,119 | `git/effect.rs`, `git/handoff.rs`, `git/menu_config.rs`, `git/review_archive.rs`, `git/view.rs` |
 | `usage.rs` | 324 | domain, time, view, shared provider primitives, and Codex/Claude adapters under `usage/` |
 | `zen.rs` | 130 | geometry, session persistence, effect engine, and picker adapter under `zen/` |
 | `settings.rs` | 373 | catalogue, validated TOML document writer, and view under `settings/` |

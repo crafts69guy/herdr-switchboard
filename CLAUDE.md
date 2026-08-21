@@ -103,11 +103,12 @@ order so the list stays stable.
   and a popup would hand it a tiny one. The picker knows nothing about git: there is no `⌥g`, no
   `Accept::Git`, no `App::git`. Two entry points would drift apart, and only one of them can be
   the fast one. `tuicr` is a TUI — never run it non-interactively (it blocks); only ever in a pane.
-- **A saved-review handoff is a pointer-only, non-blocking effect.** Its inputs are the repository,
-  tuicr session slug, and a pane id returned by `herdr agent list`; delivery uses
-  `herdr agent prompt` without `--wait`. Comment bodies remain owned by tuicr and never enter
-  Switchboard state, logs, notifications, or another command line. `docs/git-menu.md` owns the
-  user-facing target-selection and fallback behaviour.
+- **Saved-review integration never takes ownership of tuicr content.** A handoff is a pointer-only,
+  non-blocking effect whose inputs are the repository, session slug, and a pane id returned by
+  `herdr agent list`; delivery uses `herdr agent prompt` without `--wait`. Archive state contains
+  only exact session slugs and changes Switchboard visibility, never tuicr's session JSON. Comment
+  bodies never enter Switchboard state, logs, notifications, or another command line.
+  `docs/git-menu.md` owns the user-facing archive, target-selection, and fallback behaviour.
 - **The picker loads its sources synchronously, before `surface::run` claims the terminal.** There
   is no worker, channel, or minimum-visible floor: `load_all` costs ~35ms, and the 420ms floor the
   previous animation imposed *was* the first-list latency. An empty result must be detected here

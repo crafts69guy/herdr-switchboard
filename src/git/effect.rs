@@ -1,5 +1,6 @@
 //! External reads and response parsing for the Git menu.
 
+use std::collections::BTreeSet;
 use std::env;
 
 use super::menu_config::parse_menu_conf;
@@ -55,7 +56,8 @@ pub(super) fn count_tracked_files(runner: &dyn CommandRunner, cwd: &str) -> Opti
 pub(super) fn load_rows(runner: &dyn CommandRunner, cwd: &str, kind: ListKind) -> Vec<Row> {
     match kind {
         ListKind::PullRequests => load_pull_requests(runner, cwd),
-        ListKind::Reviews => load_reviews(runner, cwd),
+        ListKind::Reviews => load_reviews(runner, cwd, false),
+        ListKind::ArchivedReviews => load_reviews(runner, cwd, true),
         ListKind::Conflicts => load_conflicts(runner, cwd),
         // Agent discovery has its own typed effect because it resolves Git roots
         // and may immediately select the captured origin.
@@ -187,28 +189,41 @@ fn shell_quote(s: &str) -> String {
 /// `tuicr review list` as rows: the session slug is the id (it is what
 /// `review comments --session` takes), with the comment count as the detail.
 /// Here `--repo` **does** take a checkout path — tuicr documents it that way.
-fn load_reviews(runner: &dyn CommandRunner, cwd: &str) -> Vec<Row> {
-    json_rows(
+fn load_reviews(runner: &dyn CommandRunner, cwd: &str, want_archived: bool) -> Vec<Row> {
+    let archived = super::review_archive::load();
+    review_rows(
         runner.capture("tuicr", &["review", "list", "--repo", cwd]),
-        |s| {
-            let slug = s.get("slug")?.as_str()?.to_string();
-            let count = s.get("comment_count").and_then(|v| v.as_u64()).unwrap_or(0);
-            let anchor = s
-                .get("anchor")
-                .and_then(|v| v.as_str())
-                .filter(|a| !a.is_empty())
-                .unwrap_or("(no anchor)");
-            Some(Row {
-                id: slug,
-                label: anchor.to_string(),
-                meta: day_of(s.get("updated_at").and_then(|v| v.as_str()).unwrap_or("")),
-                detail: match count {
-                    1 => "1 comment".to_string(),
-                    n => format!("{n} comments"),
-                },
-            })
-        },
+        &archived,
+        want_archived,
     )
+}
+
+pub(super) fn review_rows(
+    output: Option<String>,
+    archived: &BTreeSet<String>,
+    want_archived: bool,
+) -> Vec<Row> {
+    json_rows(output, |s| {
+        let slug = s.get("slug")?.as_str()?.to_string();
+        if archived.contains(&slug) != want_archived {
+            return None;
+        }
+        let count = s.get("comment_count").and_then(|v| v.as_u64()).unwrap_or(0);
+        let anchor = s
+            .get("anchor")
+            .and_then(|v| v.as_str())
+            .filter(|a| !a.is_empty())
+            .unwrap_or("(no anchor)");
+        Some(Row {
+            id: slug,
+            label: anchor.to_string(),
+            meta: day_of(s.get("updated_at").and_then(|v| v.as_str()).unwrap_or("")),
+            detail: match count {
+                1 => "1 comment".to_string(),
+                n => format!("{n} comments"),
+            },
+        })
+    })
 }
 
 /// The date out of an ISO-8601 timestamp — the whole string is too wide for the

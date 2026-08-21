@@ -22,6 +22,7 @@
 mod effect;
 mod handoff;
 mod menu_config;
+mod review_archive;
 mod view;
 
 use std::env;
@@ -46,6 +47,8 @@ use handoff::{
 };
 use view::{draw, fuzzy_match};
 
+#[cfg(test)]
+use effect::review_rows;
 #[cfg(test)]
 use menu_config::parse_menu_conf;
 #[cfg(test)]
@@ -87,6 +90,7 @@ pub struct Row {
 pub enum ListKind {
     PullRequests,
     Reviews,
+    ArchivedReviews,
     Conflicts,
     Agents,
 }
@@ -97,6 +101,7 @@ impl ListKind {
         match self {
             ListKind::PullRequests => "pull requests",
             ListKind::Reviews => "saved reviews",
+            ListKind::ArchivedReviews => "archived reviews",
             ListKind::Conflicts => "conflicts",
             ListKind::Agents => "review agents",
         }
@@ -106,7 +111,7 @@ impl ListKind {
     fn mode(self) -> Option<&'static str> {
         Some(match self {
             ListKind::PullRequests => "pr",
-            ListKind::Reviews => "comments",
+            ListKind::Reviews | ListKind::ArchivedReviews => "comments",
             ListKind::Conflicts => "conflict",
             ListKind::Agents => return None,
         })
@@ -116,7 +121,7 @@ impl ListKind {
     fn verb(self) -> &'static str {
         match self {
             ListKind::PullRequests => "review PR",
-            ListKind::Reviews => "read comments",
+            ListKind::Reviews | ListKind::ArchivedReviews => "read comments",
             ListKind::Conflicts => "open file",
             ListKind::Agents => "send review",
         }
@@ -127,6 +132,7 @@ impl ListKind {
         match self {
             ListKind::PullRequests => "  (no open pull requests)",
             ListKind::Reviews => "  (no saved reviews)",
+            ListKind::ArchivedReviews => "  (no archived reviews)",
             ListKind::Conflicts => "  (no conflicted files)",
             ListKind::Agents => "  (no promptable agents; blocked agents cannot receive prompts)",
         }
@@ -153,6 +159,8 @@ enum Step {
     LoadTargets(String),
     /// Deliver one saved-review session pointer to one exact Herdr pane.
     Deliver(HandoffRequest),
+    /// Persist one saved review's Switchboard-owned archive visibility.
+    SetReviewArchived { slug: String, archived: bool },
 }
 
 /// A custom row read from `menu.conf` (`key|icon|label|shell command`).
@@ -316,7 +324,8 @@ impl Git {
         // (source-branch), commits the log (clock), all-files a whole-tree read
         // (file), conflicts an unfinished merge (alert), pull request an incoming
         // change (source-pull), saved reviews the comments left on one
-        // (comment-multiple), lazygit the git surface.
+        // (comment-multiple), archived reviews their Switchboard-hidden subset,
+        // lazygit the git surface.
         let mut items = vec![
             Item {
                 key: 'd',
@@ -372,6 +381,12 @@ impl Git {
             label: "saved reviews".into(),
             act: Act::List(ListKind::Reviews),
         });
+        items.push(Item {
+            key: 'R',
+            icon: "󰀼".into(),
+            label: "archived reviews".into(),
+            act: Act::List(ListKind::ArchivedReviews),
+        });
         if has_lazygit {
             items.push(Item {
                 key: 'l',
@@ -426,6 +441,8 @@ impl Git {
         self.view = View::List;
         self.lsel = 0;
         self.query.clear();
+        self.status_message = None;
+        self.error_message = None;
         self.refilter();
     }
 
@@ -501,6 +518,46 @@ impl Git {
         self.status_message = None;
         self.error_message =
             Some("Could not send review; the agent may be blocked or unavailable.".into());
+    }
+
+    fn set_selected_review_archived(&mut self, archived: bool) -> Step {
+        let Some(slug) = self
+            .filtered
+            .get(self.lsel)
+            .and_then(|&i| self.rows.get(i))
+            .map(|row| row.id.clone())
+        else {
+            return Step::Stay;
+        };
+        self.status_message = Some(if archived {
+            "Archiving review…".into()
+        } else {
+            "Restoring review…".into()
+        });
+        self.error_message = None;
+        Step::SetReviewArchived { slug, archived }
+    }
+
+    fn review_archive_finished(&mut self, slug: &str, archived: bool, result: Result<(), String>) {
+        match result {
+            Ok(()) => {
+                self.rows.retain(|row| row.id != slug);
+                self.refilter();
+                self.status_message = Some(if archived {
+                    "Review archived.".into()
+                } else {
+                    "Review restored.".into()
+                });
+                self.error_message = None;
+            }
+            Err(error) => {
+                self.status_message = None;
+                self.error_message = Some(format!(
+                    "Could not {} review: {error}",
+                    if archived { "archive" } else { "restore" }
+                ));
+            }
+        }
     }
 
     /// Recompute `filtered` from `query`: the `rows` indices whose id, label, or
@@ -673,7 +730,13 @@ impl Git {
                     KeyCode::Up => self.lstep(-1),
                     KeyCode::Char('n') if ctrl => self.lstep(1),
                     KeyCode::Char('p') if ctrl => self.lstep(-1),
-                    KeyCode::Char('s') if ctrl && self.kind == Some(ListKind::Reviews) => {
+                    KeyCode::Char('s')
+                        if ctrl
+                            && matches!(
+                                self.kind,
+                                Some(ListKind::Reviews | ListKind::ArchivedReviews)
+                            ) =>
+                    {
                         if let Some(session) = self
                             .filtered
                             .get(self.lsel)
@@ -684,6 +747,12 @@ impl Git {
                             self.error_message = None;
                             return Step::LoadTargets(session);
                         }
+                    }
+                    KeyCode::Char('d') if ctrl && self.kind == Some(ListKind::Reviews) => {
+                        return self.set_selected_review_archived(true);
+                    }
+                    KeyCode::Char('d') if ctrl && self.kind == Some(ListKind::ArchivedReviews) => {
+                        return self.set_selected_review_archived(false);
                     }
                     KeyCode::Home => self.lsel = 0,
                     KeyCode::End => self.lsel = self.filtered.len().saturating_sub(1),
@@ -877,6 +946,11 @@ enum GitEffect {
     FileCount(Option<usize>),
     Targets(String, TargetResolution),
     Delivered(Result<(), String>),
+    ReviewArchived {
+        slug: String,
+        archived: bool,
+        result: Result<(), String>,
+    },
 }
 
 impl Surface for GitSurface<'_> {
@@ -944,6 +1018,14 @@ impl Surface for GitSurface<'_> {
                     Transition::Redraw
                 }
             },
+            GitEffect::ReviewArchived {
+                slug,
+                archived,
+                result,
+            } => {
+                self.git.review_archive_finished(&slug, archived, result);
+                Transition::Redraw
+            }
         })
     }
 
@@ -1027,6 +1109,20 @@ impl GitSurface<'_> {
                     let result =
                         deliver(&SystemRunner, &request).map_err(|error| error.to_string());
                     let _ = sender.send(GitEffect::Delivered(result));
+                });
+                self.effect = Some(receiver);
+                Transition::Redraw
+            }
+            Step::SetReviewArchived { slug, archived } => {
+                let (sender, receiver) = mpsc::channel();
+                std::thread::spawn(move || {
+                    let result =
+                        review_archive::set(&slug, archived).map_err(|error| error.to_string());
+                    let _ = sender.send(GitEffect::ReviewArchived {
+                        slug,
+                        archived,
+                        result,
+                    });
                 });
                 self.effect = Some(receiver);
                 Transition::Redraw
@@ -1590,6 +1686,73 @@ z|Y|pull|git pull
     }
 
     #[test]
+    fn uppercase_r_opens_archived_reviews() {
+        let mut g = Git::new();
+        open_default(&mut g);
+        assert_eq!(
+            g.on_key(key(KeyCode::Char('R'))),
+            Step::Load(ListKind::ArchivedReviews)
+        );
+    }
+
+    #[test]
+    fn ctrl_d_archives_a_saved_review_and_preserves_the_filter() {
+        let mut g = Git::new();
+        open_default(&mut g);
+        saved_review(&mut g);
+        g.query = "main".into();
+        g.refilter();
+
+        assert_eq!(
+            g.on_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL)),
+            Step::SetReviewArchived {
+                slug: "session-1".into(),
+                archived: true,
+            }
+        );
+        assert_eq!(g.query, "main", "ctrl-d must not become filter text");
+
+        g.review_archive_finished("session-1", true, Ok(()));
+        assert!(g.rows.is_empty());
+        assert_eq!(g.query, "main");
+        assert_eq!(g.status_message.as_deref(), Some("Review archived."));
+        assert!(screen(&mut g, 100, 28).contains("Review archived."));
+    }
+
+    #[test]
+    fn ctrl_d_restores_an_archived_review_and_a_failure_keeps_the_row() {
+        let mut g = Git::new();
+        open_default(&mut g);
+        g.show_list(
+            ListKind::ArchivedReviews,
+            vec![Row {
+                id: "session-1".into(),
+                label: "main..HEAD".into(),
+                meta: "2026-08-20".into(),
+                detail: "2 comments".into(),
+            }],
+        );
+
+        assert_eq!(
+            g.on_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL)),
+            Step::SetReviewArchived {
+                slug: "session-1".into(),
+                archived: false,
+            }
+        );
+        g.review_archive_finished("session-1", false, Err("disk is read-only".into()));
+        assert_eq!(g.rows.len(), 1, "a failed restore must keep its row");
+        assert!(g
+            .error_message
+            .as_deref()
+            .is_some_and(|message| message.contains("disk is read-only")));
+
+        g.review_archive_finished("session-1", false, Ok(()));
+        assert!(g.rows.is_empty());
+        assert_eq!(g.status_message.as_deref(), Some("Review restored."));
+    }
+
+    #[test]
     fn an_exact_origin_starts_delivery_without_opening_the_agent_picker() {
         let mut g = Git::new();
         open_default(&mut g);
@@ -1690,6 +1853,30 @@ z|Y|pull|git pull
     }
 
     #[test]
+    fn saved_review_archive_pill_keeps_its_control_modifier_when_clicked() {
+        let mut g = Git::new();
+        open_default(&mut g);
+        saved_review(&mut g);
+        let rendered = screen(&mut g, 100, 28);
+        assert!(rendered.contains("archive"), "{rendered}");
+        let &(start, _, _) = g
+            .zones
+            .bar_zones
+            .iter()
+            .find(|(_, _, event)| {
+                event.code == KeyCode::Char('d') && event.modifiers.contains(KeyModifiers::CONTROL)
+            })
+            .expect("the archive pill publishes Ctrl-D");
+        assert_eq!(
+            g.on_click(Position::new(start + 1, g.zones.bar_row)),
+            Step::SetReviewArchived {
+                slug: "session-1".into(),
+                archived: true,
+            }
+        );
+    }
+
+    #[test]
     fn esc_in_a_list_steps_back_to_the_menu_not_out() {
         let mut g = Git::new();
         open_default(&mut g);
@@ -1757,7 +1944,7 @@ z|Y|pull|git pull
             "pull request row survived"
         );
         // The rest are unconditional.
-        for k in ['d', 'b', 'h', 'a', 'x', 'r'] {
+        for k in ['d', 'b', 'h', 'a', 'x', 'r', 'R'] {
             assert!(g.items.iter().any(|i| i.key == k), "row {k} is missing");
         }
 
@@ -1786,14 +1973,15 @@ z|Y|pull|git pull
 
     #[test]
     fn saved_reviews_parse_out_of_tuicrs_json() {
-        let runner = MockRunner::new().on(
-            "review list",
-            r#"[{"slug":"9f6c1b3e09a54e2a","kind":"local","anchor":"main..HEAD",
+        let output = r#"[{"slug":"9f6c1b3e09a54e2a","kind":"local","anchor":"main..HEAD",
                  "updated_at":"2026-08-03T09:00:00Z","comment_count":3,"active":false},
                 {"slug":"aa11","kind":"pr","anchor":"pr/7",
-                 "updated_at":"2026-08-02T09:00:00Z","comment_count":1,"active":true}]"#,
+                 "updated_at":"2026-08-02T09:00:00Z","comment_count":1,"active":true}]"#;
+        let rows = review_rows(
+            Some(output.into()),
+            &std::collections::BTreeSet::new(),
+            false,
         );
-        let rows = load_rows(&runner, "/r", ListKind::Reviews);
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].id, "9f6c1b3e09a54e2a");
         assert_eq!(rows[0].label, "main..HEAD");
@@ -1801,6 +1989,34 @@ z|Y|pull|git pull
         assert_eq!(rows[0].detail, "3 comments");
         // A count of one must not read "1 comments".
         assert_eq!(rows[1].detail, "1 comment");
+    }
+
+    #[test]
+    fn saved_reviews_are_partitioned_by_switchboards_archive() {
+        let output = Some(
+            r#"[{"slug":"active","anchor":"main","comment_count":1},
+                 {"slug":"archived","anchor":"pr/7","comment_count":2}]"#
+                .into(),
+        );
+        let archived = std::collections::BTreeSet::from(["archived".to_string(), "stale".into()]);
+
+        let active_rows = review_rows(output.clone(), &archived, false);
+        assert_eq!(
+            active_rows
+                .iter()
+                .map(|row| row.id.as_str())
+                .collect::<Vec<_>>(),
+            ["active"]
+        );
+
+        let archived_rows = review_rows(output, &archived, true);
+        assert_eq!(
+            archived_rows
+                .iter()
+                .map(|row| row.id.as_str())
+                .collect::<Vec<_>>(),
+            ["archived"]
+        );
     }
 
     /// Only the seven unmerged codes become rows: a staged edit, an unstaged edit,

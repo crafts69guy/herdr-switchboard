@@ -9,6 +9,11 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Saved tuicr reviews can be archived without deleting review data.** Press `ctrl-d` in the Git
+  menu's saved-review list to hide a session, open `R` archived reviews to find it, and press
+  `ctrl-d` again to restore it. Reading comments and sending them to an agent remain available in
+  both lists.
+
 - **Saved tuicr reviews can be handed directly to a running agent.** Press `ctrl-s` in the Git
   menu's saved-review list: Switchboard uses the origin agent when it still shares the worktree,
   otherwise offers matching agents and then all available agents. The handoff preserves tuicr's
