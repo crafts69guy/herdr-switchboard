@@ -9,6 +9,7 @@ use crate::config::Config;
 pub enum Event {
     AgentLaunchFailed,
     CommandDeliveryFailed,
+    FnmActivationFailed,
     ReviewHandoffSucceeded,
     PathHandoffSucceeded,
     TermSucceeded,
@@ -88,6 +89,10 @@ impl Notifier {
             }
             Event::CommandDeliveryFailed => (
                 "Could not deliver the selected command to its origin pane.".into(),
+                "request",
+            ),
+            Event::FnmActivationFailed => (
+                "Could not activate the project Node version with fnm; opened normally.".into(),
                 "request",
             ),
             Event::ReviewHandoffSucceeded => {
@@ -178,6 +183,19 @@ mod tests {
         assert!(!rendered.contains("curl"));
         assert!(!rendered.contains("secret"));
         assert!(rendered.contains("--position top-right"));
+    }
+
+    #[test]
+    fn fnm_failure_is_static_and_requests_attention() {
+        let notifier = Notifier::new(&Config::default());
+        let args = notifier
+            .args(Event::FnmActivationFailed, Some("999 /private/repo"))
+            .unwrap();
+        let rendered = args.join(" ");
+        assert!(rendered.contains("Could not activate the project Node version with fnm"));
+        assert!(!rendered.contains("999"));
+        assert!(!rendered.contains("/private"));
+        assert!(rendered.contains("--sound request"));
     }
 
     #[test]

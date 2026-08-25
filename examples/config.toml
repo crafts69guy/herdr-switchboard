@@ -25,6 +25,11 @@ preview_position = "right"
 preview_size = "60%"
 preview_readme = true
 
+[fnm]
+# Show project Node declarations and activate an already-installed match when
+# opening a repo. Switchboard never installs Node or performs network work.
+enabled = false
+
 [commands]
 history_limit = 5000
 sort = "frecency" # frecency | recent | frequency | alphabetical

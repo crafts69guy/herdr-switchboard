@@ -34,6 +34,7 @@ mod view;
 use catalog::{next_in, Cycle, SETTINGS};
 use document::{config_path, load_document, set_document_value, write_document};
 pub use view::draw;
+use view::draw_standalone;
 use view::{setting_tab, TABS};
 
 #[cfg(test)]
@@ -69,7 +70,7 @@ impl Surface for StandaloneSettings {
 
     fn draw(&mut self, frame: &mut Frame) {
         self.background.paint(frame, frame.area());
-        draw(
+        draw_standalone(
             frame,
             frame.area(),
             &self.theme,
@@ -420,6 +421,8 @@ mod tests {
         assert!(screen.contains("Open"), "{screen}");
         assert!(screen.contains("Projects"), "{screen}"); // active package tab
         assert!(screen.contains("Clone"), "{screen}"); // the right column
+        assert!(screen.contains("Integrations"), "{screen}");
+        assert!(screen.contains("fnm_enabled"), "{screen}");
         assert!(screen.contains("default_target"), "{screen}");
         assert!(screen.contains("workspace"), "{screen}");
         assert!(screen.contains("where Enter opens a repo"), "{screen}");
@@ -449,6 +452,36 @@ mod tests {
             .content
             .iter()
             .all(|cell| cell.bg != Color::Reset));
+    }
+
+    #[test]
+    fn standalone_settings_relies_on_the_herdr_frame_without_a_nested_card() {
+        let theme = Theme::default();
+        let mut surface = StandaloneSettings {
+            settings: Settings::new(&Config::default()),
+            background: crate::tui::SurfaceBackground::resolve(
+                &theme,
+                crate::config::Transparency::Transparent,
+            ),
+            theme,
+            title: Color::Yellow,
+        };
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 32)).unwrap();
+        terminal.draw(|frame| surface.draw(frame)).unwrap();
+        let screen = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+
+        assert!(screen.contains("fnm_enabled"), "{screen}");
+        assert!(
+            !screen.contains('╭'),
+            "standalone drew a second frame: {screen}"
+        );
     }
 
     #[test]

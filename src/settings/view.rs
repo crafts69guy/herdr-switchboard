@@ -1,7 +1,7 @@
 //! Rendering for the embedded and standalone settings card.
 
 use crossterm::event::KeyCode;
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::layout::{Constraint, Layout, Margin, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
@@ -31,6 +31,7 @@ pub(super) fn setting_tab(key: &str) -> usize {
 const LEFT_GROUPS: &[&str] = &["Open", "Sources", "Keys", "Preview"];
 const RIGHT_GROUPS: &[&str] = &[
     "Appearance",
+    "Integrations",
     "Clone",
     "Git",
     "Updates",
@@ -128,6 +129,46 @@ pub fn draw(
     title: Color,
     s: &mut Settings,
 ) {
+    draw_form(f, area, theme, background, title, s, Presentation::Embedded);
+}
+
+/// Draw the standalone form directly inside Herdr's pane frame. The embedded
+/// variant needs its own floating card because it sits over Projects; the
+/// standalone pane already has a title and border supplied by Herdr.
+pub(super) fn draw_standalone(
+    f: &mut Frame,
+    area: Rect,
+    theme: &Theme,
+    background: SurfaceBackground,
+    title: Color,
+    s: &mut Settings,
+) {
+    draw_form(
+        f,
+        area,
+        theme,
+        background,
+        title,
+        s,
+        Presentation::Standalone,
+    );
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum Presentation {
+    Embedded,
+    Standalone,
+}
+
+fn draw_form(
+    f: &mut Frame,
+    area: Rect,
+    theme: &Theme,
+    background: SurfaceBackground,
+    title: Color,
+    s: &mut Settings,
+    presentation: Presentation,
+) {
     let sub = theme.or("subtext0", Color::Gray);
     let border = theme.or("accent", Color::Cyan);
 
@@ -142,34 +183,28 @@ pub fn draw(
     let w = want_w.min(area.width.saturating_sub(2));
     let want_h = body_h + 2 /* border */ + 3 /* tabs + hint + pills */;
     let h = want_h.min(area.height.saturating_sub(1)).max(6);
-    let popup = Rect::new(
-        area.x + (area.width.saturating_sub(w)) / 2,
-        area.y + (area.height.saturating_sub(h)) / 2,
-        w,
-        h,
-    );
-    background.paint(f, popup);
-
-    let block = tui::framed(border)
-        .title(Span::styled(
-            " 󰒓 Switchboard Settings ",
-            Style::default().fg(title).add_modifier(Modifier::BOLD),
-        ))
-        .title(
-            Line::from(if s.dirty() {
-                Span::styled(
-                    " ● unsaved ",
-                    Style::default()
-                        .fg(theme.or("peach", Color::Yellow))
-                        .add_modifier(Modifier::BOLD),
-                )
-            } else {
-                Span::styled(" saved ", Style::default().fg(sub))
-            })
-            .right_aligned(),
+    let (popup, inner) = if presentation == Presentation::Embedded {
+        let popup = Rect::new(
+            area.x + (area.width.saturating_sub(w)) / 2,
+            area.y + (area.height.saturating_sub(h)) / 2,
+            w,
+            h,
         );
-    let inner = block.inner(popup);
-    f.render_widget(block, popup);
+        background.paint(f, popup);
+        let block = tui::framed(border)
+            .title(Span::styled(
+                " 󰒓 Switchboard Settings ",
+                Style::default().fg(title).add_modifier(Modifier::BOLD),
+            ))
+            .title(Line::from(status_span(s, theme, sub)).right_aligned());
+        let inner = block.inner(popup);
+        f.render_widget(block, popup);
+        (popup, inner)
+    } else {
+        // Herdr owns the only visible border. A small content margin keeps the
+        // form off that frame without manufacturing another nested card.
+        (area, area.inner(Margin::new(2, 1)))
+    };
 
     let rows = Layout::vertical([
         Constraint::Length(1),
@@ -200,6 +235,22 @@ pub fn draw(
         x += w;
         tab_spans.push(Span::styled(*name, style));
     }
+    if presentation == Presentation::Standalone {
+        let status = if s.dirty() {
+            " ● unsaved "
+        } else {
+            " saved "
+        };
+        let used = tab_spans
+            .iter()
+            .map(|span| span.content.chars().count())
+            .sum::<usize>();
+        let gap = rows[0]
+            .width
+            .saturating_sub((used + status.chars().count()) as u16) as usize;
+        tab_spans.push(Span::raw(" ".repeat(gap)));
+        tab_spans.push(status_span(s, theme, sub));
+    }
     f.render_widget(Paragraph::new(Line::from(tab_spans)), rows[0]);
 
     let cols = Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
@@ -223,6 +274,19 @@ pub fn draw(
     );
 
     draw_bar(f, s, rows[3], theme);
+}
+
+fn status_span(s: &Settings, theme: &Theme, sub: Color) -> Span<'static> {
+    if s.dirty() {
+        Span::styled(
+            " ● unsaved ",
+            Style::default()
+                .fg(theme.or("peach", Color::Yellow))
+                .add_modifier(Modifier::BOLD),
+        )
+    } else {
+        Span::styled(" saved ", Style::default().fg(sub))
+    }
 }
 
 /// The picker's coloured-pill command bar, with this form's verbs.

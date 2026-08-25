@@ -146,6 +146,18 @@ Switchboard:
 
 This prevents an old picker row from targeting an unrelated process after PID reuse.
 
+## Node Versions
+
+Node Versions is the explicit fnm management surface. It shows installed versions immediately and
+loads `fnm list-remote --sort desc` on a worker, so remote network latency never blocks the input
+loop. Filters include `version:` (or `v:`), `source:installed|remote`, and
+`status:current|default`.
+
+Using a version sends `fnm use VERSION` to the exact pane that opened Switchboard; a child process
+cannot update its parent shell. Install and default call fnm with structured argv. Uninstall never
+targets `system` and requires typing the selected version exactly before fnm is invoked. Version
+tokens are validated before they can enter either argv or the origin-pane command.
+
 ## Repository removal
 
 Projects removal accepts only repository rows and asks for the repository name before deletion.

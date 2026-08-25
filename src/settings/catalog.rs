@@ -120,6 +120,13 @@ pub(super) const SETTINGS: &[Setting] = &[
         cycle: Cycle::Ring(BOOL),
     },
     Setting {
+        group: "Integrations",
+        key: "fnm_enabled",
+        default: "false",
+        hint: "activate declared Node versions with fnm",
+        cycle: Cycle::Ring(BOOL),
+    },
+    Setting {
         group: "Appearance",
         key: "title_color",
         default: "peach",

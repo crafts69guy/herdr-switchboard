@@ -141,6 +141,21 @@ order so the list stays stable.
   `toml_get` (used only by `configure_notifications`, the pre-build notification path that must not
   depend on a cargo build), and the pane-context/JSON helpers. **A change to how a target opens
   lands only in `action.rs`.**
+- **fnm activation is opt-in, local, and post-selection.** `[fnm].enabled` defaults off. Preview
+  reads declarations from disk only; `fnm exec --using <repo> -- printenv PATH` runs after an open
+  is accepted, never installs a version, and never performs network work. Fresh targets receive
+  that PATH through Herdr's `--env`, then `action.rs` addresses the exact pane ID returned by the
+  create response for one silent `fnm use`. The current-pane target remains `cd`-only and relies on
+  fnm's standard `--use-on-cd` shell hook.
+- **The Node Versions manager is the only explicit fnm mutation surface.** It loads installed
+  versions locally, runs `fnm list-remote` on a worker only after the user opens the dedicated
+  pane, and performs install/default/uninstall after terminal restoration. `use` is sent to the
+  captured origin pane because a child process cannot change its parent shell; uninstall requires
+  the exact selected version as typed confirmation.
+- **Settings has two presentations, not two renderers.** The embedded form is a centred floating
+  card because it overlays Projects. The standalone action already lives in a Herdr-framed popup,
+  so it draws the same form full-area with a content margin and no second border or duplicate
+  title. Both presentations share the columns, tabs, hit zones, hints, and command bar.
 - **Configuration is typed and namespaced.** `config.rs` deserializes the section structs with
   `deny_unknown_fields`; Rust code reads those fields directly. `Config::value_for_cli` is the
   deliberately narrow compatibility seam for Bash's `config get` calls, not an internal
@@ -186,6 +201,11 @@ order so the list stays stable.
   behaviour. The rule is the same in `projects.rs`, `picker.rs`, `git.rs` and `settings.rs`;
   what is shared between them is `tui::zone_at`, the lookup — never the measurement, which
   stays in the loop that draws the thing.
+- **Picker command bars may wrap, but their hit zones wrap with them.** `PickerMode` defaults to
+  one action row; the Central Menu requests two because it exposes every direct route. The picker
+  balances whole pills by their rendered widths, leaves one terminal row between wrapped rows,
+  measures each row with `tui::pill_row`, and stores the row coordinate beside its zones. Never
+  split or reposition the spans independently of those zones.
 - **The preview clips; it must never wrap.** Every body goes through `clip`/`clip_line`
   (`src/projects/preview.rs`) so one card line is exactly one screen row — that is what makes
   `preview_scroll` mean what it says and `preview_len`/`preview_rows` bound it correctly.

@@ -55,6 +55,19 @@ Switchboard pane, gutter, and nested card with the theme's `panel_bg`. The forme
 | `preview`, `preview_position`, `preview_size` | Preview layout. |
 | `preview_readme` | Include rendered README excerpts. |
 
+### `[fnm]`
+
+`enabled` defaults to `false`. When enabled, repository previews show the Node declaration selected
+from `.nvmrc`, `.node-version`, or `package.json#engines.node`. If `fnm` is installed, workspace,
+tab, and split opens receive the matching installed Node version; opening in the current pane
+relies on fnm's standard `--use-on-cd` shell hook.
+
+The Projects open path never installs a missing Node version or performs fnm network work. A
+missing or invalid requested version does not block the project from opening; it produces a
+notification and keeps the inherited Node environment instead. The separately invoked **Node
+Versions** manager is the explicit network and mutation surface: it can list remote versions,
+install, select, make default, and uninstall versions through fnm.
+
 ### `[commands]`, `[ports]`, `[clone]`, and `[git]`
 
 - `commands.history_limit`, `commands.history_exclude`, and `commands.sort` control imported shell

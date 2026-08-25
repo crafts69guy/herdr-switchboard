@@ -48,6 +48,13 @@ contexts = ["global", "pane"]
 command = ["bash", "bin/action.sh"]
 
 [[actions]]
+id = "fnm"
+title = "Node Versions"
+description = "Use fnm to search, install, select, make default, or uninstall Node.js versions."
+contexts = ["global", "pane"]
+command = ["bash", "bin/action.sh"]
+
+[[actions]]
 id = "settings"
 title = "Switchboard Settings"
 description = "Configure the common, projects, commands, and ports modes."
@@ -125,8 +132,8 @@ command = ["bash", "bin/action.sh"]
 id = "menu"
 title = "󰍜"
 placement = "popup"
-width = 76
-height = 24
+width = 112
+height = 28
 command = ["bash", "-c", "exec bash \"$HERDR_PLUGIN_ROOT/bin/picker.sh\" --menu"]
 
 [[panes]]
@@ -162,6 +169,12 @@ id = "ports"
 title = "󰛳"
 placement = "overlay"
 command = ["bash", "-c", "exec bash \"$HERDR_PLUGIN_ROOT/bin/picker.sh\" --ports"]
+
+[[panes]]
+id = "fnm"
+title = "󰎙"
+placement = "overlay"
+command = ["bash", "-c", "exec bash \"$HERDR_PLUGIN_ROOT/bin/picker.sh\" --fnm"]
 
 [[panes]]
 id = "zen"

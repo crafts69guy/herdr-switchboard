@@ -7,7 +7,23 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **The central menu is roomier and standalone Settings has one frame.** The menu now opens at
+  a fitted `112x28`, with its complete action bar balanced across two rows separated by a gap.
+  Standalone Settings relies on the
+  frame Herdr already draws, while the in-Projects Settings overlay keeps its floating card.
+
 ### Added
+
+- **Node Versions is a full fnm manager.** Open it from the Switchboard menu to search installed
+  and remote Node.js versions, use one in the originating pane, install it, make it the default,
+  refresh the catalogue, or uninstall it after typing the exact version to confirm.
+
+- **Projects can activate repository Node versions through fnm.** Enable `[fnm].enabled` to show
+  `.nvmrc`, `.node-version`, or `package.json` Node requirements in the Inspector and carry an
+  already-installed match into new workspaces, tabs, and splits. Missing versions never install
+  themselves or block the open; Switchboard warns and keeps the inherited Node environment.
 
 - **Navigator paths can be copied or handed to a running agent.** Select an Agent, Repo, or
   Worktree in Projects, then press `ctrl-y` to copy its absolute path or `ctrl-s` to share that

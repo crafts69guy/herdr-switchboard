@@ -9,6 +9,8 @@ mod clipboard;
 mod commands;
 mod config;
 mod data;
+mod fnm;
+mod fnm_manager;
 mod git;
 mod history;
 mod keymap;
@@ -122,6 +124,7 @@ fn main() -> Result<()> {
         Some("--changelog") => changelog::main(),
         Some("--update-check") => update::main(),
         Some("--git") => git::main(),
+        Some("--fnm") => fnm_manager::main(Config::try_load()?, Theme::load()),
         Some("--menu") => menu::main(Config::try_load()?, Theme::load()),
         Some("--agent-launch") => agents::launch_worker(&args[1..], &Config::try_load()?),
         Some("--agents") => agents::main(Config::try_load()?, Theme::load()),

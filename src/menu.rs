@@ -82,6 +82,15 @@ const ROUTES: &[Route] = &[
         key_label: "⌥o",
     },
     Route {
+        id: "fnm",
+        group: "Utilities",
+        title: "Node Versions",
+        detail: "use, install and remove versions with fnm",
+        color: "green",
+        mnemonic: 'n',
+        key_label: "⌥n",
+    },
+    Route {
         id: "zen",
         group: "Pickers",
         title: "Zen",
@@ -153,6 +162,9 @@ impl PickerMode for MenuMode {
     fn accent_slot(&self) -> &'static str {
         "mauve"
     }
+    fn action_bar_rows(&self) -> u16 {
+        2
+    }
     fn schema(&self) -> FieldSchema {
         FieldSchema::default()
     }
@@ -221,6 +233,7 @@ impl PickerMode for MenuMode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ratatui::style::Color;
 
     #[test]
     fn central_routes_have_matching_direct_actions_and_bash_routes() {
@@ -247,6 +260,30 @@ mod tests {
             ROUTES.len(),
             "route mnemonics must be unique"
         );
+    }
+
+    #[test]
+    fn the_full_action_bar_fits_the_menu_popup() {
+        let actions = MenuMode.actions();
+        let mut pills = actions
+            .iter()
+            .map(|action| crate::tui::Pill::new(&action.key_label, action.label, Color::Reset))
+            .collect::<Vec<_>>();
+        pills.push(crate::tui::Pill::new("⌥,", "settings", Color::Reset));
+        pills.push(crate::tui::Pill::new("esc", "mode/close", Color::Reset));
+        let (spans, _) = crate::tui::pill_row(&pills, Color::Reset, 0);
+        let action_bar_width = spans
+            .iter()
+            .map(|span| span.content.chars().count())
+            .sum::<usize>();
+
+        // Herdr's two border columns sit outside the TUI's drawable area. The
+        // two balanced rows share the total capacity of a 112-column popup.
+        assert!(
+            action_bar_width <= 2 * 110,
+            "{action_bar_width}-column action bar exceeds two 110-column rows"
+        );
+        assert_eq!(MenuMode.action_bar_rows(), 2);
     }
 
     #[test]

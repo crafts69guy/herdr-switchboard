@@ -19,6 +19,7 @@ leaving the terminal.
 | **Usage** | See how much of each AI subscription is spent, when it resets, when it renews, and how old the reading is. |
 | **Commands** | Search exact shell history and presets, then fill, run, copy, or forget a command. |
 | **Ports** | Inspect live TCP listeners and safely act on their owner processes. |
+| **Node Versions** | Search local and remote Node.js versions, then use, install, default, or remove them through fnm. |
 | **Git** | Review the current repo with tuicr, send saved feedback to a running agent, open a merge conflict, or hand it to lazygit. |
 | **Zen** | Give one pane the screen, centred between optional dimmed gutters. |
 
@@ -56,6 +57,7 @@ Optional integrations are feature-scoped:
 - [`gh`](https://cli.github.com) for the Git pull-request row.
 - [`lazygit`](https://github.com/jesseduffield/lazygit) for staging and commits.
 - [`eza`](https://github.com/eza-community/eza) for richer repository trees.
+- [`fnm`](https://github.com/Schniz/fnm) for the Node Versions manager and opt-in project activation.
 
 ### Install and bind the menu
 
@@ -128,6 +130,7 @@ Bind the central menu or any action directly as a Herdr `plugin_action`:
 | `switchboard.usage` | Subscription quota for your AI agents. |
 | `switchboard.commands` | Shell history and configured presets. |
 | `switchboard.ports` | Live TCP listeners and owner processes. |
+| `switchboard.fnm` | Installed and remote Node.js versions managed through fnm. |
 | `switchboard.git` | The Git menu for the current repo. |
 | `switchboard.zen` | A picker for choosing a pane to focus. |
 | `switchboard.zen-toggle` | Zen-toggle the current pane without opening a picker. |
@@ -138,6 +141,21 @@ Bind the central menu or any action directly as a Herdr `plugin_action`:
 
 The forced-target actions `switchboard.open-workspace`, `switchboard.open-tab`, and
 `switchboard.open-split` open Projects with a fixed destination for `enter`.
+
+### Node Versions
+
+Open **Node Versions** from the central menu or invoke `switchboard.fnm` directly. Installed
+versions appear immediately while `fnm list-remote` loads in the background. Search normally or
+use `source:installed`, `source:remote`, `status:current`, and `status:default` filters.
+
+| Key | Action |
+| --- | --- |
+| `enter` | Use an installed version in the origin pane, or install a remote version. |
+| `alt-u` | Use the selected installed version. |
+| `alt-i` | Install the selected remote version. |
+| `alt-d` | Make an installed version the fnm default. |
+| `alt-x` | Uninstall after typing the exact version to confirm. |
+| `alt-r` | Refresh local and remote versions. |
 
 ## Configuration
 
@@ -160,6 +178,7 @@ Common settings include:
 | `projects.default_tab` | Start on `all`, `agents`, `workspaces`, `repos`, or `worktrees`. |
 | `projects.sort` | Sort the resting list by `recent`, `name`, or `kind`. |
 | `projects.preview` | Enable or disable the preview card. |
+| `fnm.enabled` | Show and activate project Node versions through an installed fnm. |
 | `commands.presets` | Add named commands with an origin or fixed cwd. |
 | `zen.width` / `zen.scrim` | Control the focused pane and its gutters. |
 | `zen.chrome` | Optionally hide Herdr pane chrome during a Zen session. |
@@ -174,7 +193,7 @@ behaviour.
 
 - [Architecture and performance](docs/architecture.md) — module seams, terminal lifecycle,
   responsive layout, effects, and tracing.
-- [Features and safety](docs/features.md) — Usage, AI Agents, Commands, Ports, and confirmations.
+- [Features and safety](docs/features.md) — Usage, AI Agents, Commands, Ports, Node Versions, and confirmations.
 - [Keybindings](docs/keybindings.md) — Insert/Normal modes and remapping.
 - [Zen mode](docs/zen.md) — layout restoration, scrims, and `zen.chrome` trade-offs.
 - [Git menu](docs/git-menu.md) — tuicr, pull requests, saved reviews, and lazygit.

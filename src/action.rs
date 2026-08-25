@@ -7,10 +7,15 @@ use std::os::unix::process::CommandExt;
 use std::process::Command;
 
 use anyhow::{anyhow, Result};
+use serde_json::Value;
 
 use crate::data::{Config, Entry, Kind};
+use crate::fnm::{self, Preparation};
 use crate::git::ReviewSpec;
+use crate::notify::{Event as NotifyEvent, Notifier};
 use crate::runner::CommandRunner;
+
+const FNM_ACTIVATE: &str = "fnm use --silent-if-unchanged >/dev/null 2>&1 || true";
 
 /// The targets `open_repo` understands.
 fn is_open_target(t: &str) -> bool {
@@ -157,40 +162,59 @@ fn open_repo(
     if !std::path::Path::new(path).is_dir() {
         return Err(anyhow!("path no longer exists: {path}"));
     }
-    match target {
-        "workspace" => herdr(
+    let preparation = if cfg.fnm.enabled {
+        fnm::prepare(runner, path)
+    } else {
+        Preparation::Unmanaged
+    };
+    let result = match target {
+        "workspace" => open_new_target(
             runner,
-            &[
-                "workspace",
-                "create",
-                "--cwd",
-                path,
-                "--label",
-                label,
-                "--focus",
+            vec![
+                "workspace".into(),
+                "create".into(),
+                "--cwd".into(),
+                path.into(),
+                "--label".into(),
+                label.into(),
+                "--focus".into(),
             ],
+            "/result/root_pane/pane_id",
+            &preparation,
+            cfg,
         ),
-        "tab" => herdr(
+        "tab" => open_new_target(
             runner,
-            &["tab", "create", "--cwd", path, "--label", label, "--focus"],
+            vec![
+                "tab".into(),
+                "create".into(),
+                "--cwd".into(),
+                path.into(),
+                "--label".into(),
+                label.into(),
+                "--focus".into(),
+            ],
+            "/result/root_pane/pane_id",
+            &preparation,
+            cfg,
         ),
         "split" => {
             let dir = cfg.projects.split_direction.clone();
             let ratio = cfg.projects.split_ratio.clone();
-            let mut args = vec!["pane", "split"];
+            let mut args = vec!["pane".into(), "split".into()];
             if !origin.is_empty() {
-                args.push(origin);
+                args.push(origin.into());
             }
-            args.extend_from_slice(&[
-                "--direction",
-                &dir,
-                "--ratio",
-                &ratio,
-                "--cwd",
-                path,
-                "--focus",
+            args.extend([
+                "--direction".into(),
+                dir,
+                "--ratio".into(),
+                ratio,
+                "--cwd".into(),
+                path.into(),
+                "--focus".into(),
             ]);
-            herdr(runner, &args)
+            open_new_target(runner, args, "/result/pane/pane_id", &preparation, cfg)
         }
         "pane" => {
             if origin.is_empty() {
@@ -203,7 +227,48 @@ fn open_repo(
             herdr(runner, &["pane", "send-keys", origin, "enter"])
         }
         other => Err(anyhow!("unknown target {other}")),
+    };
+    if result.is_ok() && preparation == Preparation::Unavailable {
+        Notifier::new(cfg).send(NotifyEvent::FnmActivationFailed, None);
     }
+    result
+}
+
+/// Create a fresh terminal with fnm's resolved PATH, then correct any shell
+/// startup file that replaced it. A create that succeeded remains successful
+/// even when its response cannot be decoded or the best-effort correction
+/// fails: the user already owns a live target at that point.
+fn open_new_target(
+    runner: &dyn CommandRunner,
+    mut args: Vec<String>,
+    pane_pointer: &str,
+    preparation: &Preparation,
+    cfg: &Config,
+) -> Result<()> {
+    let Preparation::Ready { path } = preparation else {
+        let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+        return herdr(runner, &refs);
+    };
+
+    args.extend(["--env".into(), format!("PATH={path}")]);
+    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    let output = runner
+        .output("herdr", &refs)
+        .map_err(|error| anyhow!("herdr {} failed: {error}", args[0]))?;
+    if !output.status.success() {
+        return Err(anyhow!("herdr {} create failed", args[0]));
+    }
+
+    let pane_id = serde_json::from_slice::<Value>(&output.stdout)
+        .ok()
+        .and_then(|value| value.pointer(pane_pointer)?.as_str().map(str::to_string));
+    let activated = pane_id
+        .as_deref()
+        .is_some_and(|pane_id| runner.ok("herdr", &["pane", "run", pane_id, FNM_ACTIVATE]));
+    if !activated {
+        Notifier::new(cfg).send(NotifyEvent::FnmActivationFailed, None);
+    }
+    Ok(())
 }
 
 fn focus_workspace(runner: &dyn CommandRunner, id: &str) -> Result<()> {
@@ -295,6 +360,13 @@ mod tests {
         dir
     }
 
+    fn fnm_config() -> Config {
+        let mut cfg = Config::default();
+        cfg.fnm.enabled = true;
+        cfg.common.notifications = false;
+        cfg
+    }
+
     #[test]
     fn dispatch_tab_builds_the_herdr_tab_create_verb() {
         let dir = tmp_repo("tab");
@@ -346,6 +418,152 @@ mod tests {
             ]
         );
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn fnm_workspace_open_injects_path_and_activates_the_returned_pane() {
+        let dir = tmp_repo("fnm-workspace");
+        std::fs::write(dir.join(".nvmrc"), "22\n").unwrap();
+        let path = dir.to_string_lossy().to_string();
+        let response = r#"{"result":{"root_pane":{"pane_id":"pane-new"}}}"#;
+        let runner = MockRunner::new()
+            .on("fnm exec", "/fnm/v22/bin:/usr/bin\n")
+            .on("workspace create", response);
+
+        dispatch(
+            &runner,
+            Some(repo_entry(&path)),
+            Accept::Workspace,
+            "pane-origin",
+            &fnm_config(),
+            ".",
+            "workspace",
+        )
+        .unwrap();
+
+        let calls = runner.calls();
+        assert_eq!(
+            calls[1],
+            vec![
+                "herdr",
+                "workspace",
+                "create",
+                "--cwd",
+                &path,
+                "--label",
+                "r",
+                "--focus",
+                "--env",
+                "PATH=/fnm/v22/bin:/usr/bin"
+            ]
+        );
+        assert_eq!(
+            calls[2],
+            vec!["herdr", "pane", "run", "pane-new", FNM_ACTIVATE]
+        );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn fnm_tab_and_split_parse_their_distinct_pane_responses() {
+        for (tag, accept, response, expected_prefix, pane) in [
+            (
+                "fnm-tab",
+                Accept::Tab,
+                r#"{"result":{"root_pane":{"pane_id":"pane-tab"}}}"#,
+                ["herdr", "tab", "create"],
+                "pane-tab",
+            ),
+            (
+                "fnm-split",
+                Accept::Split,
+                r#"{"result":{"pane":{"pane_id":"pane-split"}}}"#,
+                ["herdr", "pane", "split"],
+                "pane-split",
+            ),
+        ] {
+            let dir = tmp_repo(tag);
+            std::fs::write(dir.join(".node-version"), "22\n").unwrap();
+            let path = dir.to_string_lossy().to_string();
+            let runner = MockRunner::new()
+                .on("fnm exec", "/fnm/v22/bin:/usr/bin\n")
+                .on(&expected_prefix[1..].join(" "), response);
+
+            dispatch(
+                &runner,
+                Some(repo_entry(&path)),
+                accept,
+                "pane-origin",
+                &fnm_config(),
+                ".",
+                "workspace",
+            )
+            .unwrap();
+
+            let calls = runner.calls();
+            assert_eq!(&calls[1][..3], expected_prefix);
+            assert!(calls[1]
+                .windows(2)
+                .any(|pair| pair == ["--env", "PATH=/fnm/v22/bin:/usr/bin"]));
+            assert_eq!(calls[2], vec!["herdr", "pane", "run", pane, FNM_ACTIVATE]);
+            std::fs::remove_dir_all(dir).ok();
+        }
+    }
+
+    #[test]
+    fn fnm_current_pane_keeps_the_cd_only_activation_contract() {
+        let dir = tmp_repo("fnm-pane");
+        std::fs::write(dir.join(".nvmrc"), "22\n").unwrap();
+        let path = dir.to_string_lossy().to_string();
+        let runner = MockRunner::new().on("fnm exec", "/fnm/v22/bin:/usr/bin\n");
+
+        dispatch(
+            &runner,
+            Some(repo_entry(&path)),
+            Accept::Pane,
+            "pane-9",
+            &fnm_config(),
+            ".",
+            "workspace",
+        )
+        .unwrap();
+
+        let calls = runner.calls();
+        assert_eq!(calls.len(), 3);
+        assert_eq!(calls[1][..3], ["herdr", "pane", "send-text"]);
+        assert_eq!(
+            calls[2],
+            vec!["herdr", "pane", "send-keys", "pane-9", "enter"]
+        );
+        assert!(!calls
+            .iter()
+            .any(|call| call.windows(2).any(|pair| pair == ["pane", "run"])));
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn unavailable_fnm_version_does_not_block_the_open_or_add_an_env() {
+        let dir = tmp_repo("fnm-unavailable");
+        std::fs::write(dir.join(".nvmrc"), "999\n").unwrap();
+        let path = dir.to_string_lossy().to_string();
+        let runner = MockRunner::new().failing("fnm exec");
+
+        dispatch(
+            &runner,
+            Some(repo_entry(&path)),
+            Accept::Tab,
+            "pane-origin",
+            &fnm_config(),
+            ".",
+            "workspace",
+        )
+        .unwrap();
+
+        let calls = runner.calls();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[1][..3], ["herdr", "tab", "create"]);
+        assert!(!calls[1].iter().any(|arg| arg == "--env"));
+        std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]

@@ -689,6 +689,16 @@ fn repo_card(
     {
         lines.push(meta("last", &last, width, p));
     }
+    if cfg.fnm.enabled {
+        if let Some(declaration) = crate::fnm::inspect(dir) {
+            lines.push(meta(
+                "node",
+                &format!("{} · {}", declaration.requested, declaration.source),
+                width,
+                p,
+            ));
+        }
+    }
     lines.push(meta("path", &tilde(dir), width, p));
     lines.push(Line::raw(""));
     lines.push(rule("files", width, p));
@@ -955,6 +965,52 @@ mod tests {
         assert!(out.contains("clean"), "{out}");
         assert!(out.contains("initial commit"), "{out}");
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn repo_card_shows_the_declared_node_version_only_when_fnm_is_enabled() {
+        let dir = std::env::temp_dir().join(format!("ghq-node-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(".nvmrc"), "22.16.0\n").unwrap();
+        let entry = Entry {
+            kind: Kind::Repo,
+            id: "o/node".into(),
+            dir: Some(dir.to_string_lossy().to_string()),
+            label: "node".into(),
+            icon: String::new(),
+            icon_color: Color::Reset,
+            primary: String::new(),
+            secondary: String::new(),
+            search: String::new(),
+        };
+        let runner = MockRunner::new();
+        let mut cfg = Config::default();
+
+        let disabled = flat(&repo_card(
+            &entry,
+            &runner,
+            ".",
+            &cfg,
+            60,
+            &ink(),
+            &Theme::default(),
+        ));
+        assert!(!disabled.contains("22.16.0"), "{disabled}");
+
+        cfg.fnm.enabled = true;
+        let enabled = flat(&repo_card(
+            &entry,
+            &runner,
+            ".",
+            &cfg,
+            60,
+            &ink(),
+            &Theme::default(),
+        ));
+        assert!(enabled.contains("node"), "{enabled}");
+        assert!(enabled.contains("22.16.0 · .nvmrc"), "{enabled}");
+        assert!(!runner.calls().iter().any(|call| call[0] == "fnm"));
+        std::fs::remove_dir_all(dir).ok();
     }
 
     /// A throwaway directory holding a `.git` of the given shape.

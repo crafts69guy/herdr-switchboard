@@ -19,6 +19,7 @@ case "$ACTION_ID" in
   commands) entrypoint="commands" ;;
   usage) entrypoint="usage" ;;
   ports) entrypoint="ports" ;;
+  fnm) entrypoint="fnm" ;;
   settings) entrypoint="settings" ;;
   git) entrypoint="git" ;;
   zen) entrypoint="zen" ;;
@@ -34,6 +35,7 @@ esac
 
 case "$entrypoint" in
   projects|git|clone) command -v ghq >/dev/null 2>&1 || die "ghq is required — brew install ghq." "ghq not found on PATH" ;;
+  fnm) command -v fnm >/dev/null 2>&1 || die "fnm is required — install it from https://fnm.vercel.app." "fnm not found on PATH" ;;
 esac
 
 pane_id="${SWITCHBOARD_ORIGIN_PANE_ID:-$(context_pane_id)}"
@@ -70,7 +72,7 @@ wait_for_handoff_parent() {
 # floating overlay, opened with ⌥, from the switcher.)
 placement=(--placement overlay)
 case "$entrypoint" in
-  menu) placement=(--placement popup --width 76 --height 24) ;;
+  menu) placement=(--placement popup --width 112 --height 28) ;;
   agents) placement=(--placement popup --width 100 --height 26) ;;
   usage) placement=(--placement popup --width 96 --height 26) ;;
   settings) placement=(--placement popup --width 100 --height 32) ;;

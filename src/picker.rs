@@ -79,6 +79,12 @@ pub trait PickerMode {
     fn list_pct(&self) -> u16 {
         42
     }
+    /// Number of command-bar rows reserved below the picker body. Most modes
+    /// have a short contextual bar; the central menu exposes every route and
+    /// uses two balanced rows so the shortcuts stay scannable.
+    fn action_bar_rows(&self) -> u16 {
+        1
+    }
     fn reload_config(&mut self, _config: &crate::config::Config) -> Result<()> {
         Ok(())
     }
@@ -111,9 +117,14 @@ struct State {
     /// Where the preview card sat at the last draw, so a wheel turn can ask
     /// whether the pointer is over it rather than over the list.
     preview_area: Rect,
-    /// The command bar's row and its pills, each carrying what it runs.
-    bar_row: u16,
-    bar_zones: Vec<(u16, u16, PillAct)>,
+    /// Each command-bar row and the pills it carries. Rows stay paired with
+    /// their measured zones so wrapped bars remain click-safe.
+    bar_rows: Vec<BarRow>,
+}
+
+struct BarRow {
+    y: u16,
+    zones: Vec<(u16, u16, PillAct)>,
 }
 
 /// What a command-bar pill does when clicked. `Run` carries the action *id*
@@ -146,8 +157,7 @@ impl State {
             list_state: ListState::default(),
             preview_scroll: 0,
             preview_area: Rect::default(),
-            bar_row: 0,
-            bar_zones: Vec::new(),
+            bar_rows: Vec::new(),
         };
         state.recompute(&FieldSchema::default());
         state
@@ -283,8 +293,11 @@ impl<M: PickerMode> Surface for PickerSurface<'_, M> {
                     MouseEventKind::ScrollDown => self.state.move_selection(1),
                     MouseEventKind::ScrollUp => self.state.move_selection(-1),
                     MouseEventKind::Down(MouseButton::Left) => {
-                        if let Some(act) =
-                            tui::zone_at(&self.state.bar_zones, self.state.bar_row, at)
+                        if let Some(act) = self
+                            .state
+                            .bar_rows
+                            .iter()
+                            .find_map(|row| tui::zone_at(&row.zones, row.y, at))
                         {
                             return Ok(match act {
                                 PillAct::Close => Transition::Exit(PickerExit::Close),
@@ -494,7 +507,7 @@ fn draw<M: PickerMode>(
     let rows = Layout::vertical([
         Constraint::Length(3),
         Constraint::Min(3),
-        Constraint::Length(1),
+        Constraint::Length(action_bar_height(mode.action_bar_rows())),
     ])
     .split(area);
     let accent = theme.or(mode.accent_slot(), Color::Cyan);
@@ -770,14 +783,66 @@ fn draw<M: PickerMode>(
         .iter()
         .map(|(p, _)| Pill::new(p.key, p.label, p.color))
         .collect();
-    let (spans, zones) = tui::pill_row(&pills, ink, rows[2].x);
-    state.bar_row = rows[2].y;
-    state.bar_zones = zones
-        .into_iter()
-        .zip(caps.iter())
-        .map(|((a, b), (_, act))| (a, b, *act))
-        .collect();
-    frame.render_widget(Paragraph::new(Line::from(spans)), rows[2]);
+    state.bar_rows.clear();
+    for (row_index, range) in balanced_bar_ranges(
+        &pills,
+        mode.action_bar_rows().max(1) as usize,
+        rows[2].width,
+    )
+    .into_iter()
+    .enumerate()
+    {
+        let row = Rect::new(
+            rows[2].x,
+            rows[2].y + row_index as u16 * 2,
+            rows[2].width,
+            1,
+        );
+        let (spans, zones) = tui::pill_row(&pills[range.clone()], ink, row.x);
+        state.bar_rows.push(BarRow {
+            y: row.y,
+            zones: zones
+                .into_iter()
+                .zip(caps[range].iter())
+                .map(|((a, b), (_, act))| (a, b, *act))
+                .collect(),
+        });
+        frame.render_widget(Paragraph::new(Line::from(spans)), row);
+    }
+}
+
+fn action_bar_height(rows: u16) -> u16 {
+    rows.max(1).saturating_mul(2).saturating_sub(1)
+}
+
+fn balanced_bar_ranges(
+    pills: &[Pill<'_>],
+    requested_rows: usize,
+    width: u16,
+) -> Vec<std::ops::Range<usize>> {
+    if pills.is_empty() {
+        return Vec::new();
+    }
+    let rows = requested_rows.max(1).min(pills.len());
+    let pill_width = |pill: &Pill<'_>| pill.key.chars().count() + pill.label.chars().count() + 4;
+    let total = pills.iter().map(pill_width).sum::<usize>();
+    let target = total
+        .div_ceil(rows)
+        .min(width.saturating_sub(1).max(1) as usize);
+    let mut ranges = Vec::with_capacity(rows);
+    let mut start = 0;
+    let mut used = 0;
+    for (index, pill) in pills.iter().enumerate() {
+        let next = pill_width(pill);
+        if index > start && used + next > target && ranges.len() + 1 < rows {
+            ranges.push(start..index);
+            start = index;
+            used = 0;
+        }
+        used += next;
+    }
+    ranges.push(start..pills.len());
+    ranges
 }
 
 /// The primary action for the selected row: the first one the mode does not
@@ -923,16 +988,37 @@ mod tests {
     fn the_pill_zones_land_on_the_pills_they_name() {
         let mut state = State::new(vec![test_item("a")], false);
         let buffer = render(&mut state);
-        let row = state.bar_row;
-        assert!(!state.bar_zones.is_empty());
-        for &(a, b, act) in &state.bar_zones {
-            let text: String = (a..b).map(|x| buffer[(x, row)].symbol()).collect();
-            assert!(!text.trim().is_empty(), "zone for a pill covers blanks");
-            if act == PillAct::Close {
-                assert!(text.contains("esc"), "{text}");
+        assert!(!state.bar_rows.is_empty());
+        for row in &state.bar_rows {
+            for &(a, b, act) in &row.zones {
+                let text: String = (a..b).map(|x| buffer[(x, row.y)].symbol()).collect();
+                assert!(!text.trim().is_empty(), "zone for a pill covers blanks");
+                if act == PillAct::Close {
+                    assert!(text.contains("esc"), "{text}");
+                }
             }
         }
-        assert_eq!(state.bar_zones.last().unwrap().2, PillAct::Close);
+        assert_eq!(
+            state.bar_rows.last().unwrap().zones.last().unwrap().2,
+            PillAct::Close
+        );
+    }
+
+    #[test]
+    fn requested_action_rows_balance_even_when_every_pill_fits_on_one_line() {
+        let pills = [
+            Pill::new("a", "alpha", Color::Reset),
+            Pill::new("b", "beta", Color::Reset),
+            Pill::new("c", "charlie", Color::Reset),
+            Pill::new("d", "delta", Color::Reset),
+        ];
+        let ranges = balanced_bar_ranges(&pills, 2, 200);
+
+        assert_eq!(ranges.len(), 2);
+        assert_eq!(ranges.first().unwrap().start, 0);
+        assert_eq!(ranges.last().unwrap().end, pills.len());
+        assert!(ranges.iter().all(|range| !range.is_empty()));
+        assert_eq!(action_bar_height(2), 3, "two rows keep one blank line");
     }
 
     /// The preview's rect is what tells a wheel turn whether it is over the card

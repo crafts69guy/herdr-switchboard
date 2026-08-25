@@ -27,7 +27,7 @@ Public plugin actions enter through `bin/action.sh`. It captures the origin pane
 opening the requested Herdr surface:
 
 - Compact popups: Menu, AI Agents, Usage, standalone Settings, and Changelog.
-- Full overlays: Projects, Commands, Ports, Zen, Git, Clone, and Update.
+- Full overlays: Projects, Commands, Ports, Node Versions, Zen, Git, Clone, and Update.
 - No pane: `switchboard.zen-toggle` acts directly on the origin pane.
 
 The in-Projects settings form and cheatsheets are floating TUI overlays, distinct from Herdr popup
@@ -39,8 +39,9 @@ covers one-time preparation.
 
 The Projects Picker loads Herdr agents and workspaces, ghq repositories, and Git worktree metadata
 before claiming the terminal, so its first frame contains a usable Navigator. An empty result hands
-off to Clone. Repository and worktree Inspectors include Git state, recent commits, a file tree, and
-an optional README excerpt. Selection actions use the captured origin or an ID returned by Herdr;
+off to Clone. Repository and worktree Inspectors include Git state, recent commits, a file tree,
+an optional README excerpt, and opt-in filesystem-only Node declaration inspection. fnm resolution
+runs only after selection. Selection actions use the captured origin or an ID returned by Herdr;
 they never guess identifiers.
 
 Usage keeps its specialized quota visualization. Its offline provider is read before terminal
@@ -49,6 +50,10 @@ socket. It is the only credential-reading surface and the only in-process HTTP c
 its pane process with `bin/review.sh` after selection; on-demand pull-request/list and file-count
 effects run in the background while its surface remains responsive. The update check uses a
 detached child, and Clone remains an explicitly invoked Bash flow in `bin/get.sh`.
+
+Node Versions loads the local fnm catalogue before claiming the terminal, then crosses a typed
+background effect seam for `fnm list-remote`. Install, default, uninstall, and origin-pane use run
+only after the picker restores the terminal; uninstall requires the exact version as confirmation.
 
 ## Module seams
 
@@ -64,6 +69,8 @@ the module inventory.
 | `config` | Typed section fields, `parse`, `try_load`, finite `value_for_cli` | Namespaced deserialization, defaults, validation |
 | `source::ProjectCatalog` | `new`, `load`, canonical `kinds` | Source enablement and load order |
 | `data` | Source loaders, entry and browse types, `Theme` | Response parsing and presentation mapping |
+| `fnm` | `inspect`, `prepare`, `Declaration`, `Preparation` | Version-file precedence, recursive lookup, engine parsing, installed PATH resolution |
+| `fnm_manager` | `main` | Local/remote version parsing, background remote lookup, safe fnm mutations, origin-pane activation |
 | `keymap` | `Chord`, `Action`, `Keymap`, canonical chord conversion | Mode tables, overrides, labels |
 | `projects` / `picker` / `git` | `Surface` adapters and typed outputs | Surface-specific reduction, composition, and Git's saved-review visibility state |
 | `agent_handoff` | `discover_targets`, `deliver_prompt` | Promptable-agent parsing, worktree scoping, origin preference, non-waiting delivery |

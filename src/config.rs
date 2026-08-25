@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 pub struct Config {
     pub common: Common,
     pub projects: Projects,
+    pub fnm: Fnm,
     pub commands: Commands,
     pub ports: Ports,
     pub clone: CloneFlow,
@@ -77,6 +78,12 @@ pub struct Projects {
     pub preview_position: String,
     pub preview_size: String,
     pub preview_readme: bool,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub struct Fnm {
+    pub enabled: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -299,6 +306,7 @@ impl Config {
             "preview_position" => self.projects.preview_position.clone(),
             "preview_size" => self.projects.preview_size.clone(),
             "preview_readme" => self.projects.preview_readme.to_string(),
+            "fnm_enabled" => self.fnm.enabled.to_string(),
             "clone_source" => self.clone.source.clone(),
             "open_after_clone" => self.clone.open_after.to_string(),
             "base_branch" => self.git.base_branch.clone(),
@@ -401,6 +409,14 @@ keys.down = "ctrl-j,ctrl-n"
         let cfg = Config::default();
         assert_eq!(cfg.common.keymode, KeyMode::Normal);
         assert_eq!(cfg.value_for_cli("keymode").as_deref(), Some("normal"));
+        assert!(!cfg.fnm.enabled);
+        assert_eq!(cfg.value_for_cli("fnm_enabled").as_deref(), Some("false"));
+    }
+
+    #[test]
+    fn fnm_is_an_explicit_opt_in() {
+        let cfg = Config::parse("[fnm]\nenabled = true\n").unwrap();
+        assert!(cfg.fnm.enabled);
     }
 
     #[test]

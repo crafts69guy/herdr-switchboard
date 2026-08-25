@@ -46,9 +46,17 @@ assert_rooted_pane_command update-plugin.sh
 
 # Every public surface has a direct action; the menu is an additional route, not
 # a replacement for the hot picker bindings.
-for action in menu projects agents usage commands ports settings git zen zen-toggle clone changelog update open-workspace open-tab open-split; do
+for action in menu projects agents usage commands ports fnm settings git zen zen-toggle clone changelog update open-workspace open-tab open-split; do
   grep -Fq "id = \"$action\"" "$MANIFEST" || fail "action '$action' is not declared"
 done
+
+grep -Eq '^  fnm\) entrypoint="fnm" ;;$' "$ROOT/bin/action.sh" ||
+  fail "the fnm action must open the dedicated fnm pane"
+
+# Two balanced action rows need at most 104 drawable columns. Keep a small
+# margin around them without turning the central menu into a near-full overlay.
+grep -Eq '^  menu\) placement=\(--placement popup --width 112 --height 28\) ;;$' "$ROOT/bin/action.sh" ||
+  fail "the central menu must use the fitted 112x28 popup"
 
 # AI Agents is a compact centered popup, not a mostly empty full-screen overlay.
 grep -Eq '^  agents\) placement=\(--placement popup --width 100 --height 26\) ;;$' "$ROOT/bin/action.sh" ||

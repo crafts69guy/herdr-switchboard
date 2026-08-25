@@ -70,6 +70,7 @@ pub(super) fn setting_path(key: &str) -> (&'static str, &str) {
         "clone_source" => ("clone", "source"),
         "open_after_clone" => ("clone", "open_after"),
         "base_branch" | "all_files_warn" => ("git", key),
+        "fnm_enabled" => ("fnm", "enabled"),
         "history_limit" => ("commands", key),
         "command_sort" => ("commands", "sort"),
         "refresh_interval_ms" => ("ports", key),
@@ -92,6 +93,7 @@ fn is_bool_setting(key: &str) -> bool {
             | "include_workspaces"
             | "include_worktrees"
             | "preview_readme"
+            | "fnm_enabled"
             | "open_after_clone"
             | "zen_scrim"
     )
