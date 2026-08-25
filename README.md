@@ -17,7 +17,7 @@ leaving the terminal.
 | **Projects** | Jump to agents and workspaces, or open ghq repos and worktrees in a workspace, tab, split, or the current pane. |
 | **AI Agents** | Start any installed Herdr AI integration in the current pane or a fresh target. |
 | **Usage** | See how much of each AI subscription is spent, when it resets, when it renews, and how old the reading is. |
-| **Commands** | Search exact shell history and presets, then fill, run, copy, or forget a command. |
+| **Commands** | Search shell history and presets, star local favorites, then fill, run, copy, or forget a command. |
 | **Ports** | Inspect live TCP listeners and safely act on their owner processes. |
 | **Node Versions** | Search local and remote Node.js versions, then use, install, default, or remove them through fnm. |
 | **Git** | Review the current repo with tuicr, send saved feedback to a running agent, open a merge conflict, or hand it to lazygit. |

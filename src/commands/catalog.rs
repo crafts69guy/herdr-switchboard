@@ -25,6 +25,8 @@ pub(super) struct CommandRecord {
     pub command: String,
     pub label: String,
     pub sources: Vec<String>,
+    #[serde(default)]
+    pub starred: bool,
     pub selected_count: u64,
     pub last_selected_at: u64,
     pub last_action: Option<SelectionAction>,
@@ -191,7 +193,20 @@ impl CommandCatalog {
             .filter(|record| allowed(&record.command, &denied, &excludes))
             .collect();
         records.sort_by_key(|record| std::cmp::Reverse(frecency(record)));
-        records.truncate(limit);
+        // `history_limit` bounds the ordinary imported catalogue, not the
+        // commands the user explicitly chose to keep. Retain every star and up
+        // to `limit` unstarred records while preserving the resting order.
+        let mut ordinary_left = limit;
+        records.retain(|record| {
+            if record.starred {
+                true
+            } else if ordinary_left > 0 {
+                ordinary_left -= 1;
+                true
+            } else {
+                false
+            }
+        });
         Ok(Self {
             records,
             diagnostics,
@@ -263,6 +278,23 @@ impl CommandCatalog {
         self.persist()
     }
 
+    pub fn toggle_star(&mut self, command: &str) -> Result<bool> {
+        let Some(index) = self
+            .records
+            .iter()
+            .position(|record| record.command == command)
+        else {
+            anyhow::bail!("command is no longer in the catalog")
+        };
+        let previous = self.records[index].starred;
+        self.records[index].starred = !previous;
+        if let Err(error) = self.persist() {
+            self.records[index].starred = previous;
+            return Err(error);
+        }
+        Ok(!previous)
+    }
+
     fn persist(&self) -> Result<()> {
         if let Some(path) = &self.deny_path {
             let mut hashes: Vec<_> = self.denied.iter().cloned().collect();
@@ -281,6 +313,7 @@ pub(super) fn empty_record(command: String, label: String) -> CommandRecord {
         command,
         label,
         sources: Vec::new(),
+        starred: false,
         selected_count: 0,
         last_selected_at: 0,
         last_action: None,
@@ -390,7 +423,7 @@ fn safe_label(label: &str) -> String {
         .collect()
 }
 
-fn read_records(path: &Path) -> Result<Vec<CommandRecord>> {
+pub(super) fn read_records(path: &Path) -> Result<Vec<CommandRecord>> {
     if !path.exists() {
         return Ok(Vec::new());
     }

@@ -112,13 +112,16 @@ Choose which providers appear, and in what order, with `usage.providers`.
 ## Commands
 
 Commands combines zsh, Bash, or fish history with `[[commands.presets]]`, deduplicated by exact
-command text. It supports filling, running, copying, and forgetting commands without normalising
-their contents.
+command text. It supports filling, running, copying, starring, and forgetting commands without
+normalising their contents. Press `ctrl-s` to toggle the selected command's local star, and use
+`tab` / `shift-tab` or the clickable tab strip to move between History and Starred. The Starred
+tab retains the same fill, run, copy, sort, and forget actions as History.
 
 Before persistence, common credential patterns and expressions from `commands.history_exclude` are
 removed. Forgotten commands are fingerprinted in a denylist so the next shell import does not add
-them again. Multiline execution requires typed confirmation, and notifications never include the
-full command.
+them again. Starred commands remain available when they fall out of shell history and do not count
+toward `commands.history_limit`; only unstar or forget removes that protection. Multiline execution
+requires typed confirmation, and notifications never include the full command.
 
 The available orders are frecency, recent, frequency, and alphabetical.
 

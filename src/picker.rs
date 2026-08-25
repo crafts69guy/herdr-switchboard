@@ -30,9 +30,27 @@ pub struct PickerItem {
     /// It gets its own gutter, so put facts here that repeat down the whole list
     /// and would otherwise read as a ragged column of noise.
     pub trailing: Option<String>,
+    /// An optional semantic marker placed immediately before the trailing tag.
+    /// Its theme slot remains visible even on the selected row.
+    pub trailing_marker: Option<PickerMarker>,
     pub document: Document,
     pub preview: Vec<String>,
     pub accent_slot: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct PickerMarker {
+    text: String,
+    color_slot: String,
+}
+
+impl PickerMarker {
+    pub fn new(text: impl Into<String>, color_slot: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            color_slot: color_slot.into(),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -43,6 +61,13 @@ pub struct ActionSpec {
     pub key_label: String,
     pub label: &'static str,
     pub color_slot: &'static str,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PickerTab {
+    pub id: &'static str,
+    pub label: &'static str,
+    pub active: bool,
 }
 
 pub enum ActionOutcome {
@@ -85,6 +110,17 @@ pub trait PickerMode {
     fn action_bar_rows(&self) -> u16 {
         1
     }
+    /// Optional, local-only views over the mode's current catalogue. The shared
+    /// picker owns navigation and hit testing; the mode owns what each tab means.
+    fn tabs(&self) -> Vec<PickerTab> {
+        Vec::new()
+    }
+    fn activate_tab(&mut self, _id: &str) -> Option<Vec<PickerItem>> {
+        None
+    }
+    fn empty_message(&self) -> &str {
+        "Waiting for data…"
+    }
     fn reload_config(&mut self, _config: &crate::config::Config) -> Result<()> {
         Ok(())
     }
@@ -117,6 +153,8 @@ struct State {
     /// Where the preview card sat at the last draw, so a wheel turn can ask
     /// whether the pointer is over it rather than over the list.
     preview_area: Rect,
+    /// Tab click zones measured by the same loop that draws their labels.
+    tab_zones: Vec<(Rect, &'static str)>,
     /// Each command-bar row and the pills it carries. Rows stay paired with
     /// their measured zones so wrapped bars remain click-safe.
     bar_rows: Vec<BarRow>,
@@ -157,6 +195,7 @@ impl State {
             list_state: ListState::default(),
             preview_scroll: 0,
             preview_area: Rect::default(),
+            tab_zones: Vec::new(),
             bar_rows: Vec::new(),
         };
         state.recompute(&FieldSchema::default());
@@ -308,6 +347,15 @@ impl<M: PickerMode> Surface for PickerSurface<'_, M> {
                                 PillAct::Run(id) => self.invoke_selected(id),
                             });
                         }
+                        if let Some(id) = self
+                            .state
+                            .tab_zones
+                            .iter()
+                            .find(|(zone, _)| zone.contains(at))
+                            .map(|(_, id)| *id)
+                        {
+                            return Ok(self.activate_tab(id));
+                        }
                         if self.state.list_area.contains(at) {
                             let relative =
                                 mouse.row.saturating_sub(self.state.list_area.y) as usize;
@@ -334,6 +382,25 @@ impl<M: PickerMode> Surface for PickerSurface<'_, M> {
 }
 
 impl<M: PickerMode> PickerSurface<'_, M> {
+    fn activate_tab(&mut self, id: &'static str) -> Transition<PickerExit> {
+        let Some(items) = self.mode.activate_tab(id) else {
+            return Transition::Wait;
+        };
+        self.state.runtime_error = None;
+        self.state.replace(items, self.schema);
+        Transition::Redraw
+    }
+
+    fn cycle_tab(&mut self, delta: isize) -> Transition<PickerExit> {
+        let tabs = self.mode.tabs();
+        if tabs.len() < 2 {
+            return Transition::Wait;
+        }
+        let current = tabs.iter().position(|tab| tab.active).unwrap_or(0);
+        let next = (current as isize + delta).rem_euclid(tabs.len() as isize) as usize;
+        self.activate_tab(tabs[next].id)
+    }
+
     fn invoke_selected(&mut self, action: &'static str) -> Transition<PickerExit> {
         let Some(item) = self.state.selected_item() else {
             return Transition::Wait;
@@ -362,6 +429,12 @@ impl<M: PickerMode> PickerSurface<'_, M> {
         if key.modifiers == KeyModifiers::ALT && key.code == KeyCode::Char('k') {
             self.state.preview_scroll = self.state.preview_scroll.saturating_sub(1);
             return Ok(Transition::Redraw);
+        }
+        if key.code == KeyCode::Tab && key.modifiers.is_empty() {
+            return Ok(self.cycle_tab(1));
+        }
+        if key.code == KeyCode::BackTab {
+            return Ok(self.cycle_tab(-1));
         }
         if let Some(action) = self.actions.iter().find(|action| action.matches(key)) {
             if self.state.diagnostic.is_none() {
@@ -603,19 +676,29 @@ fn draw<M: PickerMode>(
     // indent of its own on top of that: a single uncounted leading space is enough
     // to push the last character of the gutter under the border.
     let row_width = state.list_area.width.saturating_sub(2) as usize;
-    let gutter = state
+    let tag_width = state
         .filtered
         .iter()
         .filter_map(|&index| state.items[index].trailing.as_deref())
         .map(|tag| tag.chars().count())
         .max()
         .unwrap_or(0);
+    let marker_width = state
+        .filtered
+        .iter()
+        .filter_map(|&index| state.items[index].trailing_marker.as_ref())
+        .map(|marker| marker.text.chars().count())
+        .max()
+        .unwrap_or(0);
+    let gutter = tag_width + marker_width + usize::from(marker_width > 0 && tag_width > 0);
     let emphasize = mode.emphasize_head();
     let items = state
         .filtered
         .iter()
-        .map(|index| {
+        .enumerate()
+        .map(|(visible_index, index)| {
             let item = &state.items[*index];
+            let selected = visible_index == state.selected;
             let slot = item
                 .accent_slot
                 .as_deref()
@@ -655,17 +738,25 @@ fn draw<M: PickerMode>(
                 Some((head, tail)) => {
                     push(
                         head,
-                        Style::default().fg(head_color).add_modifier(Modifier::BOLD),
+                        Style::default()
+                            .fg(if selected { accent } else { head_color })
+                            .add_modifier(Modifier::BOLD),
                         &mut spans,
                     );
                     push(" ", Style::default(), &mut spans);
-                    push(tail, Style::default().fg(text), &mut spans);
+                    push(
+                        tail,
+                        Style::default().fg(if selected { accent } else { text }),
+                        &mut spans,
+                    );
                 }
                 None => {
                     let style = if emphasize {
-                        Style::default().fg(head_color).add_modifier(Modifier::BOLD)
+                        Style::default()
+                            .fg(if selected { accent } else { head_color })
+                            .add_modifier(Modifier::BOLD)
                     } else {
-                        Style::default().fg(text)
+                        Style::default().fg(if selected { accent } else { text })
                     };
                     push(&item.primary, style, &mut spans);
                 }
@@ -674,7 +765,9 @@ fn draw<M: PickerMode>(
                 push("  ", Style::default(), &mut spans);
                 push(
                     &item.secondary,
-                    Style::default().fg(note_color).add_modifier(Modifier::DIM),
+                    Style::default()
+                        .fg(if selected { accent } else { note_color })
+                        .add_modifier(Modifier::DIM),
                     &mut spans,
                 );
             }
@@ -682,26 +775,67 @@ fn draw<M: PickerMode>(
             // Right-align the tag: pad out to the gutter, then draw it.
             if gutter > 0 {
                 let tag = item.trailing.clone().unwrap_or_default();
-                let pad = row_width
-                    .saturating_sub(used)
-                    .saturating_sub(tag.chars().count());
+                let pad = row_width.saturating_sub(used).saturating_sub(gutter);
                 spans.push(Span::raw(" ".repeat(pad)));
+                if marker_width > 0 {
+                    if let Some(marker) = &item.trailing_marker {
+                        spans.push(Span::raw(
+                            " ".repeat(marker_width.saturating_sub(marker.text.chars().count())),
+                        ));
+                        spans.push(Span::styled(
+                            marker.text.clone(),
+                            Style::default().fg(theme.or(&marker.color_slot, Color::Yellow)),
+                        ));
+                    } else {
+                        spans.push(Span::raw(" ".repeat(marker_width)));
+                    }
+                    if tag_width > 0 {
+                        spans.push(Span::raw(" "));
+                    }
+                }
+                spans.push(Span::raw(
+                    " ".repeat(tag_width.saturating_sub(tag.chars().count())),
+                ));
                 spans.push(Span::styled(
                     tag,
-                    Style::default().fg(muted).add_modifier(Modifier::DIM),
+                    Style::default()
+                        .fg(if selected { accent } else { muted })
+                        .add_modifier(Modifier::DIM),
                 ));
             }
             ListItem::new(Line::from(spans))
         })
         .collect::<Vec<_>>();
+    let tabs = mode.tabs();
+    state.tab_zones.clear();
+    let list_block = if tabs.is_empty() {
+        tui::boxed(mode.title(), title_color, border)
+    } else {
+        let mut spans = Vec::new();
+        let mut x = cols[0].x + 1;
+        for tab in tabs {
+            let label = format!(" {} ", tab.label);
+            let width = label.chars().count() as u16;
+            state
+                .tab_zones
+                .push((Rect::new(x, cols[0].y, width, 1), tab.id));
+            x = x.saturating_add(width + 1);
+            let style = if tab.active {
+                Style::default()
+                    .fg(ink)
+                    .bg(title_color)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(border)
+            };
+            spans.push(Span::styled(label, style));
+            spans.push(Span::raw(" "));
+        }
+        tui::framed(border).title(Line::from(spans))
+    };
     let list = List::new(items)
-        .block(tui::boxed(mode.title(), title_color, border))
-        .highlight_style(
-            Style::default()
-                .fg(accent)
-                .bg(surface)
-                .add_modifier(Modifier::BOLD),
-        )
+        .block(list_block)
+        .highlight_style(Style::default().bg(surface).add_modifier(Modifier::BOLD))
         .highlight_symbol("▌ ");
     state
         .list_state
@@ -717,8 +851,13 @@ fn draw<M: PickerMode>(
                 .collect::<Vec<_>>()
         })
         .unwrap_or_else(|| {
+            let message = if state.items.is_empty() {
+                mode.empty_message()
+            } else {
+                "No matches"
+            };
             vec![Line::from(Span::styled(
-                " Waiting for data…",
+                format!(" {message}"),
                 Style::default().fg(muted),
             ))]
         });
@@ -894,8 +1033,83 @@ mod tests {
         }
     }
 
+    struct TabbedMode {
+        active: &'static str,
+    }
+
+    impl TabbedMode {
+        fn items(&self) -> Vec<PickerItem> {
+            match self.active {
+                "starred" => vec![test_item("keep")],
+                _ => vec![test_item("keep"), test_item("other")],
+            }
+        }
+    }
+
+    impl PickerMode for TabbedMode {
+        fn title(&self) -> &str {
+            "Commands"
+        }
+        fn accent_slot(&self) -> &'static str {
+            "accent"
+        }
+        fn schema(&self) -> FieldSchema {
+            FieldSchema::default()
+        }
+        fn actions(&self) -> Vec<ActionSpec> {
+            Vec::new()
+        }
+        fn tabs(&self) -> Vec<PickerTab> {
+            vec![
+                PickerTab {
+                    id: "history",
+                    label: "History",
+                    active: self.active == "history",
+                },
+                PickerTab {
+                    id: "starred",
+                    label: "★ Starred",
+                    active: self.active == "starred",
+                },
+            ]
+        }
+        fn activate_tab(&mut self, id: &str) -> Option<Vec<PickerItem>> {
+            self.active = match id {
+                "history" => "history",
+                "starred" => "starred",
+                _ => return None,
+            };
+            Some(self.items())
+        }
+        fn empty_message(&self) -> &str {
+            "No stars — ctrl-s in History"
+        }
+        fn initial(&mut self) -> Result<Vec<PickerItem>> {
+            Ok(self.items())
+        }
+        fn execute(&mut self, _item_id: &str, _action: &str) -> Result<ActionOutcome> {
+            Ok(ActionOutcome::Close)
+        }
+    }
+
     fn render(state: &mut State) -> ratatui::buffer::Buffer {
         render_with_background(state, crate::config::Transparency::Transparent)
+    }
+
+    fn render_tabbed(mode: &TabbedMode, state: &mut State) -> ratatui::buffer::Buffer {
+        let theme = Theme::from_slots(&[
+            ("accent", "#6fd0a8"),
+            ("overlay0", "#6c7e76"),
+            ("panel_bg", "#101214"),
+        ]);
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 12)).unwrap();
+        let background =
+            tui::SurfaceBackground::resolve(&theme, crate::config::Transparency::Transparent);
+        terminal
+            .draw(|frame| draw(frame, mode, &theme, background, Color::Yellow, &[], state))
+            .unwrap();
+        terminal.backend().buffer().clone()
     }
 
     fn render_with_background(
@@ -933,6 +1147,7 @@ mod tests {
             primary: id.into(),
             secondary: format!("{id} detail"),
             trailing: None,
+            trailing_marker: None,
             document: Document {
                 fuzzy: id.into(),
                 fields: HashMap::new(),
@@ -963,6 +1178,125 @@ mod tests {
             "the mode title must not double the pane frame's: {}",
             rows[0]
         );
+    }
+
+    #[test]
+    fn a_mode_tab_strip_draws_and_measures_the_labels_together() {
+        let mode = TabbedMode { active: "history" };
+        let mut state = State::new(mode.items(), false);
+        let buffer = render_tabbed(&mode, &mut state);
+        let title_row: String = (0..80)
+            .map(|x| buffer[(x, state.list_area.y - 1)].symbol())
+            .collect();
+
+        assert!(title_row.contains("History"), "{title_row}");
+        assert!(title_row.contains("★ Starred"), "{title_row}");
+        assert_eq!(state.tab_zones.len(), 2);
+        for (zone, _) in &state.tab_zones {
+            let text: String = (zone.x..zone.right())
+                .map(|x| buffer[(x, zone.y)].symbol())
+                .collect();
+            assert!(!text.trim().is_empty(), "tab zone covers blanks");
+        }
+        assert_eq!(
+            buffer[(state.tab_zones[0].0.x, state.tab_zones[0].0.y)].bg,
+            Color::Yellow
+        );
+    }
+
+    #[test]
+    fn clicking_a_mode_tab_activates_the_view_its_label_names() {
+        let theme = Theme::from_slots(&[("accent", "#6fd0a8")]);
+        let background =
+            tui::SurfaceBackground::resolve(&theme, crate::config::Transparency::Transparent);
+        let schema = FieldSchema::default();
+        let actions = Vec::new();
+        let mut mode = TabbedMode { active: "history" };
+        let mut state = State::new(mode.items(), false);
+        let _ = render_tabbed(&mode, &mut state);
+        let target = state.tab_zones[1].0;
+        let mut surface = PickerSurface {
+            mode: &mut mode,
+            theme: &theme,
+            background,
+            title: Color::Yellow,
+            actions: &actions,
+            schema: &schema,
+            state: &mut state,
+        };
+
+        let _ = surface
+            .on_event(Event::Mouse(crossterm::event::MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: target.x,
+                row: target.y,
+                modifiers: KeyModifiers::NONE,
+            }))
+            .unwrap();
+
+        assert_eq!(mode.active, "starred");
+        assert_eq!(state.items.len(), 1);
+    }
+
+    #[test]
+    fn tab_keys_preserve_the_query_and_selected_item() {
+        let theme = Theme::from_slots(&[("accent", "#6fd0a8")]);
+        let background =
+            tui::SurfaceBackground::resolve(&theme, crate::config::Transparency::Transparent);
+        let schema = FieldSchema::default();
+        let actions = Vec::new();
+        let mut mode = TabbedMode { active: "history" };
+        let mut state = State::new(mode.items(), false);
+        state.query = "keep".into();
+        state.recompute(&schema);
+
+        {
+            let mut surface = PickerSurface {
+                mode: &mut mode,
+                theme: &theme,
+                background,
+                title: Color::Yellow,
+                actions: &actions,
+                schema: &schema,
+                state: &mut state,
+            };
+            let _ = surface
+                .on_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE))
+                .unwrap();
+        }
+
+        assert_eq!(mode.active, "starred");
+        assert_eq!(state.query, "keep");
+        assert_eq!(state.selected_item().unwrap().id, "keep");
+
+        let mut surface = PickerSurface {
+            mode: &mut mode,
+            theme: &theme,
+            background,
+            title: Color::Yellow,
+            actions: &actions,
+            schema: &schema,
+            state: &mut state,
+        };
+        let _ = surface
+            .on_key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT))
+            .unwrap();
+        assert_eq!(mode.active, "history");
+    }
+
+    #[test]
+    fn an_empty_tab_explains_how_to_populate_it() {
+        let mode = TabbedMode { active: "starred" };
+        let mut state = State::new(Vec::new(), false);
+        let buffer = render_tabbed(&mode, &mut state);
+        let mut screen = String::new();
+        for y in 0..12 {
+            for x in 0..80 {
+                screen.push_str(buffer[(x, y)].symbol());
+            }
+        }
+
+        assert!(screen.contains("No stars — ctrl-s in History"), "{screen}");
     }
 
     /// Borders recede in `overlay0` and captions are `title_color`, the way the
@@ -1097,8 +1431,12 @@ mod tests {
         }
     }
 
-    fn render_wide(state: &mut State, emphasize: bool) -> Vec<String> {
-        let theme = Theme::from_slots(&[("accent", "#6fd0a8"), ("overlay0", "#6c7e76")]);
+    fn render_wide_buffer(state: &mut State, emphasize: bool) -> ratatui::buffer::Buffer {
+        let theme = Theme::from_slots(&[
+            ("accent", "#6fd0a8"),
+            ("overlay0", "#6c7e76"),
+            ("peach", "#dcbb80"),
+        ]);
         let mut terminal =
             ratatui::Terminal::new(ratatui::backend::TestBackend::new(60, 10)).unwrap();
         let background =
@@ -1116,7 +1454,11 @@ mod tests {
                 )
             })
             .unwrap();
-        let buffer = terminal.backend().buffer().clone();
+        terminal.backend().buffer().clone()
+    }
+
+    fn render_wide(state: &mut State, emphasize: bool) -> Vec<String> {
+        let buffer = render_wide_buffer(state, emphasize);
         (0..10)
             .map(|y| (0..60).map(|x| buffer[(x, y)].symbol()).collect::<String>())
             .collect()
@@ -1128,6 +1470,7 @@ mod tests {
             primary: primary.into(),
             secondary: String::new(),
             trailing: Some(tag.into()),
+            trailing_marker: None,
             document: Document {
                 fuzzy: primary.into(),
                 fields: HashMap::new(),
@@ -1190,15 +1533,28 @@ mod tests {
         assert_eq!(ends[1], ends[2], "{rows:#?}");
     }
 
+    #[test]
+    fn a_trailing_marker_keeps_its_theme_colour_on_the_selected_row() {
+        let mut item = tagged("a", "cargo test", "2h");
+        item.trailing_marker = Some(PickerMarker::new("★", "peach"));
+        let mut state = State::new(vec![item], false);
+        let buffer = render_wide_buffer(&mut state, true);
+        let star_x = (0..60)
+            .find(|&x| buffer[(x, 4)].symbol() == "★")
+            .expect("star marker");
+
+        assert_eq!(buffer[(star_x, 4)].fg, Color::Rgb(0xdc, 0xbb, 0x80));
+        assert_eq!(buffer[(star_x, 4)].bg, Color::Indexed(236));
+    }
+
     /// The leading word is the program, and a mode can ask for it in its own
     /// colour so a wall of commands has something to scan down.
     #[test]
     fn the_head_is_emphasized_only_when_the_mode_asks_for_it() {
         let theme_accent = Color::Rgb(0x6f, 0xd0, 0xa8);
         let plain = |emphasize: bool| {
-            // Two items, and probe the *second*: `highlight_style` repaints the
-            // whole selected row, so the first one would report the selection's
-            // colour no matter what the head is styled with.
+            // Two items, and probe the second so the selection's accent does not
+            // hide whether an ordinary row asked to emphasize its head.
             let mut state = State::new(
                 vec![
                     tagged("a", "vim", "2h"),
@@ -1247,6 +1603,7 @@ mod tests {
             primary: id.into(),
             secondary: String::new(),
             trailing: None,
+            trailing_marker: None,
             document: Document {
                 fuzzy: id.into(),
                 fields: HashMap::new(),

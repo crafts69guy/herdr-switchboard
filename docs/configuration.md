@@ -71,7 +71,7 @@ install, select, make default, and uninstall versions through fnm.
 ### `[commands]`, `[ports]`, `[clone]`, and `[git]`
 
 - `commands.history_limit`, `commands.history_exclude`, and `commands.sort` control imported shell
-  history.
+  history. Starred commands are retained in addition to the unstarred `history_limit` records.
 - `[[commands.presets]]` adds a `label`, exact `command`, and `cwd` (`origin` or an absolute path).
 - `ports.refresh_interval_ms` controls listener refresh and must be at least 250.
 - `clone.source` chooses `clipboard` or an empty prompt; `clone.open_after` controls handoff.
@@ -124,6 +124,14 @@ Recent Projects selections live at:
 ```text
 ${XDG_STATE_HOME:-~/.local/state}/herdr-switchboard/recent.tsv
 ```
+
+Command selection history and local stars live at:
+
+```text
+${XDG_STATE_HOME:-~/.local/state}/herdr-switchboard/commands.json
+```
+
+The file is written with private permissions. Stars never leave the machine.
 
 Usage is the only credential-reading surface and the only in-process HTTP client. Codex is read
 from disk; Claude Code's card calls the usage endpoint behind the in-session `/usage` command,

@@ -147,6 +147,7 @@ impl PickerMode for AgentsMode {
                 primary: integration.title.clone(),
                 secondary: integration.status.clone(),
                 trailing: Some(integration.kind.clone()),
+                trailing_marker: None,
                 document: Document {
                     fuzzy: format!(
                         "{} {} {} {}",

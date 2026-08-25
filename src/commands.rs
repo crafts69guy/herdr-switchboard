@@ -194,4 +194,140 @@ mod tests {
         catalog.sort_records();
         assert_eq!(catalog.records()[0].command, "a-first");
     }
+
+    #[test]
+    fn old_command_state_defaults_to_unstarred() {
+        let root = env::temp_dir().join(format!(
+            "switchboard-command-old-state-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let history = root.join("commands.json");
+        fs::write(
+            &history,
+            r#"[{
+                "command":"cargo test",
+                "label":"",
+                "sources":["shell"],
+                "selected_count":0,
+                "last_selected_at":10,
+                "last_action":null,
+                "recent_cwds":[]
+            }]"#,
+        )
+        .unwrap();
+
+        let records = read_records(&history).unwrap();
+
+        assert_eq!(records.len(), 1);
+        assert!(!records[0].starred);
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn stars_persist_and_survive_the_ordinary_history_limit() {
+        let root =
+            env::temp_dir().join(format!("switchboard-command-stars-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let history = root.join("commands.json");
+        let mut kept = empty_record(
+            "kept even after shell history drops it".into(),
+            String::new(),
+        );
+        kept.starred = true;
+        let mut catalog = CommandCatalog::from_sources(
+            vec![
+                Import {
+                    command: "newest ordinary".into(),
+                    timestamp: 30,
+                },
+                Import {
+                    command: "older ordinary".into(),
+                    timestamp: 20,
+                },
+            ],
+            &[],
+            vec![kept],
+            HashSet::new(),
+            1,
+            &[],
+            Some(history.clone()),
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(catalog.records().len(), 2);
+        assert!(catalog.records().iter().any(|record| record.starred));
+        assert_eq!(
+            catalog
+                .records()
+                .iter()
+                .filter(|record| !record.starred)
+                .count(),
+            1
+        );
+
+        assert!(catalog.toggle_star("newest ordinary").unwrap());
+        let stored = read_records(&history).unwrap();
+        assert!(
+            stored
+                .iter()
+                .find(|record| record.command == "newest ordinary")
+                .unwrap()
+                .starred
+        );
+        assert!(!catalog.toggle_star("newest ordinary").unwrap());
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn a_failed_star_write_rolls_back_the_catalog() {
+        let root = env::temp_dir().join(format!(
+            "switchboard-command-star-failure-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let unwritable_history = root.join("commands.json");
+        fs::create_dir_all(&unwritable_history).unwrap();
+        let mut catalog = CommandCatalog::from_sources(
+            vec![Import {
+                command: "cargo test".into(),
+                timestamp: 10,
+            }],
+            &[],
+            Vec::new(),
+            HashSet::new(),
+            5_000,
+            &[],
+            Some(unwritable_history),
+            None,
+        )
+        .unwrap();
+
+        assert!(catalog.toggle_star("cargo test").is_err());
+        assert!(!catalog.records()[0].starred);
+        fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn a_star_uses_a_fixed_gutter_slot_and_preview_fact() {
+        let mut plain = empty_record("cargo test".into(), String::new());
+        let plain_item = command_item(&plain);
+        plain.starred = true;
+        let starred_item = command_item(&plain);
+
+        assert_eq!(
+            plain_item.trailing.as_ref().unwrap().chars().count(),
+            starred_item.trailing.as_ref().unwrap().chars().count()
+        );
+        assert!(plain_item.trailing_marker.is_none());
+        assert!(starred_item.trailing_marker.is_some());
+        assert!(starred_item
+            .preview
+            .iter()
+            .any(|line| line == "starred  yes"));
+    }
 }

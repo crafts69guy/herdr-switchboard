@@ -75,7 +75,7 @@ All pickers retain the shared search and navigation controls. Their command-spec
 | --- | --- |
 | AI Agents | `enter` current pane, `ctrl-t` new tab, `alt-w` new workspace. |
 | Usage | `r` re-read every provider, `esc` close. |
-| Commands | `enter` fill, `ctrl-enter` run, `alt-enter` run from historical cwd, `ctrl-y` copy, `ctrl-x` forget, `alt-s` sort. |
+| Commands | `tab` / `shift-tab` History/Starred, `ctrl-s` star, `enter` fill, `ctrl-enter` run, `alt-enter` historical cwd, `ctrl-y` copy, `ctrl-x` forget, `alt-s` sort. |
 | Ports | `enter` copy address, `ctrl-enter` HTTP, `alt-enter` HTTPS, `ctrl-w` workspace, `ctrl-x` TERM, `alt-x` KILL. |
 | Zen | `enter` focus the selected pane, `ctrl-x` leave the active Zen session. |
 
@@ -105,6 +105,7 @@ down = "ctrl-j,ctrl-n"
 
 [keys.commands]
 copy = "ctrl-g"
+star = "ctrl-b"
 ```
 
 A chord is a key with optional `ctrl-`, `alt-`, or `shift-` prefixes. Projects accepts multiple

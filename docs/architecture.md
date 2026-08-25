@@ -97,7 +97,9 @@ uses the same state at every width:
 
 The command vocabulary is typed. Projects uses `keymap::Action`; each shared picker supplies its
 scoped `ActionSpec` values while the host provides lifecycle behavior. A displayed key cap is
-derived from the same parsed chord that handles the event.
+derived from the same parsed chord that handles the event. A picker mode may also expose local-only
+`PickerTab` views; the shared picker owns tab navigation, rendering, and hit zones while the mode
+owns the filtered items behind each tab.
 
 ## Extension rules
 

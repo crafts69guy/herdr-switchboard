@@ -20,6 +20,11 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Commands can keep a local starred list.** Press `ctrl-s` to star or unstar a command, then use
+  the History and Starred tabs from the keyboard or mouse. Starred rows carry a peach `★` that
+  remains visible on the selected row, keep every existing command action, persist privately on
+  disk, and stay available beyond the ordinary history limit.
+
 - **Node Versions is a full fnm manager.** Open it from the Switchboard menu to search installed
   and remote Node.js versions, use one in the originating pane, install it, make it the default,
   refresh the catalogue, or uninstall it after typing the exact version to confirm.

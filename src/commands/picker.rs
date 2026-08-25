@@ -13,7 +13,9 @@ use crate::clipboard::copy_text;
 use crate::config::Config;
 use crate::data::Theme;
 use crate::notify::{Event as NotifyEvent, Notifier};
-use crate::picker::{self, ActionOutcome, ActionSpec, PickerItem, PickerMode};
+use crate::picker::{
+    self, ActionOutcome, ActionSpec, PickerItem, PickerMarker, PickerMode, PickerTab,
+};
 use crate::query::{Document, FieldSchema, MatchKind};
 
 pub(super) fn run(cfg: Config, theme: Theme) -> Result<()> {
@@ -23,16 +25,24 @@ pub(super) fn run(cfg: Config, theme: Theme) -> Result<()> {
 
 struct CommandMode {
     catalog: CommandCatalog,
+    tab: CommandTab,
     origin_pane: String,
     origin_cwd: Option<String>,
     notifier: Notifier,
     bindings: HashMap<String, String>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CommandTab {
+    History,
+    Starred,
+}
+
 impl CommandMode {
     fn new(cfg: &Config) -> Result<Self> {
         Ok(Self {
             catalog: CommandCatalog::load(cfg)?,
+            tab: CommandTab::History,
             origin_pane: env::var("SWITCHBOARD_ORIGIN_PANE_ID").unwrap_or_default(),
             origin_cwd: env::var("SWITCHBOARD_ORIGIN_CWD")
                 .ok()
@@ -47,25 +57,29 @@ impl CommandMode {
             .catalog
             .records()
             .iter()
+            .filter(|record| self.tab == CommandTab::History || record.starred)
             .map(command_item)
             .collect::<Vec<_>>();
-        if let Some(first) = items.first_mut() {
-            first.preview.extend(
-                self.catalog
-                    .diagnostics()
-                    .iter()
-                    .map(|diagnostic| format!("warning  {diagnostic}")),
-            );
-        } else if !self.catalog.diagnostics().is_empty() {
-            items.push(PickerItem {
-                id: "__diagnostic".into(),
-                primary: "No safe commands".into(),
-                secondary: "review preset diagnostics".into(),
-                trailing: None,
-                document: Document::default(),
-                preview: self.catalog.diagnostics().to_vec(),
-                accent_slot: Some("red".into()),
-            });
+        if self.tab == CommandTab::History {
+            if let Some(first) = items.first_mut() {
+                first.preview.extend(
+                    self.catalog
+                        .diagnostics()
+                        .iter()
+                        .map(|diagnostic| format!("warning  {diagnostic}")),
+                );
+            } else if !self.catalog.diagnostics().is_empty() {
+                items.push(PickerItem {
+                    id: "__diagnostic".into(),
+                    primary: "No safe commands".into(),
+                    secondary: "review preset diagnostics".into(),
+                    trailing: None,
+                    trailing_marker: None,
+                    document: Document::default(),
+                    preview: self.catalog.diagnostics().to_vec(),
+                    accent_slot: Some("red".into()),
+                });
+            }
         }
         items
     }
@@ -86,6 +100,37 @@ impl PickerMode for CommandMode {
     /// against a mostly empty preview.
     fn list_pct(&self) -> u16 {
         58
+    }
+    fn action_bar_rows(&self) -> u16 {
+        2
+    }
+    fn tabs(&self) -> Vec<PickerTab> {
+        vec![
+            PickerTab {
+                id: "history",
+                label: "History",
+                active: self.tab == CommandTab::History,
+            },
+            PickerTab {
+                id: "starred",
+                label: "★ Starred",
+                active: self.tab == CommandTab::Starred,
+            },
+        ]
+    }
+    fn activate_tab(&mut self, id: &str) -> Option<Vec<PickerItem>> {
+        self.tab = match id {
+            "history" => CommandTab::History,
+            "starred" => CommandTab::Starred,
+            _ => return None,
+        };
+        Some(self.items())
+    }
+    fn empty_message(&self) -> &str {
+        match self.tab {
+            CommandTab::History => "No safe commands",
+            CommandTab::Starred => "No stars — ctrl-s in History",
+        }
     }
     fn schema(&self) -> FieldSchema {
         FieldSchema::new(
@@ -141,6 +186,14 @@ impl PickerMode for CommandMode {
                 color_slot: "peach",
             },
             ActionSpec {
+                id: "star",
+                key: KeyCode::Char('s'),
+                modifiers: KeyModifiers::CONTROL,
+                key_label: "^s".into(),
+                label: "star/unstar",
+                color_slot: "yellow",
+            },
+            ActionSpec {
                 id: "forget",
                 key: KeyCode::Char('x'),
                 modifiers: KeyModifiers::CONTROL,
@@ -178,6 +231,10 @@ impl PickerMode for CommandMode {
             .context("command disappeared")?;
         if action == "sort" {
             self.catalog.cycle_sort();
+            return Ok(ActionOutcome::StayOpen);
+        }
+        if action == "star" {
+            self.catalog.toggle_star(&record.command)?;
             return Ok(ActionOutcome::StayOpen);
         }
         match action {
@@ -246,6 +303,7 @@ pub(super) fn command_item(record: &CommandRecord) -> PickerItem {
     preview.extend([
         String::new(),
         format!("source  {source}"),
+        format!("starred  {}", if record.starred { "yes" } else { "no" }),
         format!("selected  {} ×", record.selected_count),
         // A unix timestamp is not a fact anyone can read off a card. Both forms
         // are here because the relative one answers "is this stale?" at a glance
@@ -275,7 +333,8 @@ pub(super) fn command_item(record: &CommandRecord) -> PickerItem {
             "shell" => String::new(),
             other => other.to_string(),
         },
-        trailing: Some(ago(record.last_selected_at)),
+        trailing: Some(format!("{:>4}", ago(record.last_selected_at))),
+        trailing_marker: record.starred.then(|| PickerMarker::new("★", "peach")),
         document: Document {
             fuzzy: format!("{} {} {} {}", record.command, record.label, cwd, source),
             fields: picker::fields(&[
@@ -287,5 +346,65 @@ pub(super) fn command_item(record: &CommandRecord) -> PickerItem {
         },
         preview,
         accent_slot: Some("blue".into()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::{HashMap, HashSet};
+
+    use super::*;
+    use crate::commands::catalog::{empty_record, CommandCatalog};
+
+    fn command_mode() -> CommandMode {
+        let mut starred = empty_record("cargo test".into(), String::new());
+        starred.starred = true;
+        let ordinary = empty_record("git status".into(), String::new());
+        CommandMode {
+            catalog: CommandCatalog::from_sources(
+                Vec::new(),
+                &[],
+                vec![starred, ordinary],
+                HashSet::new(),
+                5_000,
+                &[],
+                None,
+                None,
+            )
+            .unwrap(),
+            tab: CommandTab::History,
+            origin_pane: String::new(),
+            origin_cwd: None,
+            notifier: Notifier::silent(),
+            bindings: HashMap::new(),
+        }
+    }
+
+    #[test]
+    fn starred_is_a_full_action_subset_of_history() {
+        let mut mode = command_mode();
+        assert_eq!(mode.items().len(), 2);
+        assert_eq!(mode.action_bar_rows(), 2);
+        assert!(mode.actions().iter().any(|action| action.id == "star"));
+
+        let starred = mode.activate_tab("starred").unwrap();
+
+        assert_eq!(starred.len(), 1);
+        assert_eq!(starred[0].primary, "cargo test");
+        assert_eq!(mode.actions().len(), 7);
+    }
+
+    #[test]
+    fn unstar_removes_the_row_from_starred_but_not_history() {
+        let mut mode = command_mode();
+        mode.activate_tab("starred").unwrap();
+        let id = fingerprint("cargo test");
+
+        assert!(matches!(
+            mode.execute(&id, "star").unwrap(),
+            ActionOutcome::StayOpen
+        ));
+        assert!(mode.items().is_empty());
+        assert_eq!(mode.activate_tab("history").unwrap().len(), 2);
     }
 }

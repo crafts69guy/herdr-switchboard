@@ -195,6 +195,7 @@ impl PickerMode for MenuMode {
                 primary: route.title.into(),
                 secondary: format!("{} · {}", route.group, route.detail),
                 trailing: None,
+                trailing_marker: None,
                 document: Document {
                     fuzzy: format!("{} {} {}", route.group, route.title, route.detail),
                     fields: Default::default(),

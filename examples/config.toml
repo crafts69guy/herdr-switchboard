@@ -98,6 +98,7 @@ alert_percent = 85
 
 [keys.commands]
 # copy = "ctrl-y"
+# star = "ctrl-s"
 
 [keys.ports]
 # workspace = "ctrl-w"

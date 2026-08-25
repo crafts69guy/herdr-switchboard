@@ -186,6 +186,7 @@ fn pane_item(pane: &PaneInfo, zenned: bool) -> PickerItem {
         trailing: zenned
             .then(|| "zen".to_string())
             .or_else(|| (!agent.is_empty()).then(|| agent.clone())),
+        trailing_marker: None,
         document: Document {
             fuzzy: format!("{} {title} {} {repo} {agent}", pane.pane_id, pane.cwd),
             fields: picker::fields(&[

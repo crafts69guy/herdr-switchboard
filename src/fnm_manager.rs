@@ -414,6 +414,7 @@ fn version_item(version: &Version) -> PickerItem {
         primary: version.value.clone(),
         secondary: detail,
         trailing: (!status.is_empty()).then_some(status.clone()),
+        trailing_marker: None,
         document: Document {
             fuzzy: format!("{} {source} {status}", version.value),
             fields: HashMap::from([
@@ -446,6 +447,7 @@ fn status_item(id: &str, title: &str, detail: &str) -> PickerItem {
         primary: title.into(),
         secondary: detail.into(),
         trailing: None,
+        trailing_marker: None,
         document: Document {
             fuzzy: format!("{title} {detail}"),
             fields: HashMap::from([("source".into(), "status".into())]),
