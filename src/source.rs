@@ -17,6 +17,9 @@ pub struct LoadCtx<'a> {
     pub runner: &'a dyn CommandRunner,
     pub theme: &'a Theme,
     pub root: &'a str,
+    /// A preloaded ghq snapshot when the effect runtime overlaps `ghq root`
+    /// and `ghq list`; ordinary callers leave this as `None`.
+    pub repos: Option<&'a [String]>,
 }
 
 pub struct ProjectCatalog<'a> {
@@ -30,6 +33,18 @@ impl<'a> ProjectCatalog<'a> {
     }
 
     pub fn load(&self) -> Vec<Entry> {
+        let loaded;
+        let repos = match self.context.repos {
+            Some(repos) => repos,
+            None => {
+                loaded = data::load_repo_names(self.context.runner);
+                &loaded
+            }
+        };
+        self.load_snapshot(repos)
+    }
+
+    fn load_snapshot(&self, repos: &[String]) -> Vec<Entry> {
         let mut entries = Vec::new();
         if self.config.projects.include_agents {
             entries.extend(data::load_agents(self.context.runner, self.context.theme));
@@ -40,15 +55,17 @@ impl<'a> ProjectCatalog<'a> {
                 self.context.theme,
             ));
         }
-        // Repositories are the product's anchor and are always present.
+        // Repositories are the product's anchor and are always present. Take
+        // one ghq snapshot and share it with bounded worktree discovery.
         entries.extend(data::load_repos(
-            self.context.runner,
+            repos,
             self.context.theme,
             self.context.root,
         ));
         if self.config.projects.include_worktrees {
             entries.extend(data::load_worktrees(
                 self.context.runner,
+                repos,
                 self.context.theme,
                 self.context.root,
             ));
@@ -65,6 +82,7 @@ pub fn load_all(cfg: &Config, ctx: &LoadCtx) -> Vec<Entry> {
             runner: ctx.runner,
             theme: ctx.theme,
             root: ctx.root,
+            repos: ctx.repos,
         },
     )
     .load()
@@ -90,6 +108,7 @@ mod tests {
             runner,
             theme,
             root: "/root",
+            repos: None,
         }
     }
 
@@ -105,6 +124,15 @@ mod tests {
         assert_eq!(
             got,
             vec![Kind::Agent, Kind::Workspace, Kind::Repo, Kind::Repo]
+        );
+        assert_eq!(
+            runner
+                .calls()
+                .iter()
+                .filter(|argv| argv.as_slice() == ["ghq", "list"])
+                .count(),
+            1,
+            "repositories and worktrees must share one ghq snapshot"
         );
     }
 

@@ -306,26 +306,37 @@ pub fn load_workspaces(runner: &dyn CommandRunner, theme: &Theme) -> Vec<Entry> 
     entries
 }
 
-/// Every `ghq` repository as an entry, rooted at `root`.
-pub fn load_repos(runner: &dyn CommandRunner, theme: &Theme, root: &str) -> Vec<Entry> {
+/// Take one snapshot of the ghq catalogue for both repositories and worktrees.
+pub fn load_repo_names(runner: &dyn CommandRunner) -> Vec<String> {
+    runner
+        .capture("ghq", &["list"])
+        .map(|list| {
+            list.lines()
+                .filter(|line| !line.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Every repository in a ghq snapshot, rooted at `root`.
+pub fn load_repos(repos: &[String], theme: &Theme, root: &str) -> Vec<Entry> {
     let mut entries = Vec::new();
-    if let Some(list) = runner.capture("ghq", &["list"]) {
-        for rel in list.lines().filter(|l| !l.is_empty()) {
-            let (host, rest) = rel.split_once('/').unwrap_or(("", rel));
-            let (icon, color) = host_icon(host, theme);
-            let short = host.split('.').next().unwrap_or(host).to_string();
-            entries.push(Entry {
-                kind: Kind::Repo,
-                id: rel.to_string(),
-                dir: Some(format!("{root}/{rel}")),
-                label: basename(rel),
-                icon: icon.into(),
-                icon_color: color,
-                primary: rest.to_string(),
-                secondary: short.clone(),
-                search: format!("{rel} {short}"),
-            });
-        }
+    for rel in repos {
+        let (host, rest) = rel.split_once('/').unwrap_or(("", rel));
+        let (icon, color) = host_icon(host, theme);
+        let short = host.split('.').next().unwrap_or(host).to_string();
+        entries.push(Entry {
+            kind: Kind::Repo,
+            id: rel.clone(),
+            dir: Some(format!("{}/{rel}", root.trim_end_matches('/'))),
+            label: basename(rel),
+            icon: icon.into(),
+            icon_color: color,
+            primary: rest.to_string(),
+            secondary: short.clone(),
+            search: format!("{rel} {short}"),
+        });
     }
     entries
 }
@@ -370,21 +381,48 @@ fn parse_worktree_list(raw: &str) -> Vec<WorktreeRecord> {
 
 /// Linked worktrees attached to every ghq repository. The first porcelain record
 /// is the main worktree, already represented by the Repos source, so it is skipped.
-pub fn load_worktrees(runner: &dyn CommandRunner, theme: &Theme, root: &str) -> Vec<Entry> {
+pub fn load_worktrees(
+    runner: &dyn CommandRunner,
+    repos: &[String],
+    theme: &Theme,
+    root: &str,
+) -> Vec<Entry> {
     let mut entries = Vec::new();
     let mut seen = HashSet::new();
-    let Some(repos) = runner.capture("ghq", &["list"]) else {
+    if repos.is_empty() {
         return entries;
-    };
+    }
 
-    for rel in repos.lines().filter(|line| !line.is_empty()) {
-        let repo = format!("{}/{rel}", root.trim_end_matches('/'));
-        let Some(raw) = runner.capture(
-            "git",
-            &["-C", &repo, "worktree", "list", "--porcelain", "-z"],
-        ) else {
-            continue;
-        };
+    const MAX_WORKTREE_PROBES: usize = 4;
+    let worker_count = repos.len().min(MAX_WORKTREE_PROBES);
+    let mut probes = std::thread::scope(|scope| {
+        let mut handles = Vec::with_capacity(worker_count);
+        for worker in 0..worker_count {
+            handles.push(scope.spawn(move || {
+                let mut found = Vec::new();
+                for index in (worker..repos.len()).step_by(worker_count) {
+                    let rel = &repos[index];
+                    let repo = format!("{}/{rel}", root.trim_end_matches('/'));
+                    if let Some(raw) = runner.capture(
+                        "git",
+                        &["-C", &repo, "worktree", "list", "--porcelain", "-z"],
+                    ) {
+                        found.push((index, raw));
+                    }
+                }
+                found
+            }));
+        }
+        handles
+            .into_iter()
+            .filter_map(|handle| handle.join().ok())
+            .flatten()
+            .collect::<Vec<_>>()
+    });
+    probes.sort_by_key(|(index, _)| *index);
+
+    for (index, raw) in probes {
+        let rel = &repos[index];
         let (host, rest) = rel.split_once('/').unwrap_or(("", rel));
         let (icon, color) = host_icon(host, theme);
 
@@ -435,8 +473,15 @@ fn basename(p: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::ffi::OsStr;
+    use std::io;
+    use std::os::unix::process::ExitStatusExt;
+    use std::process::{ExitStatus, Output};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+
     use super::*;
-    use crate::runner::MockRunner;
+    use crate::runner::{CommandRunner, MockRunner};
 
     const AGENTS: &str = r#"{"result":{"agents":[
         {"pane_id":"w1:p1","terminal_id":"term-1","agent":"claude","agent_status":"working","foreground_cwd":"/home/u/proj"},
@@ -485,7 +530,8 @@ mod tests {
     #[test]
     fn load_repos_splits_host_and_roots_the_dir() {
         let runner = MockRunner::new().on("ghq list", REPOS);
-        let e = load_repos(&runner, &Theme::default(), "/root");
+        let repos = load_repo_names(&runner);
+        let e = load_repos(&repos, &Theme::default(), "/root");
         assert_eq!(e.len(), 2);
         assert_eq!(e[0].kind, Kind::Repo);
         assert_eq!(e[0].id, "github.com/o/repo-a");
@@ -510,11 +556,10 @@ mod tests {
             detached.display(),
             stale.display()
         );
-        let runner = MockRunner::new()
-            .on("ghq list", "github.com/o/repo-a\n")
-            .on("git -C /root/github.com/o/repo-a worktree list", &raw);
+        let runner = MockRunner::new().on("git -C /root/github.com/o/repo-a worktree list", &raw);
+        let repos = vec!["github.com/o/repo-a".to_string()];
 
-        let e = load_worktrees(&runner, &Theme::default(), "/root");
+        let e = load_worktrees(&runner, &repos, &Theme::default(), "/root");
         assert_eq!(e.len(), 2);
         assert!(e.iter().all(|entry| entry.kind == Kind::Worktree));
         assert_eq!(e[0].dir.as_deref(), linked.to_str());
@@ -524,6 +569,63 @@ mod tests {
         assert!(e[0].search.contains("feature branch\nodd"));
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    struct ProbeRunner {
+        active: AtomicUsize,
+        maximum: AtomicUsize,
+    }
+
+    impl ProbeRunner {
+        fn new() -> Self {
+            Self {
+                active: AtomicUsize::new(0),
+                maximum: AtomicUsize::new(0),
+            }
+        }
+    }
+
+    impl CommandRunner for ProbeRunner {
+        fn output(&self, _program: &str, _args: &[&str]) -> io::Result<Output> {
+            let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
+            self.maximum.fetch_max(active, Ordering::SeqCst);
+            std::thread::sleep(Duration::from_millis(20));
+            self.active.fetch_sub(1, Ordering::SeqCst);
+            Ok(Output {
+                status: ExitStatus::from_raw(0),
+                stdout: Vec::new(),
+                stderr: Vec::new(),
+            })
+        }
+
+        fn status(&self, _program: &str, _args: &[&str]) -> io::Result<ExitStatus> {
+            Ok(ExitStatus::from_raw(0))
+        }
+
+        fn output_stdin(&self, program: &str, args: &[&str], _stdin: &str) -> io::Result<Output> {
+            self.output(program, args)
+        }
+
+        fn spawn_detached(&self, _program: &OsStr, _args: &[&str]) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn worktree_discovery_uses_at_most_four_parallel_probes() {
+        let runner = ProbeRunner::new();
+        let repos: Vec<String> = (0..8)
+            .map(|index| format!("github.com/o/repo-{index}"))
+            .collect();
+
+        let entries = load_worktrees(&runner, &repos, &Theme::default(), "/root");
+
+        assert!(entries.is_empty());
+        let maximum = runner.maximum.load(Ordering::SeqCst);
+        assert!(
+            (2..=4).contains(&maximum),
+            "maximum concurrency was {maximum}"
+        );
     }
 
     #[test]
@@ -542,7 +644,7 @@ mod tests {
         // each loader must come up empty rather than panic.
         assert!(load_agents(&MockRunner::new(), &Theme::default()).is_empty());
         assert!(load_workspaces(&MockRunner::new(), &Theme::default()).is_empty());
-        assert!(load_repos(&MockRunner::new(), &Theme::default(), "/root").is_empty());
-        assert!(load_worktrees(&MockRunner::new(), &Theme::default(), "/root").is_empty());
+        assert!(load_repos(&[], &Theme::default(), "/root").is_empty());
+        assert!(load_worktrees(&MockRunner::new(), &[], &Theme::default(), "/root").is_empty());
     }
 }

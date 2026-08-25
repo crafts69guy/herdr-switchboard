@@ -22,7 +22,7 @@ use std::process::{Command, ExitStatus, Output, Stdio};
 /// Runs external commands. [`output`](Self::output) captures stdout for parsing,
 /// [`status`](Self::status) inherits the terminal, and
 /// [`spawn_detached`](Self::spawn_detached) starts a background worker.
-pub trait CommandRunner {
+pub trait CommandRunner: Sync {
     fn output(&self, program: &str, args: &[&str]) -> io::Result<Output>;
     fn status(&self, program: &str, args: &[&str]) -> io::Result<ExitStatus>;
     fn spawn_detached(&self, program: &OsStr, args: &[&str]) -> io::Result<()>;
@@ -100,11 +100,11 @@ pub use mock::MockRunner;
 
 #[cfg(test)]
 mod mock {
-    use std::cell::RefCell;
     use std::ffi::OsStr;
     use std::io;
     use std::os::unix::process::ExitStatusExt;
     use std::process::{ExitStatus, Output};
+    use std::sync::Mutex;
 
     use super::CommandRunner;
 
@@ -116,8 +116,8 @@ mod mock {
     pub struct MockRunner {
         responses: Vec<(String, String)>,
         failures: Vec<String>,
-        pub calls: RefCell<Vec<Vec<String>>>,
-        stdins: RefCell<Vec<String>>,
+        pub calls: Mutex<Vec<Vec<String>>>,
+        stdins: Mutex<Vec<String>>,
     }
 
     impl MockRunner {
@@ -140,21 +140,27 @@ mod mock {
 
         /// Every argv this runner was handed, program first, in call order.
         pub fn calls(&self) -> Vec<Vec<String>> {
-            self.calls.borrow().clone()
+            self.calls.lock().expect("mock calls lock poisoned").clone()
         }
 
         /// Everything fed to a child's stdin, in call order. A test asserting
         /// that a secret stayed off the command line reads both this and
         /// [`calls`](Self::calls).
         pub fn stdins(&self) -> Vec<String> {
-            self.stdins.borrow().clone()
+            self.stdins
+                .lock()
+                .expect("mock stdin lock poisoned")
+                .clone()
         }
 
         fn record(&self, program: &str, args: &[&str]) -> String {
             let mut argv = vec![program.to_string()];
             argv.extend(args.iter().map(|a| a.to_string()));
             let joined = argv.join(" ");
-            self.calls.borrow_mut().push(argv);
+            self.calls
+                .lock()
+                .expect("mock calls lock poisoned")
+                .push(argv);
             joined
         }
 
@@ -197,7 +203,10 @@ mod mock {
         }
 
         fn output_stdin(&self, program: &str, args: &[&str], stdin: &str) -> io::Result<Output> {
-            self.stdins.borrow_mut().push(stdin.to_string());
+            self.stdins
+                .lock()
+                .expect("mock stdin lock poisoned")
+                .push(stdin.to_string());
             self.output(program, args)
         }
 

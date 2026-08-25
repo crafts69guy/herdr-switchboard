@@ -9,6 +9,10 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Projects opens without a blank flash while its catalogue loads.** The final dashboard appears
+  immediately with `Standing by…`; Settings Apply keeps the old rows visible under `Refreshing…`.
+  Repository discovery now shares one ghq snapshot with up to four concurrent worktree probes.
+
 - **The central menu is roomier and standalone Settings has one frame.** The menu now opens at
   a fitted `112x28`, with its complete action bar balanced across two rows separated by a gap.
   Standalone Settings relies on the

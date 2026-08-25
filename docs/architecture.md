@@ -37,12 +37,15 @@ panes.
 Offline installs and linked checkouts fall back to a local Cargo build. A small typing-cat frame
 covers one-time preparation.
 
-The Projects Picker loads Herdr agents and workspaces, ghq repositories, and Git worktree metadata
-before claiming the terminal, so its first frame contains a usable Navigator. An empty result hands
-off to Clone. Repository and worktree Inspectors include Git state, recent commits, a file tree,
-an optional README excerpt, and opt-in filesystem-only Node declaration inspection. fnm resolution
-runs only after selection. Selection actions use the captured origin or an ID returned by Herdr;
-they never guess identifiers.
+The Projects Picker draws its final dashboard geometry immediately with `Standing by…`, then loads
+Herdr agents and workspaces, ghq repositories, and Git worktree metadata through its private
+background effect. Startup accepts only Close until completion. Settings Apply keeps the previous
+snapshot visible under `Refreshing…`, locks row actions, and restores selection by entry ID. One
+ghq snapshot feeds repositories and at most four concurrent worktree probes; results retain ghq
+order. An empty initial result hands off to Clone after terminal restoration. Repository and
+worktree Inspectors include Git state, recent commits, a file tree, an optional README excerpt, and
+opt-in filesystem-only Node declaration inspection. fnm resolution runs only after selection.
+Selection actions use the captured origin or an ID returned by Herdr; they never guess identifiers.
 
 Usage keeps its specialized quota visualization. Its offline provider is read before terminal
 claim and its networked provider runs on a worker thread, so the first frame never waits on a
@@ -72,7 +75,7 @@ the module inventory.
 | `fnm` | `inspect`, `prepare`, `Declaration`, `Preparation` | Version-file precedence, recursive lookup, engine parsing, installed PATH resolution |
 | `fnm_manager` | `main` | Local/remote version parsing, background remote lookup, safe fnm mutations, origin-pane activation |
 | `keymap` | `Chord`, `Action`, `Keymap`, canonical chord conversion | Mode tables, overrides, labels |
-| `projects` / `picker` / `git` | `Surface` adapters and typed outputs | Surface-specific reduction, composition, and Git's saved-review visibility state |
+| `projects` / `picker` / `git` | `Surface` adapters and typed outputs | Surface-specific reduction, composition, and Git's saved-review visibility state; `projects::effect` owns generation-tagged catalogue loading |
 | `agent_handoff` | `discover_targets`, `deliver_prompt` | Promptable-agent parsing, worktree scoping, origin preference, non-waiting delivery |
 | `clipboard` | `copy_text` | macOS/Wayland/X11 command selection and stdin delivery |
 | `action` | `Accept`, `dispatch`, `open_target` | Restored-terminal effects and process replacement |
@@ -281,7 +284,7 @@ popups cannot be represented as several simultaneously active booleans.
 - Any user-visible change receives an `[Unreleased]` changelog entry in the same implementation
   commit. Pure structural phases do not.
 - CLI flags, configuration keys, terminal restoration, process handoff, credential safety, and
-  synchronous Projects startup remain stable. Layout and interaction may change only when the
+  the Projects startup performance contract remain stable. Layout and interaction may change only when the
   phase documents the maintainability benefit and updates its acceptance tests.
 
 ## Tracing and budgets
@@ -292,13 +295,15 @@ Set `SWITCHBOARD_TRACE=1` to append tab-separated timings to
 ```sh
 SWITCHBOARD_TRACE=1 herdr plugin action invoke projects --plugin switchboard
 awk -F'\t' '$2 == "frame.first_list" { print $1 }' ~/.local/state/herdr-switchboard/trace.log
+awk -F'\t' '$2 == "frame.loading" { print $1 }' ~/.local/state/herdr-switchboard/trace.log
 awk -F'\t' '$2 == "preview.render" { n++; t += $3 } END { print t / n }' \
   ~/.local/state/herdr-switchboard/trace.log
 ```
 
 The current performance budgets are:
 
-- First Projects list under 100 ms.
+- First Projects loading frame under 16 ms after terminal claim.
+- First Projects list under 100 ms on the reference repository set.
 - Keystroke-to-frame under 16 ms.
 - Preview rendering under 50 ms mean and 70 ms at the tail.
 

@@ -1,7 +1,7 @@
 //! Rendering: Search input (top), Switcher list (middle), Preview (below), and
 //! a full-width colourful command bar pinned to the very bottom.
 
-use ratatui::layout::{Constraint, Layout, Position, Rect};
+use ratatui::layout::{Alignment, Constraint, Layout, Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{List, ListItem, Paragraph};
@@ -356,11 +356,16 @@ fn draw_input(
     sub: Color,
     border: Color,
 ) {
-    let count = format!(
-        " {}/{} ",
-        app.picker.filtered.len(),
-        app.picker.entries.len()
-    );
+    let count = match app.catalog {
+        super::CatalogState::Loading => " Standing by… ".to_string(),
+        super::CatalogState::Refreshing => " Refreshing… ".to_string(),
+        super::CatalogState::Failed(_) => " Unavailable ".to_string(),
+        super::CatalogState::Ready => format!(
+            " {}/{} ",
+            app.picker.filtered.len(),
+            app.picker.entries.len()
+        ),
+    };
     // Which mode owns the keys — a vimmer's `-- INSERT --`. Normal is always one
     // Esc away, so the tag is always shown; a pending `␣` leader appends a dot.
     let ink = app.theme.or("panel_bg", Color::Rgb(16, 18, 20));
@@ -395,12 +400,17 @@ fn draw_input(
         Span::raw(&app.picker.query),
     ]);
     f.render_widget(Paragraph::new(line), inner);
-    // Cursor after the prompt + query.
-    let cx = inner.x + 2 + app.picker.query.chars().count() as u16;
-    f.set_cursor_position(Position::new(
-        cx.min(inner.x + inner.width.saturating_sub(1)),
-        inner.y,
-    ));
+    if matches!(
+        app.catalog,
+        super::CatalogState::Ready | super::CatalogState::Refreshing
+    ) {
+        // Cursor after the prompt + query.
+        let cx = inner.x + 2 + app.picker.query.chars().count() as u16;
+        f.set_cursor_position(Position::new(
+            cx.min(inner.x + inner.width.saturating_sub(1)),
+            inner.y,
+        ));
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -478,7 +488,11 @@ fn draw_list(
     // `framed` rather than `boxed`: this panel's caption slot is the tab strip,
     // a multi-span line, not a word — but the frame itself must still be the
     // shared one, or it drifts the way the git card did.
-    let block = if show_tabs {
+    let catalog_unavailable = matches!(
+        app.catalog,
+        super::CatalogState::Loading | super::CatalogState::Failed(_)
+    );
+    let block = if show_tabs && !catalog_unavailable {
         crate::tui::framed(border)
             .title(Line::from(tab_spans))
             .title(Line::from(sort_hint).right_aligned())
@@ -488,6 +502,42 @@ fn draw_list(
             Style::default().fg(title).add_modifier(Modifier::BOLD),
         ))
     };
+
+    if let super::CatalogState::Loading | super::CatalogState::Failed(_) = &app.catalog {
+        app.zones.list_state.select(None);
+        app.zones.list_area = area;
+        f.render_widget(block, area);
+
+        let (headline, detail) = match &app.catalog {
+            super::CatalogState::Loading => (
+                "Standing by…",
+                "Loading agents, workspaces, repositories, and worktrees",
+            ),
+            super::CatalogState::Failed(message) => ("Could not load projects", message.as_str()),
+            _ => unreachable!("catalog branch is guarded"),
+        };
+        let inner = Rect::new(
+            area.x.saturating_add(1),
+            area.y.saturating_add(1),
+            area.width.saturating_sub(2),
+            area.height.saturating_sub(2),
+        );
+        let top = inner.height.saturating_sub(2) / 2;
+        let mut lines = vec![Line::raw(""); top as usize];
+        lines.extend([
+            Line::from(Span::styled(
+                headline,
+                Style::default().fg(accent).add_modifier(Modifier::BOLD),
+            )),
+            Line::from(Span::styled(
+                detail.to_string(),
+                Style::default().fg(border),
+            )),
+        ]);
+        let status = Text::from(lines);
+        f.render_widget(Paragraph::new(status).alignment(Alignment::Center), inner);
+        return;
+    }
 
     let list = List::new(items)
         .block(block)
@@ -589,6 +639,25 @@ fn draw_footer(f: &mut Frame, app: &mut App, area: Rect) {
     let t = &app.theme;
     // Dark ink for text sitting on the coloured pills.
     let ink = t.or("panel_bg", Color::Rgb(16, 18, 20));
+    if matches!(
+        app.catalog,
+        super::CatalogState::Loading | super::CatalogState::Failed(_)
+    ) {
+        let red = t.or("red", Color::Red);
+        let cap = app
+            .keymap
+            .label_for(app.mode, Action::Quit)
+            .unwrap_or_else(|| "esc".to_string());
+        let pills = [crate::tui::Pill::new(&cap, "close", red)];
+        let (spans, zones) = crate::tui::pill_row(&pills, ink, area.x);
+        app.zones.footer_zones = zones
+            .into_iter()
+            .map(|(start, end)| (start, end, Action::Quit))
+            .collect();
+        app.zones.footer_row = area.y;
+        f.render_widget(Paragraph::new(Line::from(spans)), area);
+        return;
+    }
     // The bar's order, colour, and short label are fixed; the key cap is read
     // from the keymap for the *current mode*, so a remap or an Insert↔Normal
     // switch re-labels every pill (e.g. `update` shows `^r` in Insert, `␣u` in

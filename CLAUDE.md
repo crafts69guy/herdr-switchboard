@@ -51,12 +51,12 @@ Rust render tests.
 2. `bin/picker.sh` resolves a versioned, checksummed release binary for managed installs and
    falls back to Cargo for offline/linked checkouts. Its Bash typing-cat owns first-run feedback;
    `--prepare` resolves the binary without launching it.
-3. The TUI (`src/`) loads the sources **synchronously, before claiming the terminal** (~35ms), so
-   the first frame is the loaded list; an empty result hands the pane to `bin/get.sh` without ever
-   taking the screen. `surface::run` then hosts the Projects surface and guarantees terminal
-   restoration before returning its typed output. Interactive accepts (clone prompt, remove
-   confirmation, `ghq get -u` output) deliberately run on the restored terminal, not inside the
-   TUI.
+3. The TUI (`src/`) claims the terminal and draws the final Projects chrome immediately with a
+   static `Standing by…` state while a feature-local worker loads the catalogue. Completion returns
+   through a typed, generation-tagged effect; an empty initial result returns the same typed Clone
+   outcome as a user action. `surface::run` hosts the Projects surface and guarantees terminal
+   restoration before that outcome runs. Interactive accepts (clone prompt, remove confirmation,
+   `ghq get -u` output) deliberately run on the restored terminal, not inside the TUI.
 
 **Why the origin pane matters:** `split` and `pane` targets act on the captured `SWITCHBOARD_ORIGIN_PANE_ID`.
 The overlay pane is _not_ the user's pane. Never guess or infer a pane/workspace/agent id — every id
@@ -114,11 +114,14 @@ order so the list stays stable.
   neither Git nor Projects adds `--wait`. Projects sends only JSON-escaped item kind, label, and
   absolute path as data-only context. Paths and labels never enter notifications or traces, and a
   Workspace never pretends its several pane directories are one selectable path.
-- **The picker loads its sources synchronously, before `surface::run` claims the terminal.** There
-  is no worker, channel, or minimum-visible floor: `load_all` costs ~35ms, and the 420ms floor the
-  previous animation imposed *was* the first-list latency. An empty result must be detected here
-  too, before terminal claim, so the handoff to `bin/get.sh` never takes the screen and gives it
-  back. Do not reintroduce a floor for visual feedback.
+- **Projects catalogue discovery is a feature-local background effect.** Startup draws the final
+  Search/Context/Navigator/Preview geometry first and shows static `Standing by…`; it accepts only
+  Close until the generation-tagged completion arrives. Settings Apply keeps the old rows visible
+  under `Refreshing…`, locks selection-dependent actions, and restores selection by entry ID.
+  There is no minimum-visible floor. Repository and worktree discovery share one `ghq list`
+  snapshot, and per-repository worktree probes use at most four threads while their results are
+  installed in snapshot order. An empty initial catalogue returns a typed Clone outcome so the
+  terminal is restored before `bin/get.sh` takes over.
 - **The pre-build cat runs before Rust exists and sizes itself from the plugin PTY.**
   `run_with_splash` reads `stty size </dev/tty` and passes those cells to `bootstrap_frame` on each
   animation frame. Do not replace it with `tput`: redirecting `tput` away from the TTY makes it

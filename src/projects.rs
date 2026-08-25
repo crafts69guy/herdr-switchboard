@@ -1,5 +1,6 @@
 //! Projects Picker model, reduction, terminal hosting, and restored effects.
 
+mod effect;
 mod handoff;
 mod preview;
 mod view;
@@ -7,8 +8,6 @@ mod view;
 use std::cmp::Reverse;
 use std::collections::HashMap;
 use std::env;
-use std::os::unix::process::CommandExt;
-use std::process::Command;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::time::{Duration, Instant};
 
@@ -28,9 +27,9 @@ use crate::data::{Config, Entry, GroupFilter, Kind, SortMode, Theme};
 use crate::notify::{Event as NotifyEvent, Notifier};
 use crate::surface::{Surface as HostedSurface, Transition as SurfaceTransition};
 use crate::{
-    action, changelog, data, history, keymap, markdown, runner, settings, source, surface, trace,
-    update,
+    action, changelog, history, keymap, markdown, runner, settings, source, surface, trace, update,
 };
+use effect::CatalogWorker;
 use handoff::{HandoffAction, HandoffRequest, HandoffState, ItemContext};
 use view as ui;
 
@@ -121,6 +120,7 @@ pub struct App {
     pub title_color: ratatui::style::Color,
     pub cfg: Config,
     pub script_dir: String,
+    catalog: CatalogState,
     overlay: Overlay,
     /// A newer version the cache knows about; shown, never acted on.
     pub update: Option<String>,
@@ -150,6 +150,23 @@ pub(super) enum Overlay {
     Handoff,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum CatalogState {
+    Loading,
+    Ready,
+    Refreshing,
+    Failed(String),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum CatalogIntent {
+    Initial,
+    Refresh {
+        requested_group: GroupFilter,
+        preserve_selection: bool,
+    },
+}
+
 enum Flow {
     Continue,
     Quit,
@@ -157,6 +174,7 @@ enum Flow {
     CopyPath(Entry),
     DiscoverTargets(Entry),
     Deliver(HandoffRequest),
+    ReloadCatalog(CatalogIntent),
 }
 
 impl Picker {
@@ -254,6 +272,32 @@ impl Picker {
     /// The entry index behind the current selection, if any.
     fn selected_index(&self) -> Option<usize> {
         self.filtered.get(self.selected).copied()
+    }
+
+    fn replace_entries(
+        &mut self,
+        entries: Vec<Entry>,
+        requested_group: GroupFilter,
+        preserve_selection: bool,
+    ) {
+        let selected_id = preserve_selection
+            .then(|| self.selected_entry().map(|entry| entry.id.clone()))
+            .flatten();
+        self.entries = entries;
+        self.present_kinds = source::kinds()
+            .into_iter()
+            .filter(|&kind| self.entries.iter().any(|entry| entry.kind == kind))
+            .collect();
+        self.select_group_or_all(requested_group);
+        if let Some(id) = selected_id {
+            if let Some(position) = self
+                .filtered
+                .iter()
+                .position(|&index| self.entries[index].id == id)
+            {
+                self.selected = position;
+            }
+        }
     }
 }
 
@@ -424,6 +468,7 @@ impl App {
             title_color,
             cfg,
             script_dir,
+            catalog: CatalogState::Ready,
             overlay: Overlay::None,
             update,
             keymap,
@@ -447,6 +492,20 @@ impl App {
         self.preview.request(&entry);
     }
 
+    fn install_catalog(&mut self, entries: Vec<Entry>, intent: CatalogIntent) {
+        let (requested_group, preserve_selection) = match intent {
+            CatalogIntent::Initial => (GroupFilter::parse(&self.cfg.projects.default_tab), false),
+            CatalogIntent::Refresh {
+                requested_group,
+                preserve_selection,
+            } => (requested_group, preserve_selection),
+        };
+        self.picker
+            .replace_entries(entries, requested_group, preserve_selection);
+        self.catalog = CatalogState::Ready;
+        self.preview.id.clear();
+    }
+
     /// Re-read `config.toml` and re-derive the runtime state that depends on it, so a
     /// setting applied in the overlay takes effect in this session rather than on the
     /// next launch. Called after `Settings::apply` reports it wrote something.
@@ -455,8 +514,7 @@ impl App {
     /// live; that resettles the selection at the top the way a `sort` change reorders
     /// it anyway. `mode` is left as the user has it — `keymode` only picks the *start*
     /// mode.
-    fn reload_config(&mut self) {
-        let runner = runner::SystemRunner;
+    fn reconfigure(&mut self) -> CatalogIntent {
         let cfg = Config::load();
         let default_tab_changed = self.cfg.projects.default_tab != cfg.projects.default_tab;
 
@@ -484,27 +542,17 @@ impl App {
             preview::Worker::spawn(self.script_dir.clone(), cfg.clone(), self.theme.clone());
         self.preview.id.clear();
 
-        // Reload entries so the source toggles and label style apply.
-        let root = data::ghq_root(&runner);
-        let ctx = source::LoadCtx {
-            runner: &runner,
-            theme: &self.theme,
-            root: &root,
-        };
-        let entries = source::load_all(&cfg, &ctx);
-        self.picker.present_kinds = source::kinds()
-            .into_iter()
-            .filter(|&k| entries.iter().any(|e| e.kind == k))
-            .collect();
-        self.picker.entries = entries;
         let requested = if default_tab_changed {
             GroupFilter::parse(&cfg.projects.default_tab)
         } else {
             self.picker.group
         };
-        self.picker.select_group_or_all(requested);
-
         self.cfg = cfg;
+        self.catalog = CatalogState::Refreshing;
+        CatalogIntent::Refresh {
+            requested_group: requested,
+            preserve_selection: !default_tab_changed,
+        }
     }
 
     /// The entry drawn at screen row `y`, if that row holds one. Rows map back
@@ -536,9 +584,10 @@ impl App {
         // discards, and a click that closed without discarding left the draft
         // alive behind a form that looked shut.
         if self.overlay == Overlay::Settings {
+            let mut reload = None;
             if self.settings.hit(at) {
                 if self.settings.on_click(at) {
-                    self.reload_config();
+                    reload = Some(self.reconfigure());
                 }
             } else {
                 self.settings.close_discarding();
@@ -547,7 +596,7 @@ impl App {
             if !self.settings.show {
                 self.overlay = Overlay::None;
             }
-            return Flow::Continue;
+            return reload.map(Flow::ReloadCatalog).unwrap_or(Flow::Continue);
         }
         // The command bar: one row, so the x span is the whole test. A pill runs
         // its action, the same as its key would.
@@ -663,6 +712,9 @@ impl App {
     /// Worktrees are openable and reviewable, but repository update/removal has
     /// different semantics and is intentionally unavailable for them.
     pub fn action_available(&self, action: keymap::Action) -> bool {
+        if self.catalog == CatalogState::Refreshing && action.needs_selection() {
+            return false;
+        }
         let unsupported = matches!(
             action,
             keymap::Action::Accept(Accept::Update | Accept::Remove)
@@ -855,7 +907,11 @@ fn handle_key(app: &mut App, k: crossterm::event::KeyEvent) -> Flow {
         // An apply persisted a change: re-read config.toml and re-derive the live
         // state so the new value takes effect now, not on the next launch.
         if app.settings.on_key(k) {
-            app.reload_config();
+            let intent = app.reconfigure();
+            if !app.settings.show {
+                app.overlay = Overlay::None;
+            }
+            return Flow::ReloadCatalog(intent);
         }
         if !app.settings.show {
             app.overlay = Overlay::None;
@@ -942,6 +998,11 @@ struct ProjectsSurface<'a> {
     origin_pane: String,
     notifier: Notifier,
     effect: Option<Receiver<ProjectEffect>>,
+    catalog_worker: CatalogWorker,
+    catalog_generation: u64,
+    catalog_intent: CatalogIntent,
+    catalog_pending: bool,
+    first_loading_drawn: bool,
     first_list_drawn: bool,
     key_at: Option<Instant>,
     placeholder_frame: Option<usize>,
@@ -970,6 +1031,10 @@ impl HostedSurface for ProjectsSurface<'_> {
         // for one frame, which is what the placeholder is for anyway.
         ui::draw(frame, self.app);
         if trace::enabled() {
+            if !self.first_loading_drawn && self.app.catalog == CatalogState::Loading {
+                self.first_loading_drawn = true;
+                trace::mark("frame.loading");
+            }
             // The keystroke budget is "key in, pixels out": close the span on the
             // draw that follows the key, not on the handler returning.
             if let Some(at) = self.key_at.take() {
@@ -989,7 +1054,7 @@ impl HostedSurface for ProjectsSurface<'_> {
     }
 
     fn tick_rate(&self) -> Duration {
-        if self.app.preview.pending() || self.effect.is_some() {
+        if self.app.preview.pending() || self.effect.is_some() || self.catalog_pending {
             PREVIEW_TICK
         } else {
             IDLE_TICK
@@ -997,6 +1062,23 @@ impl HostedSurface for ProjectsSurface<'_> {
     }
 
     fn on_tick(&mut self) -> Result<SurfaceTransition<Self::Output>> {
+        if self.catalog_pending {
+            match self.catalog_worker.poll() {
+                effect::Poll::Pending => {}
+                effect::Poll::Ready(completion) => {
+                    if let Some(transition) = self.accept_catalog_completion(completion) {
+                        return Ok(transition);
+                    }
+                }
+                effect::Poll::Disconnected => {
+                    self.catalog_pending = false;
+                    self.app.catalog = CatalogState::Failed(
+                        "Project discovery stopped unexpectedly. Close and reopen to retry.".into(),
+                    );
+                    return Ok(SurfaceTransition::Redraw);
+                }
+            }
+        }
         if let Some(receiver) = &self.effect {
             let effect = match receiver.try_recv() {
                 Ok(effect) => effect,
@@ -1043,6 +1125,36 @@ impl HostedSurface for ProjectsSurface<'_> {
     }
 
     fn on_event(&mut self, event: Event) -> Result<SurfaceTransition<Self::Output>> {
+        if matches!(
+            self.app.catalog,
+            CatalogState::Loading | CatalogState::Failed(_)
+        ) {
+            if let Event::Key(k) = event {
+                if k.kind == KeyEventKind::Press {
+                    if let Some(chord) = keymap::chord_of(&k) {
+                        if self.app.keymap.action(self.app.mode, chord)
+                            == Some(keymap::Action::Quit)
+                        {
+                            return Ok(SurfaceTransition::Exit(None));
+                        }
+                    }
+                }
+            }
+            if let Event::Mouse(m) = event {
+                if m.kind == MouseEventKind::Down(MouseButton::Left) {
+                    let at = Position::new(m.column, m.row);
+                    if crate::tui::zone_at(
+                        &self.app.zones.footer_zones,
+                        self.app.zones.footer_row,
+                        at,
+                    ) == Some(keymap::Action::Quit)
+                    {
+                        return Ok(SurfaceTransition::Exit(None));
+                    }
+                }
+            }
+            return Ok(SurfaceTransition::Wait);
+        }
         if self.effect.is_some() {
             if let Event::Key(k) = event {
                 if k.kind == KeyEventKind::Press
@@ -1090,6 +1202,49 @@ impl HostedSurface for ProjectsSurface<'_> {
 }
 
 impl ProjectsSurface<'_> {
+    fn accept_catalog_completion(
+        &mut self,
+        completion: effect::CatalogCompletion,
+    ) -> Option<SurfaceTransition<Option<ProjectOutcome>>> {
+        if completion.generation != self.catalog_generation {
+            return None;
+        }
+        self.catalog_pending = false;
+        if self.catalog_intent == CatalogIntent::Initial && completion.entries.is_empty() {
+            return Some(SurfaceTransition::Exit(Some(ProjectOutcome::Accept(
+                None,
+                Accept::Clone,
+            ))));
+        }
+        self.app
+            .install_catalog(completion.entries, self.catalog_intent);
+        Some(SurfaceTransition::Redraw)
+    }
+
+    fn start_catalog(
+        &mut self,
+        intent: CatalogIntent,
+    ) -> SurfaceTransition<Option<ProjectOutcome>> {
+        self.catalog_generation = self.catalog_generation.wrapping_add(1);
+        self.catalog_intent = intent;
+        self.catalog_pending = true;
+        self.app.catalog = match intent {
+            CatalogIntent::Initial => CatalogState::Loading,
+            CatalogIntent::Refresh { .. } => CatalogState::Refreshing,
+        };
+        if !self.catalog_worker.request(
+            self.catalog_generation,
+            self.app.cfg.clone(),
+            self.app.theme.clone(),
+        ) {
+            self.catalog_pending = false;
+            self.app.catalog = CatalogState::Failed(
+                "Project discovery could not start. Close and reopen to retry.".into(),
+            );
+        }
+        SurfaceTransition::Redraw
+    }
+
     fn apply_flow(&mut self, flow: Flow) -> SurfaceTransition<Option<ProjectOutcome>> {
         match flow {
             Flow::Continue => SurfaceTransition::Redraw,
@@ -1126,6 +1281,7 @@ impl ProjectsSurface<'_> {
                 self.effect = Some(receiver);
                 SurfaceTransition::Redraw
             }
+            Flow::ReloadCatalog(intent) => self.start_catalog(intent),
         }
     }
 }
@@ -1144,41 +1300,25 @@ pub(crate) fn main(cfg: Config, theme: Theme) -> Result<()> {
 
     trace::mark("config+theme.loaded");
 
-    // Loading is synchronous, and it happens *before* the terminal is claimed.
-    // The source commands cost ~35ms together, which is well under the frame the
-    // old animation spent covering them — and this way an empty result hands off
-    // to the clone flow without ever having taken the screen and given it back.
-    let root = data::ghq_root(&runner);
-    let entries = source::load_all(
-        &cfg,
-        &source::LoadCtx {
-            runner: &runner,
-            theme: &theme,
-            root: &root,
-        },
-    );
-    if trace::enabled() {
-        trace::mark_with("sources.ready", &entries.len().to_string());
-    }
-    if entries.is_empty() {
-        // Nothing to switch to yet — hand the pane to the clone flow.
-        let err = Command::new("bash")
-            .arg(format!("{script_dir}/get.sh"))
-            .exec();
-        return Err(err.into());
-    }
-
-    let mut app = App::new(entries, theme, cfg, script_dir.clone());
+    let mut app = App::new(Vec::new(), theme, cfg, script_dir.clone());
+    app.catalog = CatalogState::Loading;
     let notifier = Notifier::new(&app.cfg);
-    let outcome = surface::run(&mut ProjectsSurface {
+    let mut surface = ProjectsSurface {
         app: &mut app,
         origin_pane: origin.clone(),
         notifier,
         effect: None,
+        catalog_worker: CatalogWorker::spawn(),
+        catalog_generation: 0,
+        catalog_intent: CatalogIntent::Initial,
+        catalog_pending: false,
+        first_loading_drawn: false,
         first_list_drawn: false,
         key_at: None,
         placeholder_frame: None,
-    });
+    };
+    surface.start_catalog(CatalogIntent::Initial);
+    let outcome = surface::run(&mut surface);
 
     match outcome? {
         Some(ProjectOutcome::CopyPath(entry)) => {
@@ -1456,13 +1596,126 @@ mod tests {
     }
 
     #[test]
-    fn the_first_frame_is_the_loaded_list_not_a_splash() {
-        // Sources load before `App` exists, so there is no state in which the
-        // picker draws anything but its own list.
+    fn the_first_frame_is_stable_projects_chrome_with_a_standing_by_state() {
+        for (width, expected) in [
+            (140, &["Search", "Context", "Navigator", "Preview"][..]),
+            (100, &["Search", "Navigator", "Preview"][..]),
+            (79, &["Search", "Navigator"][..]),
+        ] {
+            let mut app = App::new(Vec::new(), Theme::default(), Config::default(), ".".into());
+            app.catalog = CatalogState::Loading;
+            let screen = rendered(&mut app, width, 24);
+            for label in expected {
+                assert!(screen.contains(label), "missing {label}: {screen}");
+            }
+            assert!(screen.contains("Standing by…"), "{screen}");
+            assert!(!screen.contains("zeta"), "{screen}");
+        }
+    }
+
+    #[test]
+    fn startup_loading_accepts_close_and_ignores_row_input() {
+        let mut app = App::new(Vec::new(), Theme::default(), Config::default(), ".".into());
+        app.catalog = CatalogState::Loading;
+        let notifier = Notifier::new(&app.cfg);
+        let mut surface = ProjectsSurface {
+            app: &mut app,
+            origin_pane: String::new(),
+            notifier,
+            effect: None,
+            catalog_worker: CatalogWorker::spawn(),
+            catalog_generation: 0,
+            catalog_intent: CatalogIntent::Initial,
+            catalog_pending: false,
+            first_loading_drawn: false,
+            first_list_drawn: false,
+            key_at: None,
+            placeholder_frame: None,
+        };
+
+        let enter = Event::Key(crossterm::event::KeyEvent::from(KeyCode::Enter));
+        assert!(matches!(
+            surface.on_event(enter).unwrap(),
+            SurfaceTransition::Wait
+        ));
+        let close = Event::Key(crossterm::event::KeyEvent::from(KeyCode::Char('q')));
+        assert!(matches!(
+            surface.on_event(close).unwrap(),
+            SurfaceTransition::Exit(None)
+        ));
+    }
+
+    #[test]
+    fn an_empty_initial_catalog_returns_the_typed_clone_outcome() {
+        let mut app = App::new(Vec::new(), Theme::default(), Config::default(), ".".into());
+        app.catalog = CatalogState::Loading;
+        let notifier = Notifier::new(&app.cfg);
+        let mut surface = ProjectsSurface {
+            app: &mut app,
+            origin_pane: String::new(),
+            notifier,
+            effect: None,
+            catalog_worker: CatalogWorker::spawn(),
+            catalog_generation: 7,
+            catalog_intent: CatalogIntent::Initial,
+            catalog_pending: true,
+            first_loading_drawn: false,
+            first_list_drawn: false,
+            key_at: None,
+            placeholder_frame: None,
+        };
+
+        let transition = surface
+            .accept_catalog_completion(effect::CatalogCompletion {
+                generation: 7,
+                entries: Vec::new(),
+            })
+            .expect("current completion must be applied");
+        assert!(matches!(
+            transition,
+            SurfaceTransition::Exit(Some(ProjectOutcome::Accept(None, Accept::Clone)))
+        ));
+    }
+
+    #[test]
+    fn catalog_completion_preserves_query_and_installs_the_configured_group() {
+        let mut cfg = Config::default();
+        cfg.projects.default_tab = "repos".into();
+        let mut app = App::new(Vec::new(), Theme::default(), cfg, ".".into());
+        app.catalog = CatalogState::Loading;
+        app.picker.query = "mid".into();
+
+        app.install_catalog(sample(), CatalogIntent::Initial);
+
+        assert_eq!(app.catalog, CatalogState::Ready);
+        assert_eq!(app.picker.group, GroupFilter::Only(Kind::Repo));
+        assert_eq!(app.picker.query, "mid");
+        assert_eq!(app.picker.selected_entry().unwrap().id, "gh/mid");
+    }
+
+    #[test]
+    fn refresh_keeps_the_old_list_then_restores_selection_by_entry_id() {
         let mut app = App::new(sample(), Theme::default(), Config::default(), ".".into());
-        let screen = rendered(&mut app, 80, 24);
-        assert!(screen.contains("Search"), "{screen}");
-        assert!(screen.contains("zeta"), "{screen}");
+        app.picker.selected = 2;
+        let selected_id = app.picker.selected_entry().unwrap().id.clone();
+        app.catalog = CatalogState::Refreshing;
+        let refreshing = rendered(&mut app, 120, 32);
+        assert!(refreshing.contains("Refreshing…"), "{refreshing}");
+        assert!(refreshing.contains("zeta"), "{refreshing}");
+        assert!(!app.action_available(keymap::Action::Accept(Accept::Default)));
+
+        let mut reordered = sample();
+        reordered.reverse();
+        app.install_catalog(
+            reordered,
+            CatalogIntent::Refresh {
+                requested_group: GroupFilter::All,
+                preserve_selection: true,
+            },
+        );
+
+        assert_eq!(app.catalog, CatalogState::Ready);
+        assert_eq!(app.picker.selected_entry().unwrap().id, selected_id);
     }
 
     #[test]
