@@ -6,16 +6,12 @@ use std::io::{self, Write};
 use std::os::unix::process::CommandExt;
 use std::process::Command;
 
-use anyhow::{anyhow, Result};
-use serde_json::Value;
-
 use crate::data::{Config, Entry, Kind};
 use crate::fnm::{self, Preparation};
 use crate::git::ReviewSpec;
 use crate::notify::{Event as NotifyEvent, Notifier};
 use crate::runner::CommandRunner;
-
-const FNM_ACTIVATE: &str = "fnm use --silent-if-unchanged >/dev/null 2>&1 || true";
+use anyhow::{anyhow, Result};
 
 /// The targets `open_repo` understands.
 fn is_open_target(t: &str) -> bool {
@@ -162,7 +158,7 @@ fn open_repo(
     if !std::path::Path::new(path).is_dir() {
         return Err(anyhow!("path no longer exists: {path}"));
     }
-    let preparation = if cfg.fnm.enabled {
+    let preparation = if target != "pane" && cfg.fnm.enabled {
         fnm::prepare(runner, path)
     } else {
         Preparation::Unmanaged
@@ -179,9 +175,7 @@ fn open_repo(
                 label.into(),
                 "--focus".into(),
             ],
-            "/result/root_pane/pane_id",
             &preparation,
-            cfg,
         ),
         "tab" => open_new_target(
             runner,
@@ -194,9 +188,7 @@ fn open_repo(
                 label.into(),
                 "--focus".into(),
             ],
-            "/result/root_pane/pane_id",
             &preparation,
-            cfg,
         ),
         "split" => {
             let dir = cfg.projects.split_direction.clone();
@@ -214,7 +206,7 @@ fn open_repo(
                 path.into(),
                 "--focus".into(),
             ]);
-            open_new_target(runner, args, "/result/pane/pane_id", &preparation, cfg)
+            open_new_target(runner, args, &preparation)
         }
         "pane" => {
             if origin.is_empty() {
@@ -234,41 +226,18 @@ fn open_repo(
     result
 }
 
-/// Create a fresh terminal with fnm's resolved PATH, then correct any shell
-/// startup file that replaced it. A create that succeeded remains successful
-/// even when its response cannot be decoded or the best-effort correction
-/// fails: the user already owns a live target at that point.
+/// Create a fresh terminal with fnm's resolved PATH. Shell startup owns any
+/// session-local initialization; target creation never injects terminal input.
 fn open_new_target(
     runner: &dyn CommandRunner,
     mut args: Vec<String>,
-    pane_pointer: &str,
     preparation: &Preparation,
-    cfg: &Config,
 ) -> Result<()> {
-    let Preparation::Ready { path } = preparation else {
-        let refs: Vec<&str> = args.iter().map(String::as_str).collect();
-        return herdr(runner, &refs);
-    };
-
-    args.extend(["--env".into(), format!("PATH={path}")]);
+    if let Preparation::Ready { path } = preparation {
+        args.extend(["--env".into(), format!("PATH={path}")]);
+    }
     let refs: Vec<&str> = args.iter().map(String::as_str).collect();
-    let output = runner
-        .output("herdr", &refs)
-        .map_err(|error| anyhow!("herdr {} failed: {error}", args[0]))?;
-    if !output.status.success() {
-        return Err(anyhow!("herdr {} create failed", args[0]));
-    }
-
-    let pane_id = serde_json::from_slice::<Value>(&output.stdout)
-        .ok()
-        .and_then(|value| value.pointer(pane_pointer)?.as_str().map(str::to_string));
-    let activated = pane_id
-        .as_deref()
-        .is_some_and(|pane_id| runner.ok("herdr", &["pane", "run", pane_id, FNM_ACTIVATE]));
-    if !activated {
-        Notifier::new(cfg).send(NotifyEvent::FnmActivationFailed, None);
-    }
-    Ok(())
+    herdr(runner, &refs)
 }
 
 fn focus_workspace(runner: &dyn CommandRunner, id: &str) -> Result<()> {
@@ -421,7 +390,7 @@ mod tests {
     }
 
     #[test]
-    fn fnm_workspace_open_injects_path_and_activates_the_returned_pane() {
+    fn fnm_workspace_open_passes_path_without_terminal_input() {
         let dir = tmp_repo("fnm-workspace");
         std::fs::write(dir.join(".nvmrc"), "22\n").unwrap();
         let path = dir.to_string_lossy().to_string();
@@ -442,6 +411,7 @@ mod tests {
         .unwrap();
 
         let calls = runner.calls();
+        assert_eq!(calls.len(), 2);
         assert_eq!(
             calls[1],
             vec![
@@ -457,29 +427,26 @@ mod tests {
                 "PATH=/fnm/v22/bin:/usr/bin"
             ]
         );
-        assert_eq!(
-            calls[2],
-            vec!["herdr", "pane", "run", "pane-new", FNM_ACTIVATE]
-        );
+        assert!(!calls
+            .iter()
+            .any(|call| call.windows(2).any(|pair| pair == ["pane", "run"])));
         std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]
-    fn fnm_tab_and_split_parse_their_distinct_pane_responses() {
-        for (tag, accept, response, expected_prefix, pane) in [
+    fn fnm_tab_and_split_pass_path_without_terminal_input() {
+        for (tag, accept, response, expected_prefix) in [
             (
                 "fnm-tab",
                 Accept::Tab,
                 r#"{"result":{"root_pane":{"pane_id":"pane-tab"}}}"#,
                 ["herdr", "tab", "create"],
-                "pane-tab",
             ),
             (
                 "fnm-split",
                 Accept::Split,
                 r#"{"result":{"pane":{"pane_id":"pane-split"}}}"#,
                 ["herdr", "pane", "split"],
-                "pane-split",
             ),
         ] {
             let dir = tmp_repo(tag);
@@ -501,11 +468,14 @@ mod tests {
             .unwrap();
 
             let calls = runner.calls();
+            assert_eq!(calls.len(), 2);
             assert_eq!(&calls[1][..3], expected_prefix);
             assert!(calls[1]
                 .windows(2)
                 .any(|pair| pair == ["--env", "PATH=/fnm/v22/bin:/usr/bin"]));
-            assert_eq!(calls[2], vec!["herdr", "pane", "run", pane, FNM_ACTIVATE]);
+            assert!(!calls
+                .iter()
+                .any(|call| call.windows(2).any(|pair| pair == ["pane", "run"])));
             std::fs::remove_dir_all(dir).ok();
         }
     }
@@ -515,7 +485,7 @@ mod tests {
         let dir = tmp_repo("fnm-pane");
         std::fs::write(dir.join(".nvmrc"), "22\n").unwrap();
         let path = dir.to_string_lossy().to_string();
-        let runner = MockRunner::new().on("fnm exec", "/fnm/v22/bin:/usr/bin\n");
+        let runner = MockRunner::new();
 
         dispatch(
             &runner,
@@ -529,12 +499,13 @@ mod tests {
         .unwrap();
 
         let calls = runner.calls();
-        assert_eq!(calls.len(), 3);
-        assert_eq!(calls[1][..3], ["herdr", "pane", "send-text"]);
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0][..3], ["herdr", "pane", "send-text"]);
         assert_eq!(
-            calls[2],
+            calls[1],
             vec!["herdr", "pane", "send-keys", "pane-9", "enter"]
         );
+        assert!(!calls.iter().any(|call| call[0] == "fnm"));
         assert!(!calls
             .iter()
             .any(|call| call.windows(2).any(|pair| pair == ["pane", "run"])));

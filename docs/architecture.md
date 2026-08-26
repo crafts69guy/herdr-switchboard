@@ -44,7 +44,8 @@ snapshot visible under `Refreshing…`, locks row actions, and restores selectio
 ghq snapshot feeds repositories and at most four concurrent worktree probes; results retain ghq
 order. An empty initial result hands off to Clone after terminal restoration. Repository and
 worktree Inspectors include Git state, recent commits, a file tree, an optional README excerpt, and
-opt-in filesystem-only Node declaration inspection. fnm resolution runs only after selection.
+opt-in filesystem-only Node declaration inspection. fnm resolution runs only after selection;
+fresh targets receive its PATH at process launch and never receive post-create terminal input.
 Selection actions use the captured origin or an ID returned by Herdr; they never guess identifiers.
 
 Usage keeps its specialized quota visualization. Its offline provider is read before terminal

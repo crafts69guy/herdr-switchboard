@@ -59,8 +59,10 @@ Switchboard pane, gutter, and nested card with the theme's `panel_bg`. The forme
 
 `enabled` defaults to `false`. When enabled, repository previews show the Node declaration selected
 from `.nvmrc`, `.node-version`, or `package.json#engines.node`. If `fnm` is installed, workspace,
-tab, and split opens receive the matching installed Node version; opening in the current pane
-relies on fnm's standard `--use-on-cd` shell hook.
+tab, and split opens receive the matching installed Node PATH at process launch; Switchboard never
+sends a follow-up command into their terminals. Shell startup must preserve that PATH or activate
+the initial cwd before drawing its prompt. Opening in the current pane relies on fnm's standard
+`--use-on-cd` shell hook.
 
 The Projects open path never installs a missing Node version or performs fnm network work. A
 missing or invalid requested version does not block the project from opening; it produces a

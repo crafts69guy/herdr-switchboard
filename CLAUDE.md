@@ -147,9 +147,9 @@ order so the list stays stable.
 - **fnm activation is opt-in, local, and post-selection.** `[fnm].enabled` defaults off. Preview
   reads declarations from disk only; `fnm exec --using <repo> -- printenv PATH` runs after an open
   is accepted, never installs a version, and never performs network work. Fresh targets receive
-  that PATH through Herdr's `--env`, then `action.rs` addresses the exact pane ID returned by the
-  create response for one silent `fnm use`. The current-pane target remains `cd`-only and relies on
-  fnm's standard `--use-on-cd` shell hook.
+  that PATH through Herdr's `--env` and never receive post-create terminal input; shell startup
+  owns session-local initialization and must preserve the launch PATH or activate the initial cwd.
+  The current-pane target remains `cd`-only and relies on fnm's standard `--use-on-cd` shell hook.
 - **The Node Versions manager is the only explicit fnm mutation surface.** It loads installed
   versions locally, runs `fnm list-remote` on a worker only after the user opens the dedicated
   pane, and performs install/default/uninstall after terminal restoration. `use` is sent to the

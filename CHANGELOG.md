@@ -51,6 +51,11 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   structured comment IDs and locations, closes back to the agent on success, and stays retryable
   when delivery fails.
 
+### Fixed
+
+- New workspaces, tabs, and splits no longer print Switchboard's fnm activation command around the
+  shell greeting. Matching Node versions are supplied only through the target's launch environment.
+
 ## [2.0.0] - 2026-08-20
 
 ### Changed
