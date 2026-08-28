@@ -18,7 +18,7 @@ label = "repo"
 include_agents = true
 include_workspaces = true
 include_worktrees = true
-default_tab = "all"
+default_tab = "all" # all | agents | workspaces | repos | worktrees | starred
 sort = "recent"
 preview = "enabled"
 preview_position = "right"
@@ -90,6 +90,7 @@ alert_percent = 85
 # down = "ctrl-j,ctrl-n"
 # copy_path = "ctrl-y"
 # send_to_agent = "ctrl-s"
+# star = "ctrl-b"
 
 [keys.agents]
 # pane = "enter"

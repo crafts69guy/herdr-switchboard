@@ -35,6 +35,11 @@ The searchable, selectable entry list in the Projects Picker. It is the primary 
 width and the only body panel retained in compact panes.
 _Avoid_: Results pane, project tree
 
+**Starred**:
+The persistent Projects filter containing Repo and Worktree entries the user explicitly marked.
+It is a view over the loaded catalogue, not a project source or a separate navigation surface.
+_Avoid_: Favorites source, pinned projects
+
 **Inspector**:
 The selected entry's preview card. It may be placed beside or below the Navigator on medium and
 wide panes; compact panes clear its geometry so hidden content cannot receive mouse input.

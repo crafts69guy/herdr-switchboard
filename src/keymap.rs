@@ -138,6 +138,7 @@ pub enum Action {
     CycleSort,
     CopyPath,
     SendToAgent,
+    ToggleStar,
     Backspace,
     ClearQuery,
     DeleteWord,
@@ -147,13 +148,21 @@ pub enum Action {
 }
 
 impl Action {
-    /// An accept returns out of the TUI; everything else stays in it.
-    pub fn is_accept(&self) -> bool {
-        matches!(self, Action::Accept(_))
-    }
-
     pub fn needs_selection(&self) -> bool {
-        self.is_accept() || matches!(self, Action::CopyPath | Action::SendToAgent)
+        matches!(
+            self,
+            Action::Accept(
+                AcceptKind::Default
+                    | AcceptKind::Workspace
+                    | AcceptKind::Tab
+                    | AcceptKind::Split
+                    | AcceptKind::Pane
+                    | AcceptKind::Update
+                    | AcceptKind::Remove
+            ) | Action::CopyPath
+                | Action::SendToAgent
+                | Action::ToggleStar
+        )
     }
 }
 
@@ -178,6 +187,7 @@ const NAMES: &[(&str, Action)] = &[
     ("cycle_sort", Action::CycleSort),
     ("copy_path", Action::CopyPath),
     ("send_to_agent", Action::SendToAgent),
+    ("star", Action::ToggleStar),
     ("clear_query", Action::ClearQuery),
     ("delete_word", Action::DeleteWord),
     ("insert_mode", Action::EnterInsert),
@@ -346,6 +356,7 @@ fn default_insert() -> Vec<(Chord, Action)> {
         (alt(Key::Char('s')), CycleSort),
         (ctrl(Key::Char('y')), CopyPath),
         (ctrl(Key::Char('s')), SendToAgent),
+        (ctrl(Key::Char('b')), ToggleStar),
         (alt(Key::Char('c')), Changelog),
         (alt(Key::Char('u')), Accept(AcceptKind::UpdatePlugin)),
         (alt(Key::Char(',')), Settings),
@@ -404,6 +415,7 @@ fn default_leader() -> Vec<(Chord, Action)> {
         (chord(Key::Char('x')), Accept(AcceptKind::Remove)),
         (chord(Key::Char('c')), Accept(AcceptKind::Clone)),
         (chord(Key::Char('s')), CycleSort),
+        (chord(Key::Char('b')), ToggleStar),
         (chord(Key::Char('l')), Changelog),
         (chord(Key::Char(',')), Settings),
         (chord(Key::Char('U')), Accept(AcceptKind::UpdatePlugin)),
@@ -526,6 +538,10 @@ mod tests {
             km.action(Mode::Insert, ctrl(Key::Char('v'))),
             Some(Action::Accept(AcceptKind::Split))
         );
+        assert_eq!(
+            km.action(Mode::Insert, ctrl(Key::Char('b'))),
+            Some(Action::ToggleStar)
+        );
         // ^u/^w are readline editing, not actions.
         assert_eq!(
             km.action(Mode::Insert, ctrl(Key::Char('u'))),
@@ -572,6 +588,10 @@ mod tests {
             km.leader_action(chord(Key::Char('u'))),
             Some(Action::Accept(AcceptKind::Update))
         );
+        assert_eq!(
+            km.leader_action(chord(Key::Char('b'))),
+            Some(Action::ToggleStar)
+        );
         // …and their labels read as the two-key sequence.
         assert_eq!(
             km.label_for(Mode::Normal, Action::Accept(AcceptKind::Update))
@@ -589,6 +609,10 @@ mod tests {
         assert_eq!(
             km.label_for(Mode::Normal, Action::CopyPath).as_deref(),
             Some("^y")
+        );
+        assert_eq!(
+            km.label_for(Mode::Normal, Action::ToggleStar).as_deref(),
+            Some("␣ b")
         );
     }
 
@@ -637,5 +661,28 @@ mod tests {
                 .as_deref(),
             Some("^y")
         );
+    }
+
+    #[test]
+    fn a_project_star_override_replaces_both_default_mode_bindings() {
+        let mut cfg = Config::default();
+        cfg.keys
+            .entry("projects".into())
+            .or_default()
+            .insert("star".into(), "alt-f".into());
+        let km = Keymap::load(&cfg);
+
+        for mode in [Mode::Insert, Mode::Normal] {
+            assert_eq!(
+                km.action(mode, alt(Key::Char('f'))),
+                Some(Action::ToggleStar)
+            );
+            assert_eq!(
+                km.label_for(mode, Action::ToggleStar).as_deref(),
+                Some("⌥f")
+            );
+        }
+        assert_eq!(km.action(Mode::Insert, ctrl(Key::Char('b'))), None);
+        assert_eq!(km.leader_action(chord(Key::Char('b'))), None);
     }
 }

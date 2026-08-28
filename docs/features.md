@@ -109,6 +109,18 @@ Copilot, Cursor, OpenCode, and Gemini publish no quota anywhere readable, so the
 
 Choose which providers appear, and in what order, with `usage.providers`.
 
+## Projects
+
+Projects can star durable Repo and Worktree entries without changing how they open or sort. Press
+`ctrl-b` in Insert mode or `space b` in Normal mode to toggle the selected item. Starred rows keep
+a peach `★` in a fixed gutter, and the always-present `★ Starred` group remains searchable and
+uses the active Projects sort. Agent and Workspace entries are deliberately excluded because their
+live IDs do not remain stable across sessions.
+
+Stars are private local state. Missing or malformed state never prevents Projects from opening,
+filesystem writes run through the Projects effect seam rather than the input loop, and concurrent
+Projects panes serialize their read-modify-write transactions so completed changes are not lost.
+
 ## Commands
 
 Commands combines zsh, Bash, or fish history with `[[commands.presets]]`, deduplicated by exact
@@ -164,4 +176,5 @@ tokens are validated before they can enter either argv or the origin-pane comman
 ## Repository removal
 
 Projects removal accepts only repository rows and asks for the repository name before deletion.
-Test destructive flows against disposable repositories.
+Cancellation leaves recency and stars untouched, and a failed delete is reported instead of being
+treated as success. Test destructive flows against disposable repositories.

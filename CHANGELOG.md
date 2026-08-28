@@ -13,12 +13,21 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   immediately with `Standing by…`; Settings Apply keeps the old rows visible under `Refreshing…`.
   Repository discovery now shares one ghq snapshot with up to four concurrent worktree probes.
 
+- **Cancelling repository removal now preserves its local state.** An aborted confirmation leaves
+  recency and stars untouched, and a failed delete is reported instead of being treated as success.
+
 - **The central menu is roomier and standalone Settings has one frame.** The menu now opens at
   a fitted `112x28`, with its complete action bar balanced across two rows separated by a gap.
   Standalone Settings relies on the
   frame Herdr already draws, while the in-Projects Settings overlay keeps its floating card.
 
 ### Added
+
+- **Projects can keep starred repos and worktrees.** Press `ctrl-b` in Insert mode or `space b` in
+  Normal mode to star the selection, then open the persistent `★ Starred` group by keyboard or
+  mouse. Compact group labels keep that tab clickable in medium panes; concurrent panes serialize
+  changes so completed stars are not lost. Stars stay private on disk, retain every normal project
+  action, and can be selected as `projects.default_tab`.
 
 - **Commands can keep a local starred list.** Press `ctrl-s` to star or unstar a command, then use
   the History and Starred tabs from the keyboard or mouse. Starred rows carry a peach `★` that

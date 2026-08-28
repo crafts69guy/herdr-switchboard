@@ -122,6 +122,13 @@ order so the list stays stable.
   snapshot, and per-repository worktree probes use at most four threads while their results are
   installed in snapshot order. An empty initial catalogue returns a typed Clone outcome so the
   terminal is restored before `bin/get.sh` takes over.
+- **Projects stars are durable-entry state, not another source.** Only Repo and Worktree identities
+  can be starred; Agent and Workspace IDs are live and must never enter the persistent set. The
+  final Starred group filters the already-loaded catalogue and keeps its search, sort, and actions.
+  `projects::stars` owns typed identity and mutation; `state` owns the private tempfile, atomic
+  replace, and cross-process lock around the complete read-modify-write transaction. Writes return
+  through a typed Projects effect before the reducer changes the marker or list. Missing or
+  malformed state degrades to no stars and must never block the first Projects frame.
 - **The pre-build cat runs before Rust exists and sizes itself from the plugin PTY.**
   `run_with_splash` reads `stty size </dev/tty` and passes those cells to `bootstrap_frame` on each
   animation frame. Do not replace it with `tput`: redirecting `tput` away from the TTY makes it

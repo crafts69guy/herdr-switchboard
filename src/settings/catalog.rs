@@ -75,7 +75,14 @@ pub(super) const SETTINGS: &[Setting] = &[
         key: "default_tab",
         default: "all",
         hint: "active tab at startup and after apply",
-        cycle: Cycle::Ring(&["all", "agents", "workspaces", "repos", "worktrees"]),
+        cycle: Cycle::Ring(&[
+            "all",
+            "agents",
+            "workspaces",
+            "repos",
+            "worktrees",
+            "starred",
+        ]),
     },
     Setting {
         group: "Sources",

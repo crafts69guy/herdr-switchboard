@@ -19,7 +19,8 @@ Set `common.keymode = "insert"` to restore a type-first start.
 | `alt-w` | Open in a workspace. |
 | `ctrl-r` / `ctrl-x` | Update / remove the selected repo. |
 | `ctrl-y` / `ctrl-s` | Copy the selected absolute path / send it to an agent. |
-| `tab` / `shift-tab` | Move through All, Agents, Workspaces, Repos, and Worktrees. |
+| `ctrl-b` | Star or unstar the selected Repo or Worktree. |
+| `tab` / `shift-tab` | Move through All, Agents, Workspaces, Repos, Worktrees, and Starred. |
 | `alt-p` / `alt-s` | Toggle preview / cycle sort order. |
 | `alt-j`, `alt-k` | Scroll the preview. |
 | `ctrl-u`, `ctrl-w`, `backspace` | Clear query / delete word / delete character. |
@@ -42,6 +43,7 @@ repository name as typed confirmation.
 | `p` / `alt-j`, `alt-k` | Toggle / scroll the preview. |
 | `ctrl-y` / `ctrl-s` | Copy the selected absolute path / send it to an agent. |
 | `space u` / `space x` / `space c` | Update repo / remove repo / Clone flow. |
+| `space b` | Star or unstar the selected Repo or Worktree. |
 | `space s` / `space l` / `space ,` | Sort / changelog / settings. |
 | `space U` | Update Switchboard. |
 | `?` / `q`, `esc` | Help / close. |
@@ -57,6 +59,10 @@ repository name as typed confirmation.
 
 The resting Projects list uses `projects.sort`; a non-empty query switches to fuzzy-score order.
 Successful opens update `${XDG_STATE_HOME:-~/.local/state}/herdr-switchboard/recent.tsv`.
+
+Repo and Worktree stars are local and persistent. A peach `★` marks them in every group, and the
+final `★ Starred` group keeps the same search, sort, and item actions as the ordinary catalogue.
+Agent and Workspace rows are live identities and cannot be starred.
 
 Copy and send are available for Agent, Repo, and Worktree rows with an absolute path. Agent rows
 refresh `foreground_cwd` before acting; Repo and Worktree rows use the path shown in the Inspector.
@@ -102,6 +108,7 @@ Bindings are `action = "chord"` entries under a picker-specific table:
 tab = "ctrl-y"
 split = "ctrl-x"
 down = "ctrl-j,ctrl-n"
+star = "alt-f"
 
 [keys.commands]
 copy = "ctrl-g"

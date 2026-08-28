@@ -47,7 +47,7 @@ Switchboard pane, gutter, and nested card with the theme's `panel_bg`. The forme
 | Key | Purpose |
 | --- | --- |
 | `default_target` | `workspace`, `tab`, `split`, or `pane`. |
-| `default_tab` | `all`, `agents`, `workspaces`, `repos`, or `worktrees`. |
+| `default_tab` | `all`, `agents`, `workspaces`, `repos`, `worktrees`, or `starred`. |
 | `include_agents`, `include_workspaces`, `include_worktrees` | Control list sources. |
 | `sort` | `recent`, `name`, or `kind` for an empty query. |
 | `label` | `repo`, `owner-repo`, or `path` for created targets. |
@@ -109,6 +109,7 @@ Use `[keys.<picker>]` tables with action-to-chord entries:
 [keys.projects]
 split = "ctrl-x"
 down = "ctrl-j,ctrl-n"
+star = "alt-f"
 
 [keys.agents]
 workspace = "alt-a"
@@ -127,13 +128,19 @@ Recent Projects selections live at:
 ${XDG_STATE_HOME:-~/.local/state}/herdr-switchboard/recent.tsv
 ```
 
+Starred Projects repos and worktrees live at:
+
+```text
+${XDG_STATE_HOME:-~/.local/state}/herdr-switchboard/project-stars.json
+```
+
 Command selection history and local stars live at:
 
 ```text
 ${XDG_STATE_HOME:-~/.local/state}/herdr-switchboard/commands.json
 ```
 
-The file is written with private permissions. Stars never leave the machine.
+Both star files are written with private permissions. Stars never leave the machine.
 
 Usage is the only credential-reading surface and the only in-process HTTP client. Codex is read
 from disk; Claude Code's card calls the usage endpoint behind the in-session `/usage` command,

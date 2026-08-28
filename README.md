@@ -105,6 +105,7 @@ Common Projects actions:
 | `alt-w` | `w` | Open it in a workspace. |
 | `ctrl-y` | `ctrl-y` | Copy the selected Agent, Repo, or Worktree absolute path. |
 | `ctrl-s` | `ctrl-s` | Share that path as context with a running agent. |
+| `ctrl-b` | `space b` | Star or unstar the selected Repo or Worktree. |
 | `alt-p` | `p` | Toggle the preview. |
 | `?` | `?` | Show the live cheatsheet. |
 
@@ -175,7 +176,7 @@ Common settings include:
 | --- | --- |
 | `common.keymode` | Start in Vim-first `normal` (default) or type-first `insert` mode. |
 | `projects.default_target` | Use `workspace`, `tab`, `split`, or `pane` for `enter` on a repo. |
-| `projects.default_tab` | Start on `all`, `agents`, `workspaces`, `repos`, or `worktrees`. |
+| `projects.default_tab` | Start on `all`, `agents`, `workspaces`, `repos`, `worktrees`, or `starred`. |
 | `projects.sort` | Sort the resting list by `recent`, `name`, or `kind`. |
 | `projects.preview` | Enable or disable the preview card. |
 | `fnm.enabled` | Show and activate project Node versions through an installed fnm. |

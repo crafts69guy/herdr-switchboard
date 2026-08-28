@@ -8,6 +8,7 @@ use ratatui::widgets::{List, ListItem, Paragraph};
 use ratatui::Frame;
 
 use crate::action::Accept;
+use crate::data::{GroupFilter, Kind};
 use crate::keymap::{Action, Mode};
 use crate::projects::App;
 
@@ -257,15 +258,7 @@ fn draw_context(
     let mut zones = Vec::new();
     for (row, group) in app.picker.tabs().into_iter().enumerate() {
         let selected = group == app.picker.group;
-        let count = match group {
-            crate::data::GroupFilter::All => app.picker.entries.len(),
-            crate::data::GroupFilter::Only(kind) => app
-                .picker
-                .entries
-                .iter()
-                .filter(|entry| entry.kind == kind)
-                .count(),
-        };
+        let count = app.picker.group_count(group);
         let style = if selected {
             Style::default()
                 .fg(title)
@@ -380,8 +373,15 @@ fn draw_input(
         ),
         Mode::Insert => (" INSERT ", app.theme.or("green", Color::Green)),
     };
+    let (caption, caption_color) = app
+        .feedback
+        .as_ref()
+        .map(|message| (format!(" {message} "), app.theme.or("red", Color::Red)))
+        .unwrap_or((count, sub));
     let block = crate::tui::boxed("Search", title, border)
-        .title(Line::from(Span::styled(count, Style::default().fg(sub))).right_aligned())
+        .title(
+            Line::from(Span::styled(caption, Style::default().fg(caption_color))).right_aligned(),
+        )
         .title(Line::from(Span::styled(
             tag,
             Style::default().bg(bg).fg(ink).add_modifier(Modifier::BOLD),
@@ -425,66 +425,61 @@ fn draw_list(
     surface: Color,
     show_tabs: bool,
 ) {
-    let items: Vec<ListItem> = app
-        .picker
-        .filtered
-        .iter()
-        .map(|&i| {
-            let e = &app.picker.entries[i];
-            let mut primary = e.primary.clone();
-            let width = 38usize;
-            let plen = primary.chars().count();
-            if plen < width {
-                primary.push_str(&" ".repeat(width - plen));
-            }
-            // The secondary column carries the entry's own colour (host tint
-            // for repos, live state for agents, accent for workspaces) so the
-            // list reads as colourful at a glance instead of a wall of grey.
-            ListItem::new(Line::from(vec![
-                Span::styled(e.icon.clone(), Style::default().fg(e.icon_color)),
-                Span::raw(" "),
-                Span::styled(primary, Style::default().fg(text)),
-                Span::raw(" "),
-                Span::styled(
-                    e.secondary.clone(),
-                    Style::default()
-                        .fg(e.icon_color)
-                        .add_modifier(Modifier::DIM),
-                ),
-            ]))
-        })
-        .collect();
+    let items: Vec<ListItem> = if app.picker.filtered.is_empty()
+        && app.picker.group == crate::data::GroupFilter::Starred
+        && app.picker.query.is_empty()
+    {
+        vec![ListItem::new(Line::from(Span::styled(
+            "  No starred repos or worktrees yet",
+            Style::default().fg(border).add_modifier(Modifier::DIM),
+        )))]
+    } else {
+        app.picker
+            .filtered
+            .iter()
+            .enumerate()
+            .map(|(visible_index, &i)| {
+                let e = &app.picker.entries[i];
+                let selected = visible_index == app.picker.selected;
+                let mut primary = e.primary.clone();
+                let width = 38usize;
+                let plen = primary.chars().count();
+                if plen < width {
+                    primary.push_str(&" ".repeat(width - plen));
+                }
+                // The secondary column carries the entry's own colour (host tint
+                // for repos, live state for agents, accent for workspaces) so the
+                // list reads as colourful at a glance instead of a wall of grey.
+                ListItem::new(Line::from(vec![
+                    Span::styled(
+                        e.icon.clone(),
+                        Style::default().fg(if selected { accent } else { e.icon_color }),
+                    ),
+                    Span::raw(" "),
+                    Span::styled(
+                        if app.picker.is_starred(e) { "★" } else { " " },
+                        Style::default().fg(app.theme.or("peach", Color::Yellow)),
+                    ),
+                    Span::raw(" "),
+                    Span::styled(
+                        primary,
+                        Style::default().fg(if selected { accent } else { text }),
+                    ),
+                    Span::raw(" "),
+                    Span::styled(
+                        e.secondary.clone(),
+                        Style::default()
+                            .fg(if selected { accent } else { e.icon_color })
+                            .add_modifier(Modifier::DIM),
+                    ),
+                ]))
+            })
+            .collect()
+    };
 
     // Title row = a group tab strip (All + each present kind) with the active
-    // tab highlighted, plus a right-aligned sort indicator.
+    // tab highlighted, plus a right-aligned sort indicator when both fit.
     let ink = app.theme.or("panel_bg", Color::Rgb(16, 18, 20));
-    let mut tab_spans: Vec<Span> = Vec::new();
-    // A tab's click zone is measured in the loop that lays it out: the two
-    // cannot drift, because there is only one place that decides where a tab is.
-    // Titles start one column in, past the block's corner.
-    let mut x = area.x + 1;
-    let mut zones = Vec::new();
-    for g in app.picker.tabs() {
-        let style = if g == app.picker.group {
-            Style::default()
-                .fg(ink)
-                .bg(title)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(border)
-        };
-        let label = format!(" {} ", g.label());
-        let w = label.chars().count() as u16;
-        zones.push((Rect::new(x, area.y, w, 1), g));
-        x += w + 1; // the gap span below
-        tab_spans.push(Span::styled(label, style));
-        tab_spans.push(Span::raw(" "));
-    }
-    app.zones.tab_zones = zones;
-    let sort_hint = Span::styled(
-        format!(" sort: {} ", app.picker.sort.label()),
-        Style::default().fg(border),
-    );
     // `framed` rather than `boxed`: this panel's caption slot is the tab strip,
     // a multi-span line, not a word — but the frame itself must still be the
     // shared one, or it drifts the way the git card did.
@@ -493,10 +488,59 @@ fn draw_list(
         super::CatalogState::Loading | super::CatalogState::Failed(_)
     );
     let block = if show_tabs && !catalog_unavailable {
-        crate::tui::framed(border)
-            .title(Line::from(tab_spans))
-            .title(Line::from(sort_hint).right_aligned())
+        let groups = app.picker.tabs();
+        let available = area.width.saturating_sub(2);
+        let full = tab_labels(&groups, TabDensity::Full);
+        let labels = if tab_row_width(&full) <= available {
+            full
+        } else {
+            let compact = tab_labels(&groups, TabDensity::Compact);
+            if tab_row_width(&compact) <= available {
+                compact
+            } else {
+                tab_labels(&groups, TabDensity::Minimal)
+            }
+        };
+        let sort_text = format!(" sort: {} ", app.picker.sort.label());
+        let show_sort =
+            tab_row_width(&labels).saturating_add(sort_text.chars().count() as u16) <= available;
+
+        // A tab's click zone is measured in the loop that lays it out: the two
+        // cannot drift, because there is only one place that decides where a tab is.
+        // Titles start one column in, past the block's corner.
+        let mut x = area.x + 1;
+        let mut zones = Vec::new();
+        let mut tab_spans = Vec::new();
+        for (group, label) in groups.into_iter().zip(labels) {
+            let style = if group == app.picker.group {
+                Style::default()
+                    .fg(ink)
+                    .bg(title)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(border)
+            };
+            let width = label.chars().count() as u16;
+            zones.push((Rect::new(x, area.y, width, 1), group));
+            x += width + 1;
+            tab_spans.push(Span::styled(label, style));
+            tab_spans.push(Span::raw(" "));
+        }
+        app.zones.tab_zones = zones;
+        let block = crate::tui::framed(border).title(Line::from(tab_spans));
+        if show_sort {
+            block.title(
+                Line::from(Span::styled(sort_text, Style::default().fg(border))).right_aligned(),
+            )
+        } else {
+            block
+        }
     } else {
+        // Wide layouts publish their visible Context row zones in draw_context;
+        // only clear stale Navigator-title zones when this layout owns them.
+        if show_tabs {
+            app.zones.tab_zones.clear();
+        }
         crate::tui::framed(border).title(Span::styled(
             " Navigator ",
             Style::default().fg(title).add_modifier(Modifier::BOLD),
@@ -542,12 +586,7 @@ fn draw_list(
     let list = List::new(items)
         .block(block)
         .highlight_symbol("▌ ")
-        .highlight_style(
-            Style::default()
-                .fg(accent)
-                .bg(surface)
-                .add_modifier(Modifier::BOLD),
-        );
+        .highlight_style(Style::default().bg(surface).add_modifier(Modifier::BOLD));
 
     // The state carries the scroll offset between frames — a click can only be
     // turned back into an entry if we know which row was showing first. It also
@@ -557,6 +596,42 @@ fn draw_list(
     app.zones.list_state.select(selected);
     app.zones.list_area = area;
     f.render_stateful_widget(list, area, &mut app.zones.list_state);
+}
+
+#[derive(Clone, Copy)]
+enum TabDensity {
+    Full,
+    Compact,
+    Minimal,
+}
+
+fn tab_labels(groups: &[GroupFilter], density: TabDensity) -> Vec<String> {
+    groups
+        .iter()
+        .map(|&group| {
+            let label = match density {
+                TabDensity::Full => group.label(),
+                TabDensity::Compact | TabDensity::Minimal => match group {
+                    GroupFilter::All => "All",
+                    GroupFilter::Only(Kind::Agent) => "A",
+                    GroupFilter::Only(Kind::Workspace) => "W",
+                    GroupFilter::Only(Kind::Repo) => "R",
+                    GroupFilter::Only(Kind::Worktree) => "T",
+                    GroupFilter::Starred => "★",
+                },
+            };
+            match density {
+                TabDensity::Full | TabDensity::Compact => format!(" {label} "),
+                TabDensity::Minimal => label.to_string(),
+            }
+        })
+        .collect()
+}
+
+fn tab_row_width(labels: &[String]) -> u16 {
+    labels.iter().fold(0, |width, label| {
+        width.saturating_add(label.chars().count() as u16 + 1)
+    })
 }
 
 fn draw_preview(f: &mut Frame, app: &App, area: Rect, title: Color, border: Color) {
@@ -662,7 +737,13 @@ fn draw_footer(f: &mut Frame, app: &mut App, area: Rect) {
     // from the keymap for the *current mode*, so a remap or an Insert↔Normal
     // switch re-labels every pill (e.g. `update` shows `^r` in Insert, `␣u` in
     // Normal). An action with no binding in this mode drops out of the bar.
-    let items: [(Action, &str, Color); 12] = [
+    let star_label = app
+        .picker
+        .selected_entry()
+        .filter(|entry| app.picker.is_starred(entry))
+        .map(|_| "unstar")
+        .unwrap_or("star");
+    let items: Vec<(Action, &str, Color)> = vec![
         (
             Action::Accept(Accept::Default),
             "open",
@@ -690,6 +771,7 @@ fn draw_footer(f: &mut Frame, app: &mut App, area: Rect) {
         ),
         (Action::CopyPath, "copy", t.or("peach", Color::Yellow)),
         (Action::SendToAgent, "send", t.or("green", Color::Green)),
+        (Action::ToggleStar, star_label, t.or("peach", Color::Yellow)),
         (
             Action::Accept(Accept::Update),
             "update",
@@ -872,6 +954,7 @@ fn draw_help(f: &mut Frame, app: &App, area: Rect) {
         &mut right,
         vec![
             opt(Action::Accept(Accept::Workspace), mauve, "To workspace"),
+            opt(Action::ToggleStar, peach, "Star / unstar"),
             opt(Action::Accept(Accept::Update), teal, "Update repo"),
             opt(Action::Accept(Accept::Remove), red, "Remove"),
         ],

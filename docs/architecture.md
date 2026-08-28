@@ -42,7 +42,8 @@ Herdr agents and workspaces, ghq repositories, and Git worktree metadata through
 background effect. Startup accepts only Close until completion. Settings Apply keeps the previous
 snapshot visible under `Refreshing…`, locks row actions, and restores selection by entry ID. One
 ghq snapshot feeds repositories and at most four concurrent worktree probes; results retain ghq
-order. An empty initial result hands off to Clone after terminal restoration. Repository and
+order. Durable Repo and Worktree stars load from private local state; writes cross a typed effect
+and feed a complete snapshot back to the reducer. An empty initial result hands off to Clone after terminal restoration. Repository and
 worktree Inspectors include Git state, recent commits, a file tree, an optional README excerpt, and
 opt-in filesystem-only Node declaration inspection. fnm resolution runs only after selection;
 fresh targets receive its PATH at process launch and never receive post-create terminal input.
@@ -71,12 +72,13 @@ the module inventory.
 | `surface` | `Surface`, `Transition`, `run` | Terminal lease, mouse capture, polling, ticks, redraw, teardown |
 | `tui` | `SurfaceBackground`, shared frames and pills | Transparent/opaque painting, clearing, frame and hit-zone vocabulary |
 | `config` | Typed section fields, `parse`, `try_load`, finite `value_for_cli` | Namespaced deserialization, defaults, validation |
+| `state` | XDG paths and clock; private write/update operations | Cross-process locking, private unique tempfiles, atomic replacement |
 | `source::ProjectCatalog` | `new`, `load`, canonical `kinds` | Source enablement and load order |
 | `data` | Source loaders, entry and browse types, `Theme` | Response parsing and presentation mapping |
 | `fnm` | `inspect`, `prepare`, `Declaration`, `Preparation` | Version-file precedence, recursive lookup, engine parsing, installed PATH resolution |
 | `fnm_manager` | `main` | Local/remote version parsing, background remote lookup, safe fnm mutations, origin-pane activation |
 | `keymap` | `Chord`, `Action`, `Keymap`, canonical chord conversion | Mode tables, overrides, labels |
-| `projects` / `picker` / `git` | `Surface` adapters and typed outputs | Surface-specific reduction, composition, and Git's saved-review visibility state; `projects::effect` owns generation-tagged catalogue loading |
+| `projects` / `picker` / `git` | `Surface` adapters and typed outputs | Surface-specific reduction and composition; Projects star persistence and generation-tagged catalogue loading; Git saved-review visibility state |
 | `agent_handoff` | `discover_targets`, `deliver_prompt` | Promptable-agent parsing, worktree scoping, origin preference, non-waiting delivery |
 | `clipboard` | `copy_text` | macOS/Wayland/X11 command selection and stdin delivery |
 | `action` | `Accept`, `dispatch`, `open_target` | Restored-terminal effects and process replacement |
@@ -96,11 +98,18 @@ uses the same state at every width:
 - `< 80` columns: Navigator only; preview geometry is cleared so hidden content cannot capture
   mouse input.
 
+When a horizontal Inspector narrows the Navigator, the group strip progressively compacts its
+labels to keep every rendered tab and click zone inside its frame.
+
 The command vocabulary is typed. Projects uses `keymap::Action`; each shared picker supplies its
 scoped `ActionSpec` values while the host provides lifecycle behavior. A displayed key cap is
 derived from the same parsed chord that handles the event. A picker mode may also expose local-only
 `PickerTab` views; the shared picker owns tab navigation, rendering, and hit zones while the mode
 owns the filtered items behind each tab.
+
+Projects group navigation ends with an always-present Starred view after the source-kind groups.
+It filters the same catalogue by durable Repo/Worktree identity, then applies the same fuzzy search
+or resting sort as every other group.
 
 ## Extension rules
 

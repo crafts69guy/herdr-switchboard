@@ -3,6 +3,7 @@
 mod effect;
 mod handoff;
 mod preview;
+mod stars;
 mod view;
 
 use std::cmp::Reverse;
@@ -49,6 +50,8 @@ pub struct Picker {
     recent: HashMap<String, u64>,
     /// Kinds actually present, in tab order — drives group cycling + the strip.
     pub present_kinds: Vec<Kind>,
+    /// Durable local favourites, private to the Projects feature.
+    stars: stars::Stars,
 }
 
 /// The async preview pipeline and everything the pane needs to draw and scroll.
@@ -138,6 +141,8 @@ pub struct App {
     /// The settings form used when [`Overlay::Settings`] owns input.
     pub settings: settings::Settings,
     pub zones: HitZones,
+    /// A non-sensitive inline failure that replaces the ordinary result count.
+    pub feedback: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -174,6 +179,7 @@ enum Flow {
     CopyPath(Entry),
     DiscoverTargets(Entry),
     Deliver(HandoffRequest),
+    SetStar(Entry, bool),
     ReloadCatalog(CatalogIntent),
 }
 
@@ -193,6 +199,7 @@ impl Picker {
             sort,
             recent,
             present_kinds,
+            stars: stars::Stars::load(),
         };
         // Apply the initial sort (Recent by default) to the resting list.
         picker.recompute();
@@ -203,14 +210,15 @@ impl Picker {
         let group = self.group;
         if self.query.is_empty() {
             // Browse mode: filter by group, then order by the active sort.
-            self.filtered = browse_order(&self.entries, &self.recent, group, self.sort);
+            self.filtered =
+                browse_order(&self.entries, &self.recent, &self.stars, group, self.sort);
         } else {
             // Search mode: fuzzy score wins; group still narrows the candidates.
             let pat = Pattern::parse(&self.query, CaseMatching::Smart, Normalization::Smart);
             let mut buf = Vec::new();
             let mut scored: Vec<(u32, usize)> = Vec::new();
             for (i, e) in self.entries.iter().enumerate() {
-                if !group.matches(e.kind) {
+                if !group.matches(e.kind, self.stars.contains(e)) {
                     continue;
                 }
                 buf.clear();
@@ -226,10 +234,11 @@ impl Picker {
         self.selected = 0;
     }
 
-    /// The tab strip in order: All, then each present kind.
+    /// The tab strip in order: All, each present kind, then Starred.
     pub fn tabs(&self) -> Vec<GroupFilter> {
         let mut v = vec![GroupFilter::All];
         v.extend(self.present_kinds.iter().map(|&k| GroupFilter::Only(k)));
+        v.push(GroupFilter::Starred);
         v
     }
 
@@ -272,6 +281,38 @@ impl Picker {
     /// The entry index behind the current selection, if any.
     fn selected_index(&self) -> Option<usize> {
         self.filtered.get(self.selected).copied()
+    }
+
+    pub fn is_starred(&self, entry: &Entry) -> bool {
+        self.stars.contains(entry)
+    }
+
+    pub fn group_count(&self, group: GroupFilter) -> usize {
+        self.entries
+            .iter()
+            .filter(|entry| group.matches(entry.kind, self.stars.contains(entry)))
+            .count()
+    }
+
+    /// Install a persisted star snapshot without making a toggle jump the
+    /// Navigator back to its first row. Unstarring inside Starred selects the
+    /// row that moved into the removed row's place, or the previous last row.
+    fn replace_stars(&mut self, stars: stars::Stars) {
+        let selected_id = self.selected_entry().map(|entry| entry.id.clone());
+        let selected_rank = self.selected;
+        self.stars = stars;
+        self.recompute();
+        if let Some(id) = selected_id {
+            if let Some(position) = self
+                .filtered
+                .iter()
+                .position(|&index| self.entries[index].id == id)
+            {
+                self.selected = position;
+                return;
+            }
+        }
+        self.selected = selected_rank.min(self.filtered.len().saturating_sub(1));
     }
 
     fn replace_entries(
@@ -480,6 +521,7 @@ impl App {
             handoff: HandoffState::new(),
             settings,
             zones: HitZones::new(),
+            feedback: None,
         }
     }
 
@@ -712,6 +754,9 @@ impl App {
     /// Worktrees are openable and reviewable, but repository update/removal has
     /// different semantics and is intentionally unavailable for them.
     pub fn action_available(&self, action: keymap::Action) -> bool {
+        if action.needs_selection() && self.picker.selected_entry().is_none() {
+            return false;
+        }
         if self.catalog == CatalogState::Refreshing && action.needs_selection() {
             return false;
         }
@@ -739,6 +784,12 @@ impl App {
                         .is_some_and(|path| std::path::Path::new(path).is_absolute())
             });
         }
+        if action == keymap::Action::ToggleStar {
+            return self
+                .picker
+                .selected_entry()
+                .is_some_and(stars::Stars::supports);
+        }
         true
     }
 }
@@ -748,11 +799,12 @@ impl App {
 fn browse_order(
     entries: &[Entry],
     recent: &HashMap<String, u64>,
+    stars: &stars::Stars,
     group: GroupFilter,
     sort: SortMode,
 ) -> Vec<usize> {
     let mut idx: Vec<usize> = (0..entries.len())
-        .filter(|&i| group.matches(entries[i].kind))
+        .filter(|&i| group.matches(entries[i].kind, stars.contains(&entries[i])))
         .collect();
     match sort {
         SortMode::Recent => idx.sort_by(|&a, &b| {
@@ -792,6 +844,7 @@ fn delete_word(q: &mut String) {
 /// Run a resolved [`keymap::Action`] against the app.
 fn apply_action(app: &mut App, action: keymap::Action) -> Flow {
     use keymap::Action;
+    app.feedback = None;
     if !app.action_available(action) {
         return Flow::Continue;
     }
@@ -831,6 +884,12 @@ fn apply_action(app: &mut App, action: keymap::Action) -> Flow {
                 app.handoff.finding();
                 app.overlay = Overlay::Handoff;
                 return Flow::DiscoverTargets(entry);
+            }
+        }
+        Action::ToggleStar => {
+            if let Some(entry) = app.picker.selected_entry().cloned() {
+                let starred = !app.picker.is_starred(&entry);
+                return Flow::SetStar(entry, starred);
             }
         }
         Action::Backspace => {
@@ -1016,6 +1075,7 @@ enum ProjectOutcome {
 enum ProjectEffect {
     Targets(Result<(ItemContext, TargetResolution), String>),
     Delivered(Result<(), String>),
+    Stars(Result<stars::Stars, String>),
 }
 
 impl HostedSurface for ProjectsSurface<'_> {
@@ -1086,6 +1146,7 @@ impl HostedSurface for ProjectsSurface<'_> {
                 Err(TryRecvError::Disconnected) => {
                     self.effect = None;
                     self.app.handoff.delivery_failed("");
+                    self.app.feedback = Some("Background action stopped unexpectedly.".into());
                     return Ok(SurfaceTransition::Redraw);
                 }
             };
@@ -1109,6 +1170,14 @@ impl HostedSurface for ProjectsSurface<'_> {
                 }
                 ProjectEffect::Delivered(Err(error)) => {
                     self.app.handoff.delivery_failed(&error);
+                    SurfaceTransition::Redraw
+                }
+                ProjectEffect::Stars(Ok(stars)) => {
+                    self.app.picker.replace_stars(stars);
+                    SurfaceTransition::Redraw
+                }
+                ProjectEffect::Stars(Err(_error)) => {
+                    self.app.feedback = Some("Could not update star.".into());
                     SurfaceTransition::Redraw
                 }
             });
@@ -1281,6 +1350,18 @@ impl ProjectsSurface<'_> {
                 self.effect = Some(receiver);
                 SurfaceTransition::Redraw
             }
+            Flow::SetStar(entry, starred) => {
+                let (sender, receiver) = mpsc::channel();
+                let stars = self.app.picker.stars.clone();
+                std::thread::spawn(move || {
+                    let result = stars
+                        .set(&entry, starred)
+                        .map_err(|error| error.to_string());
+                    let _ = sender.send(ProjectEffect::Stars(result));
+                });
+                self.effect = Some(receiver);
+                SurfaceTransition::Redraw
+            }
             Flow::ReloadCatalog(intent) => self.start_catalog(intent),
         }
     }
@@ -1328,6 +1409,10 @@ pub(crate) fn main(cfg: Config, theme: Theme) -> Result<()> {
         }
         Some(ProjectOutcome::Accept(entry, accept)) => {
             let id = entry.as_ref().map(|e| e.id.clone());
+            let removed_star = (accept == Accept::Remove)
+                .then(|| entry.as_ref().cloned())
+                .flatten()
+                .filter(|entry| app.picker.is_starred(entry));
 
             // Resolve where Enter lands a repo from the (possibly just-applied) config, so a
             // `default_target` change made in the settings overlay is honoured this session.
@@ -1335,7 +1420,7 @@ pub(crate) fn main(cfg: Config, theme: Theme) -> Result<()> {
                 action::forced_target().as_deref(),
                 &app.cfg.projects.default_target,
             );
-            action::dispatch(
+            let dispatch_outcome = action::dispatch(
                 &runner,
                 entry,
                 accept,
@@ -1344,6 +1429,9 @@ pub(crate) fn main(cfg: Config, theme: Theme) -> Result<()> {
                 &script_dir,
                 &default_target,
             )?;
+            if dispatch_outcome == action::DispatchOutcome::Aborted {
+                return Ok(());
+            }
             // Record recency only for successful opens (dispatch returned Ok above).
             if let Some(id) = id {
                 match accept {
@@ -1355,6 +1443,14 @@ pub(crate) fn main(cfg: Config, theme: Theme) -> Result<()> {
                     Accept::Remove => history::forget(&id),
                     // Clone / UpdatePlugin exec away and never come back here.
                     Accept::Update | Accept::Clone | Accept::UpdatePlugin => {}
+                }
+            }
+            if let Some(entry) = removed_star {
+                if app.picker.stars.clone().set(&entry, false).is_err() {
+                    Notifier::new(&app.cfg).send_message(
+                        "Repository was removed, but its local star could not be cleared.",
+                        "request",
+                    );
                 }
             }
         }
@@ -1398,7 +1494,13 @@ mod tests {
         let mut recent = HashMap::new();
         recent.insert("gh/mid".to_string(), 100u64);
         recent.insert("term-1".to_string(), 200u64);
-        let order = browse_order(&e, &recent, GroupFilter::All, SortMode::Recent);
+        let order = browse_order(
+            &e,
+            &recent,
+            &stars::Stars::default(),
+            GroupFilter::All,
+            SortMode::Recent,
+        );
         // term-1 (200) then gh/mid (100), then the untouched two in load order.
         assert_eq!(order, vec![1, 2, 0, 3]);
     }
@@ -1406,7 +1508,13 @@ mod tests {
     #[test]
     fn name_sort_is_alphabetical() {
         let e = sample();
-        let order = browse_order(&e, &HashMap::new(), GroupFilter::All, SortMode::Name);
+        let order = browse_order(
+            &e,
+            &HashMap::new(),
+            &stars::Stars::default(),
+            GroupFilter::All,
+            SortMode::Name,
+        );
         // alpha, mid, work, zeta
         assert_eq!(order, vec![1, 2, 3, 0]);
     }
@@ -1415,7 +1523,13 @@ mod tests {
     fn kind_sort_groups_agents_workspaces_repos_then_worktrees() {
         let mut e = sample();
         e.push(entry(Kind::Worktree, "/tmp/zeta.feature", "zeta feature"));
-        let order = browse_order(&e, &HashMap::new(), GroupFilter::All, SortMode::Kind);
+        let order = browse_order(
+            &e,
+            &HashMap::new(),
+            &stars::Stars::default(),
+            GroupFilter::All,
+            SortMode::Kind,
+        );
         // agent(1), workspace(3), repos in load order(0,2), worktree(4)
         assert_eq!(order, vec![1, 3, 0, 2, 4]);
     }
@@ -1774,11 +1888,81 @@ mod tests {
         let footer = screen.lines().last().unwrap();
         assert!(footer.contains("^y copy"), "{footer}");
         assert!(footer.contains("^s send"), "{footer}");
+        assert!(footer.contains("␣ b star"), "{footer}");
 
         app.overlay = Overlay::Help;
         let help = rendered(&mut app, 120, 40);
         assert!(help.contains("Copy path"), "{help}");
         assert!(help.contains("Send to agent"), "{help}");
+        assert!(help.contains("Star / unstar"), "{help}");
+    }
+
+    #[test]
+    fn a_star_keeps_its_peach_colour_when_the_row_is_selected() {
+        let entries = vec![entry(Kind::Repo, "gh/repo", "repo")];
+        let mut app = App::new(
+            entries.clone(),
+            Theme::from_slots(&[("peach", "#ffaa00")]),
+            Config::default(),
+            ".".into(),
+        );
+        app.picker.replace_stars(stars::Stars::memory(&entries));
+
+        let buffer = rendered_buffer(&mut app, 79, 24);
+        let marker_x = (0..79)
+            .find(|&x| buffer[(x, 4)].symbol() == "★")
+            .expect("star marker on the first list row");
+        assert_eq!(buffer[(marker_x, 4)].fg, Color::Rgb(0xff, 0xaa, 0x00));
+    }
+
+    #[test]
+    fn an_empty_starred_filter_explains_what_is_missing() {
+        let mut app = app_with_layout();
+        app.picker.group = GroupFilter::Starred;
+        app.picker.recompute();
+
+        let screen = rendered(&mut app, 100, 28);
+        assert!(
+            screen.contains("No starred repos or worktrees yet"),
+            "{screen}"
+        );
+    }
+
+    #[test]
+    fn an_empty_starred_filter_disables_selection_actions() {
+        let mut app = app_with_layout();
+        app.picker.group = GroupFilter::Starred;
+        app.picker.recompute();
+
+        for action in [
+            keymap::Action::Accept(Accept::Default),
+            keymap::Action::Accept(Accept::Tab),
+            keymap::Action::Accept(Accept::Update),
+            keymap::Action::Accept(Accept::Remove),
+            keymap::Action::ToggleStar,
+        ] {
+            assert!(!app.action_available(action), "{action:?} needs a row");
+        }
+        assert!(app.action_available(keymap::Action::Accept(Accept::Clone)));
+        assert!(app.action_available(keymap::Action::Accept(Accept::UpdatePlugin)));
+
+        let enter = handle_key(&mut app, key(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(matches!(enter, Flow::Continue));
+
+        let screen = rendered(&mut app, 100, 28);
+        let footer = screen.lines().last().unwrap();
+        assert!(!footer.contains("open"), "{footer}");
+        assert!(!footer.contains("update"), "{footer}");
+        assert!(!footer.contains("remove"), "{footer}");
+        assert!(footer.contains("clone"), "{footer}");
+    }
+
+    #[test]
+    fn a_star_write_failure_is_visible_without_exposing_a_path() {
+        let mut app = app_with_layout();
+        app.feedback = Some("Could not update star.".into());
+        let screen = rendered(&mut app, 100, 28);
+        assert!(screen.contains("Could not update star."), "{screen}");
     }
 
     #[test]
@@ -1858,6 +2042,57 @@ mod tests {
     }
 
     #[test]
+    fn clicking_the_rendered_starred_tab_opens_the_starred_filter() {
+        let mut app = app_with_layout();
+        let _ = rendered(&mut app, 140, 32);
+        let zone = app
+            .zones
+            .tab_zones
+            .iter()
+            .find(|(_, group)| *group == GroupFilter::Starred)
+            .map(|(zone, _)| *zone)
+            .expect("starred tab zone");
+
+        app.on_click(Position::new(zone.x, zone.y));
+        assert_eq!(app.picker.group, GroupFilter::Starred);
+    }
+
+    #[test]
+    fn every_medium_layout_keeps_the_starred_tab_visible_and_inside_the_navigator() {
+        for (width, preview_size) in [(80, "60%"), (80, "80%"), (100, "60%"), (119, "60%")] {
+            let mut entries = sample();
+            entries.push(entry(Kind::Worktree, "/tmp/repo.feature", "repo feature"));
+            let mut config = Config::default();
+            config.projects.preview_size = preview_size.into();
+            let mut app = App::new(entries, Theme::default(), config, ".".into());
+            let buffer = rendered_buffer(&mut app, width, 28);
+            let zone = app
+                .zones
+                .tab_zones
+                .iter()
+                .find(|(_, group)| *group == GroupFilter::Starred)
+                .map(|(zone, _)| *zone)
+                .expect("starred tab zone");
+
+            assert!(
+                zone.right() <= app.zones.list_area.right(),
+                "width {width}: {zone:?} escaped {:?}",
+                app.zones.list_area
+            );
+            let star_x = (zone.x..zone.right())
+                .find(|&x| buffer[(x, zone.y)].symbol() == "★")
+                .unwrap_or_else(|| {
+                    panic!(
+                        "width {width}, preview {preview_size}: Starred was not rendered where its zone points"
+                    )
+                });
+
+            app.on_click(Position::new(star_x, zone.y));
+            assert_eq!(app.picker.group, GroupFilter::Starred, "width {width}");
+        }
+    }
+
+    #[test]
     fn a_click_dismisses_the_help_popup_and_nothing_else() {
         let mut app = app_with_layout();
         app.overlay = Overlay::Help;
@@ -1906,11 +2141,64 @@ mod tests {
         let order = browse_order(
             &e,
             &HashMap::new(),
+            &stars::Stars::default(),
             GroupFilter::Only(Kind::Repo),
             SortMode::Name,
         );
         // only the two repos, alphabetical: mid(2), zeta(0)
         assert_eq!(order, vec![2, 0]);
+    }
+
+    #[test]
+    fn starred_filter_uses_the_existing_sort_and_search_rules() {
+        let entries = sample();
+        let stars = stars::Stars::memory(&[entries[0].clone(), entries[2].clone()]);
+        let mut picker = Picker::new(entries, SortMode::Name, HashMap::new());
+        picker.replace_stars(stars);
+        picker.group = GroupFilter::Starred;
+        picker.recompute();
+
+        assert_eq!(
+            picker
+                .filtered
+                .iter()
+                .map(|&index| picker.entries[index].id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["gh/mid", "gh/zeta"]
+        );
+
+        picker.query = "zet".into();
+        picker.recompute();
+        assert_eq!(picker.filtered.len(), 1);
+        assert_eq!(picker.selected_entry().unwrap().id, "gh/zeta");
+    }
+
+    #[test]
+    fn starred_is_always_the_last_tab_and_counts_only_loaded_stars() {
+        let entries = sample();
+        let mut picker = Picker::new(entries.clone(), SortMode::Recent, HashMap::new());
+        picker.replace_stars(stars::Stars::memory(&[entries[0].clone()]));
+
+        assert_eq!(picker.tabs().last(), Some(&GroupFilter::Starred));
+        assert_eq!(picker.group_count(GroupFilter::Starred), 1);
+    }
+
+    #[test]
+    fn star_updates_preserve_selection_and_unstar_selects_the_nearest_row() {
+        let entries = sample();
+        let mut picker = Picker::new(entries.clone(), SortMode::Recent, HashMap::new());
+        picker.selected = 2;
+        let selected = picker.selected_entry().unwrap().clone();
+
+        picker.replace_stars(stars::Stars::memory(std::slice::from_ref(&selected)));
+        assert_eq!(picker.selected_entry().unwrap().id, selected.id);
+
+        picker.group = GroupFilter::Starred;
+        picker.recompute();
+        assert_eq!(picker.selected_entry().unwrap().id, selected.id);
+        picker.replace_stars(stars::Stars::default());
+        assert!(picker.filtered.is_empty());
+        assert_eq!(picker.selected, 0);
     }
 
     #[test]
@@ -1931,6 +2219,12 @@ mod tests {
         worktrees.projects.default_tab = "worktrees".into();
         let app = App::new(entries, Theme::default(), worktrees, ".".into());
         assert_eq!(app.picker.group, GroupFilter::Only(Kind::Worktree));
+
+        let mut starred = Config::default();
+        starred.projects.default_tab = "starred".into();
+        let app = App::new(sample(), Theme::default(), starred, ".".into());
+        assert_eq!(app.picker.group, GroupFilter::Starred);
+        assert!(app.picker.filtered.is_empty());
     }
 
     #[test]
@@ -1944,6 +2238,29 @@ mod tests {
         assert!(!app.action_available(keymap::Action::Accept(Accept::Update)));
         assert!(!app.action_available(keymap::Action::Accept(Accept::Remove)));
         assert!(app.action_available(keymap::Action::Accept(Accept::Tab)));
+        assert!(app.action_available(keymap::Action::ToggleStar));
+    }
+
+    #[test]
+    fn only_repo_and_worktree_selections_offer_star() {
+        for kind in [Kind::Repo, Kind::Worktree] {
+            let app = App::new(
+                vec![entry(kind, "durable", "durable")],
+                Theme::default(),
+                Config::default(),
+                ".".into(),
+            );
+            assert!(app.action_available(keymap::Action::ToggleStar));
+        }
+        for kind in [Kind::Agent, Kind::Workspace] {
+            let app = App::new(
+                vec![entry(kind, "live", "live")],
+                Theme::default(),
+                Config::default(),
+                ".".into(),
+            );
+            assert!(!app.action_available(keymap::Action::ToggleStar));
+        }
     }
 
     fn path_entry(kind: Kind, path: &str) -> Entry {
@@ -2018,6 +2335,25 @@ mod tests {
         assert!(matches!(send, Flow::DiscoverTargets(_)));
         assert_eq!(app.overlay, Overlay::Handoff);
         assert_eq!(app.handoff.status.as_deref(), Some("Finding agents…"));
+    }
+
+    #[test]
+    fn ctrl_b_requests_a_repo_star_without_changing_ctrl_s() {
+        let mut cfg = Config::default();
+        cfg.common.keymode = crate::config::KeyMode::Insert;
+        let mut app = App::new(
+            vec![path_entry(Kind::Repo, "/repo")],
+            Theme::default(),
+            cfg,
+            ".".into(),
+        );
+
+        let star = handle_key(&mut app, key(KeyCode::Char('b'), KeyModifiers::CONTROL));
+        assert!(matches!(star, Flow::SetStar(entry, true) if entry.id == "id"));
+        assert!(app.picker.query.is_empty());
+
+        let send = handle_key(&mut app, key(KeyCode::Char('s'), KeyModifiers::CONTROL));
+        assert!(matches!(send, Flow::DiscoverTargets(_)));
     }
 
     fn target(pane_id: &str, cwd: &str) -> AgentTarget {

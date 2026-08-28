@@ -52,6 +52,13 @@ pub enum Accept {
     UpdatePlugin,
 }
 
+/// Whether a restored-terminal action ran or the user explicitly cancelled it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DispatchOutcome {
+    Completed,
+    Aborted,
+}
+
 pub fn dispatch(
     runner: &dyn CommandRunner,
     entry: Option<Entry>,
@@ -60,7 +67,7 @@ pub fn dispatch(
     cfg: &Config,
     script_dir: &str,
     default_target: &str,
-) -> Result<()> {
+) -> Result<DispatchOutcome> {
     if accept == Accept::Clone {
         // Hand the whole terminal to the bash clone flow.
         let err = Command::new("bash")
@@ -81,27 +88,35 @@ pub fn dispatch(
     let e = entry.ok_or_else(|| anyhow!("no selection"))?;
 
     match e.kind {
-        Kind::Workspace => focus_workspace(runner, &e.id),
+        Kind::Workspace => focus_workspace(runner, &e.id).map(|_| DispatchOutcome::Completed),
         Kind::Agent => {
             let target = open_kind(accept);
             match (target, e.dir.as_deref()) {
                 (Some(t), Some(dir)) => open_repo(runner, t, dir, origin_pane, &e.label, cfg),
                 _ => focus_agent(runner, &e.id),
             }
+            .map(|_| DispatchOutcome::Completed)
         }
         Kind::Repo | Kind::Worktree => {
             let dir = e.dir.clone().unwrap_or_default();
             match accept {
                 Accept::Default => {
                     open_repo(runner, default_target, &dir, origin_pane, &e.label, cfg)
+                        .map(|_| DispatchOutcome::Completed)
                 }
                 Accept::Workspace => {
                     open_repo(runner, "workspace", &dir, origin_pane, &e.label, cfg)
+                        .map(|_| DispatchOutcome::Completed)
                 }
-                Accept::Tab => open_repo(runner, "tab", &dir, origin_pane, &e.label, cfg),
-                Accept::Split => open_repo(runner, "split", &dir, origin_pane, &e.label, cfg),
-                Accept::Pane => open_repo(runner, "pane", &dir, origin_pane, &e.label, cfg),
-                Accept::Update if e.kind == Kind::Repo => update(runner, &e.id, &e.label),
+                Accept::Tab => open_repo(runner, "tab", &dir, origin_pane, &e.label, cfg)
+                    .map(|_| DispatchOutcome::Completed),
+                Accept::Split => open_repo(runner, "split", &dir, origin_pane, &e.label, cfg)
+                    .map(|_| DispatchOutcome::Completed),
+                Accept::Pane => open_repo(runner, "pane", &dir, origin_pane, &e.label, cfg)
+                    .map(|_| DispatchOutcome::Completed),
+                Accept::Update if e.kind == Kind::Repo => {
+                    update(runner, &e.id, &e.label).map(|_| DispatchOutcome::Completed)
+                }
                 Accept::Remove if e.kind == Kind::Repo => remove(runner, &dir, &e.label),
                 Accept::Update | Accept::Remove => {
                     Err(anyhow!("update/remove is not supported for worktrees"))
@@ -273,19 +288,34 @@ fn update(runner: &dyn CommandRunner, rel: &str, label: &str) -> Result<()> {
     Ok(())
 }
 
-fn remove(runner: &dyn CommandRunner, path: &str, label: &str) -> Result<()> {
+fn remove(runner: &dyn CommandRunner, path: &str, label: &str) -> Result<DispatchOutcome> {
     println!("\x1b[1;31mRemove repository\x1b[0m\n  {path}\n");
     print!("Type the repo name (\x1b[1m{label}\x1b[0m) to confirm: ");
     io::stdout().flush().ok();
     let mut reply = String::new();
     io::stdin().read_line(&mut reply)?;
-    if reply.trim() == label {
-        runner.status("rm", &["-rf", "--", path])?;
-        println!("Removed {label}.");
-    } else {
-        println!("Aborted.");
+    let outcome = remove_with_confirmation(runner, path, label, reply.trim())?;
+    match outcome {
+        DispatchOutcome::Completed => println!("Removed {label}."),
+        DispatchOutcome::Aborted => println!("Aborted."),
     }
-    Ok(())
+    Ok(outcome)
+}
+
+fn remove_with_confirmation(
+    runner: &dyn CommandRunner,
+    path: &str,
+    label: &str,
+    confirmation: &str,
+) -> Result<DispatchOutcome> {
+    if confirmation != label {
+        return Ok(DispatchOutcome::Aborted);
+    }
+    anyhow::ensure!(
+        runner.ok("rm", &["-rf", "--", path]),
+        "remove repository failed"
+    );
+    Ok(DispatchOutcome::Completed)
 }
 
 #[cfg(test)]
@@ -554,6 +584,27 @@ mod tests {
             assert!(err.to_string().contains("not supported for worktrees"));
         }
         assert!(runner.calls().is_empty());
+    }
+
+    #[test]
+    fn removal_confirmation_reports_abort_completion_and_command_failure() {
+        let aborted = MockRunner::new();
+        assert_eq!(
+            remove_with_confirmation(&aborted, "/repo", "repo", "wrong").unwrap(),
+            DispatchOutcome::Aborted
+        );
+        assert!(aborted.calls().is_empty());
+
+        let removed = MockRunner::new();
+        assert_eq!(
+            remove_with_confirmation(&removed, "/repo", "repo", "repo").unwrap(),
+            DispatchOutcome::Completed
+        );
+        assert_eq!(removed.calls()[0], vec!["rm", "-rf", "--", "/repo"]);
+
+        let failed = MockRunner::new().failing("rm -rf");
+        let error = remove_with_confirmation(&failed, "/repo", "repo", "repo").unwrap_err();
+        assert!(error.to_string().contains("remove repository failed"));
     }
 
     #[test]

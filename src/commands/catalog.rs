@@ -11,7 +11,7 @@ use sha2::{Digest, Sha256};
 
 use super::history::{read_login_shell_history, resolve_preset_cwd};
 use crate::config::{Config, Preset};
-use crate::state::{now, state_file};
+use crate::state::{now, state_file, write_private};
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -444,19 +444,4 @@ pub(super) fn read_denylist(path: &Path) -> Result<HashSet<String>> {
         .filter(|line| !line.is_empty())
         .map(str::to_string)
         .collect())
-}
-
-fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let tmp = path.with_extension("tmp");
-    fs::write(&tmp, bytes)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&tmp, fs::Permissions::from_mode(0o600))?;
-    }
-    fs::rename(tmp, path)?;
-    Ok(())
 }

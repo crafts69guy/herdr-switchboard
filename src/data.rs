@@ -157,6 +157,7 @@ impl SortMode {
 pub enum GroupFilter {
     All,
     Only(Kind),
+    Starred,
 }
 
 impl GroupFilter {
@@ -168,15 +169,17 @@ impl GroupFilter {
             "workspaces" => GroupFilter::Only(Kind::Workspace),
             "repos" => GroupFilter::Only(Kind::Repo),
             "worktrees" => GroupFilter::Only(Kind::Worktree),
+            "starred" => GroupFilter::Starred,
             _ => GroupFilter::All,
         }
     }
 
-    /// Does `kind` pass this filter?
-    pub fn matches(self, kind: Kind) -> bool {
+    /// Does an entry with this kind and star state pass the filter?
+    pub fn matches(self, kind: Kind, starred: bool) -> bool {
         match self {
             GroupFilter::All => true,
             GroupFilter::Only(k) => k == kind,
+            GroupFilter::Starred => starred,
         }
     }
 
@@ -187,6 +190,7 @@ impl GroupFilter {
             GroupFilter::Only(Kind::Workspace) => "Workspaces",
             GroupFilter::Only(Kind::Repo) => "Repos",
             GroupFilter::Only(Kind::Worktree) => "Worktrees",
+            GroupFilter::Starred => "★ Starred",
         }
     }
 }
@@ -500,6 +504,7 @@ mod tests {
             GroupFilter::parse("worktrees"),
             GroupFilter::Only(Kind::Worktree)
         );
+        assert_eq!(GroupFilter::parse("starred"), GroupFilter::Starred);
         assert_eq!(GroupFilter::parse("unknown"), GroupFilter::All);
     }
 
