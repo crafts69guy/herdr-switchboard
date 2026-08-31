@@ -138,7 +138,20 @@ impl PickerMode for AgentsMode {
     }
 
     fn initial(&mut self) -> Result<Vec<PickerItem>> {
-        self.integrations = load_integrations(&SystemRunner)?;
+        self.initial_with(&SystemRunner)
+    }
+
+    fn execute(&mut self, item_id: &str, action: &str) -> Result<ActionOutcome> {
+        self.execute_with(&SystemRunner, item_id, action)
+    }
+}
+
+impl AgentsMode {
+    /// [`PickerMode::initial`] against an explicit runner, the same seam
+    /// `execute_with` provides — so the rows this builds can be checked without
+    /// asking the machine what it happens to have installed.
+    fn initial_with(&mut self, runner: &dyn CommandRunner) -> Result<Vec<PickerItem>> {
+        self.integrations = load_integrations(runner)?;
         Ok(self
             .integrations
             .iter()
@@ -166,10 +179,6 @@ impl PickerMode for AgentsMode {
                 accent_slot: Some("mauve".into()),
             })
             .collect())
-    }
-
-    fn execute(&mut self, item_id: &str, action: &str) -> Result<ActionOutcome> {
-        self.execute_with(&SystemRunner, item_id, action)
     }
 }
 
@@ -622,6 +631,132 @@ mod tests {
         fn spawn_detached(&self, _program: &OsStr, _args: &[&str]) -> io::Result<()> {
             Ok(())
         }
+    }
+
+    fn agents_mode() -> AgentsMode {
+        AgentsMode {
+            origin_pane: "w1:p1".into(),
+            origin_cwd: "/work/api".into(),
+            bindings: HashMap::new(),
+            integrations: Vec::new(),
+        }
+    }
+
+    /// A row explains what the integration is and what each key will do with
+    /// it, because the list is the only place that is said.
+    #[test]
+    fn each_integration_becomes_a_row_that_states_its_kind_and_status() {
+        let runner = MockRunner::new().on("herdr integration status", STATUS);
+        let mut mode = agents_mode();
+
+        let items = mode.initial_with(&runner).unwrap();
+
+        assert_eq!(items.len(), 2, "only installed integrations are offered");
+        // The row shows the human name, not the hook id.
+        assert_eq!(items[0].primary, "Claude");
+        assert_eq!(items[0].secondary, "current (v7)");
+        assert_eq!(items[0].trailing.as_deref(), Some("claude"));
+        assert_eq!(
+            items[1].primary, "Antigravity",
+            "an id maps to its product name"
+        );
+        let card = items[0].preview.join("\n");
+        assert!(card.contains("kind    claude"), "{card}");
+        assert!(card.contains("status  current (v7)"), "{card}");
+        assert!(card.contains("hook    /home/u/.claude/hook"), "{card}");
+        assert!(
+            card.contains("Enter starts it in the origin pane."),
+            "{card}"
+        );
+        // Typing any of those words finds the row.
+        // The fuzzy text carries both the name and the id, so either finds it.
+        for needle in ["Claude", "claude", "current", "agy"] {
+            assert!(
+                items
+                    .iter()
+                    .any(|item| item.document.fuzzy.contains(needle)),
+                "`{needle}` matches no row"
+            );
+        }
+    }
+
+    /// A failed status query is an error rather than an empty list: "you have no
+    /// integrations" and "herdr did not answer" are different answers.
+    #[test]
+    fn a_failed_status_query_is_reported_rather_than_shown_as_empty() {
+        let runner = MockRunner::new().failing("herdr");
+        let mut mode = agents_mode();
+        let error = mode.initial_with(&runner).unwrap_err();
+        assert!(error.to_string().contains("integration status"), "{error}");
+    }
+
+    /// Each pill launches into a different place, and the ids the shared picker
+    /// dispatches must be exactly the ones `execute` answers to.
+    #[test]
+    fn every_declared_action_is_one_execute_answers_to() {
+        let runner = MockRunner::new().on("herdr integration status", STATUS);
+        let mut mode = agents_mode();
+        mode.initial_with(&runner).unwrap();
+        let id = mode.integrations[0].id.clone();
+
+        for action in mode.actions() {
+            let runner = MockRunner::new();
+            let outcome = mode
+                .execute_with(&runner, &id, action.id)
+                .unwrap_or_else(|error| {
+                    panic!("`{}` is declared but not handled: {error}", action.id)
+                });
+            assert_eq!(outcome, ActionOutcome::Close);
+        }
+
+        assert_eq!(mode.title(), "AI Integrations");
+        assert_eq!(mode.accent_slot(), "mauve");
+        assert!(mode.actions().iter().all(|a| !a.key_label.is_empty()));
+    }
+
+    /// An unknown target, or an integration that is gone, must be refused by
+    /// name rather than launching something else.
+    #[test]
+    fn an_unknown_target_or_a_vanished_integration_is_refused() {
+        let runner = MockRunner::new().on("herdr integration status", STATUS);
+        let mut mode = agents_mode();
+        mode.initial_with(&runner).unwrap();
+        let id = mode.integrations[0].id.clone();
+
+        let error = mode
+            .execute_with(&MockRunner::new(), &id, "teleport")
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("unknown agent target"),
+            "{error}"
+        );
+
+        let error = mode
+            .execute_with(&MockRunner::new(), "not-installed", "pane")
+            .unwrap_err();
+        assert!(error.to_string().contains("no longer available"), "{error}");
+    }
+
+    /// A settings apply re-reads the key overrides without disturbing the list.
+    #[test]
+    fn a_settings_apply_reloads_only_the_key_bindings() {
+        let runner = MockRunner::new().on("herdr integration status", STATUS);
+        let mut mode = agents_mode();
+        mode.initial_with(&runner).unwrap();
+        assert!(mode.key_bindings().is_empty());
+
+        let mut cfg = Config::default();
+        cfg.keys.insert(
+            "agents".into(),
+            HashMap::from([("pane".to_string(), "ctrl-p".to_string())]),
+        );
+        mode.reload_config(&cfg).unwrap();
+
+        assert_eq!(
+            mode.key_bindings().get("pane").map(String::as_str),
+            Some("ctrl-p")
+        );
+        assert_eq!(mode.integrations.len(), 2, "the list is untouched");
     }
 
     #[test]

@@ -354,7 +354,7 @@ mod tests {
     use std::collections::{HashMap, HashSet};
 
     use super::*;
-    use crate::commands::catalog::{empty_record, CommandCatalog};
+    use crate::commands::catalog::{empty_record, CommandCatalog, SelectionAction};
 
     fn command_mode() -> CommandMode {
         let mut starred = empty_record("cargo test".into(), String::new());
@@ -378,6 +378,204 @@ mod tests {
             notifier: Notifier::silent(),
             bindings: HashMap::new(),
         }
+    }
+
+    /// A row leads with the label a preset gave it, or the command itself, and
+    /// carries the facts that decide whether it is worth running again.
+    #[test]
+    fn a_command_row_leads_with_its_label_and_states_its_history() {
+        let mut record = empty_record("cargo test --workspace".into(), "Full suite".into());
+        record.selected_count = 7;
+        record.starred = true;
+        record.recent_cwds = vec!["/work/api".into()];
+        record.sources = vec!["preset".into()];
+
+        let item = command_item(&record);
+        assert_eq!(item.primary, "Full suite", "a labelled row shows its label");
+        assert_eq!(item.secondary, "preset");
+        assert!(item.trailing_marker.is_some(), "a star is marked");
+        let card = item.preview.join("\n");
+        assert!(card.contains("cargo test --workspace"), "{card}");
+        assert!(card.contains("selected  7 ×"), "{card}");
+        assert!(card.contains("starred  yes"), "{card}");
+        assert!(card.contains("cwd  /work/api"), "{card}");
+
+        // An unlabelled shell command shows itself, and `shell` is not a badge:
+        // it is where all but a handful come from.
+        let plain = command_item(&empty_record("ls -la".into(), String::new()));
+        assert_eq!(plain.primary, "ls -la");
+        assert_eq!(plain.secondary, "", "the common source is not repeated");
+        assert!(plain.trailing_marker.is_none());
+    }
+
+    /// A record carrying a diagnostic says so on its card rather than silently
+    /// offering an action that will fail.
+    #[test]
+    fn a_records_diagnostic_reaches_its_card() {
+        let mut record = empty_record("make deploy".into(), "Deploy".into());
+        record.diagnostics = vec!["preset cwd is unavailable".into()];
+        let card = command_item(&record).preview.join("\n");
+        assert!(
+            card.contains("warning  preset cwd is unavailable"),
+            "{card}"
+        );
+    }
+
+    /// The two tabs are the mode's own view over one catalogue, and only the
+    /// active one is marked — the shared picker draws from that.
+    #[test]
+    fn exactly_one_tab_is_active_and_an_unknown_tab_is_refused() {
+        let mut mode = command_mode();
+
+        let tabs = mode.tabs();
+        assert_eq!(tabs.len(), 2);
+        assert_eq!(tabs.iter().filter(|tab| tab.active).count(), 1);
+        assert!(tabs[0].active, "History is where it opens");
+
+        mode.activate_tab("starred").unwrap();
+        assert!(mode.tabs()[1].active);
+        assert!(
+            mode.activate_tab("not-a-tab").is_none(),
+            "an unknown tab must not silently switch the view"
+        );
+        assert!(mode.tabs()[1].active, "the view did not change");
+    }
+
+    /// Each tab says something different when it is empty: History means there
+    /// is nothing safe to show, Starred means the user has not starred anything.
+    #[test]
+    fn each_empty_tab_explains_itself_differently() {
+        let mut mode = command_mode();
+        assert_eq!(mode.empty_message(), "No safe commands");
+        mode.activate_tab("starred").unwrap();
+        assert!(
+            mode.empty_message().contains("ctrl-s"),
+            "{}",
+            mode.empty_message()
+        );
+    }
+
+    /// Every documented filter field has to resolve against a real row.
+    #[test]
+    fn every_advertised_filter_field_matches_the_row_it_describes() {
+        let mut record = empty_record("cargo test --workspace".into(), "Full suite".into());
+        record.recent_cwds = vec!["/work/api".into()];
+        record.sources = vec!["preset".into()];
+        let item = command_item(&record);
+        let mode = command_mode();
+        let schema = mode.schema();
+        let mut matcher = nucleo_matcher::Matcher::new(nucleo_matcher::Config::DEFAULT);
+
+        for query in [
+            "command:workspace",
+            "cmd:cargo",
+            "label:suite",
+            "cwd:/work/api",
+            "source:preset",
+        ] {
+            let compiled = crate::query::CompiledQuery::compile(query, &schema)
+                .unwrap_or_else(|error| panic!("`{query}` did not compile: {error:?}"));
+            assert!(
+                compiled.score(&item.document, &mut matcher).is_some(),
+                "`{query}` matched no command"
+            );
+        }
+    }
+
+    /// Sorting is a mode action rather than a row action: it keeps the picker
+    /// open and reorders in place.
+    #[test]
+    fn cycling_the_sort_keeps_the_picker_open() {
+        let mut mode = command_mode();
+        let id = fingerprint("cargo test");
+        assert!(matches!(
+            mode.execute(&id, "sort").unwrap(),
+            ActionOutcome::StayOpen
+        ));
+    }
+
+    /// Forgetting drops the row and closes, because the thing that was selected
+    /// no longer exists to act on.
+    #[test]
+    fn forgetting_a_command_removes_it_and_closes() {
+        let mut mode = command_mode();
+        let id = fingerprint("git status");
+
+        assert!(matches!(
+            mode.execute(&id, "forget").unwrap(),
+            ActionOutcome::Close
+        ));
+        assert!(
+            !mode.items().iter().any(|item| item.id == id),
+            "the forgotten row is gone"
+        );
+    }
+
+    /// `run here` needs a directory the command was actually used in, and that
+    /// directory has to still exist — running somewhere else is worse than
+    /// refusing.
+    #[test]
+    fn running_in_a_historical_directory_needs_one_that_still_exists() {
+        let mut mode = command_mode();
+        let id = fingerprint("git status");
+
+        let error = mode.execute(&id, "run_cwd").unwrap_err();
+        assert!(error.to_string().contains("no historical cwd"), "{error}");
+
+        // A directory that was recorded but has since gone is refused by name.
+        mode.catalog
+            .record_selection("git status", SelectionAction::Run, Some("/definitely/gone"))
+            .unwrap();
+        let error = mode.execute(&id, "run_cwd").unwrap_err();
+        assert!(error.to_string().contains("no longer exists"), "{error}");
+    }
+
+    /// Acting on a row that is gone, or with an action nothing answers to, must
+    /// be refused by name rather than falling through to another command.
+    #[test]
+    fn a_vanished_row_or_an_unknown_action_is_refused() {
+        let mut mode = command_mode();
+        let error = mode.execute("not-a-fingerprint", "copy").unwrap_err();
+        assert!(error.to_string().contains("disappeared"), "{error}");
+
+        let id = fingerprint("git status");
+        let error = mode.execute(&id, "teleport").unwrap_err();
+        assert!(
+            error.to_string().contains("unknown command action"),
+            "{error}"
+        );
+    }
+
+    /// The diagnostic placeholder is a message, not a command, so every action
+    /// on it is disabled — otherwise Enter would try to run the warning.
+    #[test]
+    fn the_diagnostic_placeholder_is_not_actionable() {
+        let mode = command_mode();
+        for action in ["run", "fill", "copy", "forget"] {
+            let reason = mode
+                .action_disabled_reason("__diagnostic", action)
+                .unwrap_or_else(|| panic!("{action} must be disabled on the placeholder"));
+            assert!(reason.contains("no safe command"), "{reason}");
+        }
+        // A real row is untouched by that rule.
+        assert!(mode
+            .action_disabled_reason(&fingerprint("git status"), "run")
+            .is_none());
+    }
+
+    /// The chrome the shared picker renders comes from these.
+    #[test]
+    fn the_mode_declares_its_title_accent_and_layout() {
+        let mode = command_mode();
+        assert_eq!(mode.title(), "Commands");
+        assert_eq!(mode.accent_slot(), "mauve");
+        assert!(
+            mode.emphasize_head(),
+            "the leading word is what the eye hunts for"
+        );
+        assert_eq!(mode.list_pct(), 58);
+        assert!(!mode.is_polling(), "the catalogue is loaded up front");
+        assert!(mode.actions().iter().all(|a| !a.key_label.is_empty()));
     }
 
     #[test]

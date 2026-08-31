@@ -336,6 +336,197 @@ mod tests {
 
     const CODEX_LINE: &str = r#"{"timestamp":"2026-08-18T14:22:03.089Z","type":"event_msg","payload":{"type":"token_count","rate_limits":{"limit_id":"codex","primary":{"used_percent":41.0,"window_minutes":10080,"resets_at":1787196988},"secondary":null,"credits":{"has_credits":false,"unlimited":false,"balance":"0"},"plan_type":"prolite"}}}"#;
 
+    /// A popup with the given slots and no worker outstanding.
+    fn popup(slots: Vec<Slot>) -> App {
+        let cfg = Config::default();
+        let theme = Theme::default();
+        App {
+            background: crate::tui::SurfaceBackground::resolve(&theme, cfg.common.transparency),
+            title_color: Color::Yellow,
+            theme,
+            cfg,
+            slots,
+            inbox: None,
+            now: 1_787_000_000,
+            offset: 0,
+            bar_row: 0,
+            bar_zones: Vec::new(),
+        }
+    }
+
+    /// Both ways out, and the one key that asks for fresh numbers. Everything
+    /// else must fall through as a wait rather than costing a repaint.
+    #[test]
+    fn the_popup_closes_on_esc_q_and_ctrl_c_and_ignores_the_rest() {
+        for code in [KeyCode::Esc, KeyCode::Char('q')] {
+            let mut app = popup(Vec::new());
+            assert!(matches!(
+                app.on_key(KeyEvent::from(code)),
+                Transition::Exit(())
+            ));
+        }
+
+        let mut app = popup(Vec::new());
+        let ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        assert!(matches!(app.on_key(ctrl_c), Transition::Exit(())));
+
+        // A plain `c` is not a close.
+        let mut app = popup(Vec::new());
+        assert!(matches!(
+            app.on_key(KeyEvent::from(KeyCode::Char('c'))),
+            Transition::Wait
+        ));
+        assert!(matches!(
+            app.on_key(KeyEvent::from(KeyCode::Char('z'))),
+            Transition::Wait
+        ));
+    }
+
+    /// A command-bar pill carries the key printed on its cap and routes through
+    /// the same handler, so clicking it and pressing that key cannot diverge.
+    #[test]
+    fn a_bar_pill_click_runs_the_key_printed_on_its_cap() {
+        let mut app = popup(Vec::new());
+        app.bar_row = 12;
+        app.bar_zones = vec![(0, 6, KeyCode::Char('r')), (8, 14, KeyCode::Esc)];
+
+        let click = |column, row| crossterm::event::MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        };
+
+        // The close pill closes.
+        assert!(matches!(app.on_mouse(click(10, 12)), Transition::Exit(())));
+        // A click that lands on no pill does nothing.
+        assert!(matches!(app.on_mouse(click(40, 12)), Transition::Wait));
+        // And a click on another row is not the bar.
+        assert!(matches!(app.on_mouse(click(2, 5)), Transition::Wait));
+        // A pointer event that is not a left click is ignored outright.
+        let mut moved = click(2, 12);
+        moved.kind = MouseEventKind::Moved;
+        assert!(matches!(app.on_mouse(moved), Transition::Wait));
+    }
+
+    /// Every answer the worker sends replaces exactly one card, and a provider
+    /// that failed says why instead of vanishing from the row.
+    #[test]
+    fn each_worker_answer_fills_in_its_own_card() {
+        let (sender, receiver) = mpsc::channel();
+        let mut app = popup(vec![
+            Slot::Loading {
+                name: "Codex".into(),
+            },
+            Slot::Loading {
+                name: "Claude".into(),
+            },
+        ]);
+        app.inbox = Some(receiver);
+
+        assert!(!app.drain(), "nothing has answered yet");
+        assert!(matches!(app.slots[0], Slot::Loading { .. }));
+
+        sender.send((1, Err("no credential".to_string()))).unwrap();
+        assert!(app.drain(), "an answer landed");
+        match &app.slots[1] {
+            Slot::Unavailable { name, reason } => {
+                assert_eq!(name, "Claude", "the card keeps its name");
+                assert_eq!(reason, "no credential");
+            }
+            other => panic!("expected a stated failure, got {other:?}"),
+        }
+        // The other card is untouched and still waiting.
+        assert!(matches!(app.slots[0], Slot::Loading { .. }));
+    }
+
+    /// When the worker is finished the inbox is released, so the popup stops
+    /// polling a channel that will never answer again.
+    #[test]
+    fn a_finished_worker_releases_the_inbox() {
+        let (sender, receiver) = mpsc::channel::<(usize, Result<Report, String>)>();
+        let mut app = popup(vec![Slot::Loading {
+            name: "Codex".into(),
+        }]);
+        app.inbox = Some(receiver);
+        drop(sender);
+
+        assert!(app.drain(), "a disconnect is a change worth redrawing");
+        assert!(app.inbox.is_none(), "the popup stops polling");
+        // And with no inbox at all, draining is a no-op rather than a panic.
+        assert!(!app.drain());
+    }
+
+    /// A tick redraws only when something actually changed.
+    #[test]
+    fn a_tick_redraws_only_when_a_card_changed() {
+        let mut app = popup(vec![Slot::Loading {
+            name: "Codex".into(),
+        }]);
+        assert!(matches!(app.on_tick().unwrap(), Transition::Wait));
+
+        let (sender, receiver) = mpsc::channel::<(usize, Result<Report, String>)>();
+        app.inbox = Some(receiver);
+        assert!(matches!(app.on_tick().unwrap(), Transition::Wait));
+        drop(sender);
+        assert!(matches!(app.on_tick().unwrap(), Transition::Redraw));
+    }
+
+    /// A provider's result becomes either a card or a stated reason — never an
+    /// empty slot, because a card that silently disappears reads as "you have no
+    /// limits" rather than "this could not be read".
+    #[test]
+    fn a_provider_result_is_always_a_card_or_a_stated_reason() {
+        match slot_of("Claude", Err(anyhow::anyhow!("token expired"))) {
+            Slot::Unavailable { name, reason } => {
+                assert_eq!(name, "Claude");
+                assert_eq!(reason, "token expired");
+            }
+            other => panic!("a failure must be stated, got {other:?}"),
+        }
+    }
+
+    /// The config names which providers appear and in what order. An unknown
+    /// name is skipped rather than fatal: a config written for a later version
+    /// must not stop the popup opening.
+    #[test]
+    fn the_config_chooses_the_providers_and_their_order() {
+        let mut cfg = Config::default();
+
+        cfg.usage.providers = vec!["claude".into(), "codex".into()];
+        let ids: Vec<&str> = enabled_providers(&cfg).iter().map(|p| p.id()).collect();
+        assert_eq!(ids, ["claude", "codex"]);
+
+        cfg.usage.providers = vec!["codex".into(), "claude".into()];
+        let ids: Vec<&str> = enabled_providers(&cfg).iter().map(|p| p.id()).collect();
+        assert_eq!(ids, ["codex", "claude"], "the order is the config's");
+
+        cfg.usage.providers = vec!["codex".into(), "not-a-provider".into()];
+        let ids: Vec<&str> = enabled_providers(&cfg).iter().map(|p| p.id()).collect();
+        assert_eq!(ids, ["codex"], "an unknown name is skipped, not fatal");
+
+        cfg.usage.providers = vec!["codex".into(), "codex".into()];
+        let ids: Vec<&str> = enabled_providers(&cfg).iter().map(|p| p.id()).collect();
+        assert_eq!(ids, ["codex"], "a repeated name appears once");
+    }
+
+    /// An event the popup does not handle costs nothing.
+    #[test]
+    fn an_unhandled_event_is_a_wait() {
+        let mut app = popup(Vec::new());
+        assert!(matches!(
+            app.on_event(Event::Resize(80, 24)).unwrap(),
+            Transition::Wait
+        ));
+        // A key *release* is not a press.
+        let release =
+            KeyEvent::new_with_kind(KeyCode::Esc, KeyModifiers::NONE, KeyEventKind::Release);
+        assert!(matches!(
+            app.on_event(Event::Key(release)).unwrap(),
+            Transition::Wait
+        ));
+    }
+
     #[test]
     fn a_codex_rollout_line_becomes_a_report() {
         let report = parse_codex_rate_limits(CODEX_LINE).expect("parses");

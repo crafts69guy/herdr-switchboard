@@ -1175,6 +1175,247 @@ mod tests {
         ]
     }
 
+    /// A surface over `git`, with no effect outstanding and a cwd that is not a
+    /// repository — so any background `git` a test does start exits at once.
+    fn surface<'a>(git: &'a mut Git, theme: &'a Theme) -> GitSurface<'a> {
+        GitSurface {
+            git,
+            cwd: "/definitely/not/a/repository",
+            origin_pane: "w1:p1".into(),
+            theme,
+            background: crate::tui::SurfaceBackground::resolve(
+                theme,
+                crate::config::Transparency::Transparent,
+            ),
+            title: Color::Yellow,
+            // Never the real notifier: a delivery test would otherwise shell out
+            // to `herdr notification show` on the machine running the suite.
+            notifier: Notifier::silent(),
+            effect: None,
+        }
+    }
+
+    /// The host may only spin fast while an effect is outstanding.
+    #[test]
+    fn the_git_tick_rate_is_fast_only_while_an_effect_is_in_flight() {
+        let mut g = Git::new();
+        open_default(&mut g);
+        let theme = Theme::default();
+        let mut surface = surface(&mut g, &theme);
+
+        assert_eq!(surface.tick_rate(), Duration::from_millis(250));
+        let (_sender, receiver) = mpsc::channel();
+        surface.effect = Some(receiver);
+        assert_eq!(surface.tick_rate(), Duration::from_millis(50));
+    }
+
+    /// Loading a list leaves the menu responsive rather than freezing on a
+    /// half-drawn list — that is the whole reason `on_key` returns a `Step`.
+    #[test]
+    fn a_list_step_becomes_an_outstanding_effect_rather_than_a_blocking_call() {
+        let mut g = Git::new();
+        open_default(&mut g);
+        let theme = Theme::default();
+        let mut surface = surface(&mut g, &theme);
+
+        assert!(matches!(
+            surface.apply_step(Step::Load(ListKind::PullRequests)),
+            Transition::Redraw
+        ));
+        assert!(surface.effect.is_some(), "the load runs in the background");
+
+        // While it is outstanding, input is ignored rather than queued against a
+        // list that is about to be replaced.
+        let ignored = surface
+            .on_event(Event::Key(key(KeyCode::Char('j'))))
+            .unwrap();
+        assert!(matches!(ignored, Transition::Wait));
+    }
+
+    /// `Stay` means "keep the menu up" — unless the menu has already closed
+    /// itself, in which case it is the way out.
+    #[test]
+    fn staying_exits_only_once_the_menu_has_closed_itself() {
+        let mut g = Git::new();
+        open_default(&mut g);
+        let theme = Theme::default();
+        let mut surface = surface(&mut g, &theme);
+        assert!(matches!(surface.apply_step(Step::Stay), Transition::Redraw));
+
+        surface.git.show = false;
+        assert!(matches!(
+            surface.apply_step(Step::Stay),
+            Transition::Exit(())
+        ));
+
+        surface.git.show = true;
+        assert!(matches!(
+            surface.apply_step(Step::Chosen),
+            Transition::Exit(())
+        ));
+    }
+
+    /// Every effect has one landing, and each clears the receiver so the menu
+    /// does not stay locked against input.
+    #[test]
+    fn every_git_effect_lands_somewhere_and_releases_the_menu() {
+        let theme = Theme::default();
+
+        // Rows install and redraw.
+        let mut g = Git::new();
+        open_default(&mut g);
+        let mut s = surface(&mut g, &theme);
+        let (sender, receiver) = mpsc::channel();
+        sender
+            .send(GitEffect::Rows(ListKind::PullRequests, rows()))
+            .unwrap();
+        s.effect = Some(receiver);
+        assert!(matches!(s.on_tick().unwrap(), Transition::Redraw));
+        assert!(s.effect.is_none(), "the effect is consumed");
+
+        // A successful handoff closes the pane.
+        let mut g = Git::new();
+        open_default(&mut g);
+        let mut s = surface(&mut g, &theme);
+        let (sender, receiver) = mpsc::channel();
+        sender.send(GitEffect::Delivered(Ok(()))).unwrap();
+        s.effect = Some(receiver);
+        assert!(matches!(s.on_tick().unwrap(), Transition::Exit(())));
+        assert!(!s.git.show);
+
+        // A failed one stays open so it can be retried.
+        let mut g = Git::new();
+        open_default(&mut g);
+        let mut s = surface(&mut g, &theme);
+        let (sender, receiver) = mpsc::channel();
+        sender
+            .send(GitEffect::Delivered(Err("agent is busy".into())))
+            .unwrap();
+        s.effect = Some(receiver);
+        assert!(matches!(s.on_tick().unwrap(), Transition::Redraw));
+        assert!(s.git.show, "a failed delivery keeps the menu up");
+    }
+
+    /// An archive write reports back through the same seam, so the row's marker
+    /// only changes once the state file has actually been written.
+    #[test]
+    fn an_archive_result_comes_back_before_the_row_changes() {
+        let mut g = Git::new();
+        open_default(&mut g);
+        let theme = Theme::default();
+        let mut s = surface(&mut g, &theme);
+        let (sender, receiver) = mpsc::channel();
+        sender
+            .send(GitEffect::ReviewArchived {
+                slug: "session-1".into(),
+                archived: true,
+                result: Ok(()),
+            })
+            .unwrap();
+        s.effect = Some(receiver);
+        assert!(matches!(s.on_tick().unwrap(), Transition::Redraw));
+        assert!(s.effect.is_none());
+    }
+
+    /// A background thread that dies without answering must release the menu
+    /// rather than leaving it locked against every key forever.
+    #[test]
+    fn a_dead_git_effect_thread_releases_the_menu() {
+        let mut g = Git::new();
+        open_default(&mut g);
+        let theme = Theme::default();
+        let mut s = surface(&mut g, &theme);
+        let (sender, receiver) = mpsc::channel::<GitEffect>();
+        s.effect = Some(receiver);
+        drop(sender);
+
+        assert!(matches!(s.on_tick().unwrap(), Transition::Redraw));
+        assert!(s.effect.is_none(), "the menu accepts input again");
+    }
+
+    /// Nothing outstanding, and an effect that has not answered yet, are both
+    /// plain waits.
+    #[test]
+    fn an_idle_or_pending_git_tick_changes_nothing() {
+        let mut g = Git::new();
+        open_default(&mut g);
+        let theme = Theme::default();
+        let mut s = surface(&mut g, &theme);
+        assert!(matches!(s.on_tick().unwrap(), Transition::Wait));
+
+        let (_sender, receiver) = mpsc::channel::<GitEffect>();
+        s.effect = Some(receiver);
+        assert!(matches!(s.on_tick().unwrap(), Transition::Wait));
+        assert!(s.effect.is_some(), "still outstanding");
+    }
+
+    /// `^c` leaves from anywhere, including while an effect is still running —
+    /// it is the one key that must never be swallowed by the in-flight guard.
+    #[test]
+    fn ctrl_c_leaves_even_while_an_effect_is_outstanding() {
+        let mut g = Git::new();
+        open_default(&mut g);
+        let theme = Theme::default();
+        let mut s = surface(&mut g, &theme);
+        let (_sender, receiver) = mpsc::channel();
+        s.effect = Some(receiver);
+
+        let event = Event::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+        assert!(matches!(s.on_event(event).unwrap(), Transition::Exit(())));
+    }
+
+    /// The wheel moves the selection and a click routes through the same hit
+    /// test the keyboard uses.
+    #[test]
+    fn the_wheel_and_a_click_reach_the_menu() {
+        let mut g = Git::new();
+        open_default(&mut g);
+        let theme = Theme::default();
+        let mut s = surface(&mut g, &theme);
+
+        let wheel = |kind| {
+            Event::Mouse(crossterm::event::MouseEvent {
+                kind,
+                column: 4,
+                row: 4,
+                modifiers: KeyModifiers::NONE,
+            })
+        };
+        assert!(matches!(
+            s.on_event(wheel(MouseEventKind::ScrollDown)).unwrap(),
+            Transition::Redraw
+        ));
+        assert!(matches!(
+            s.on_event(wheel(MouseEventKind::ScrollUp)).unwrap(),
+            Transition::Redraw
+        ));
+        // A pointer event the menu does not handle costs no repaint.
+        assert!(matches!(
+            s.on_event(wheel(MouseEventKind::Moved)).unwrap(),
+            Transition::Wait
+        ));
+    }
+
+    /// The surface draws its own chrome through the shared frame.
+    #[test]
+    fn the_git_surface_draws_its_menu() {
+        let mut g = Git::new();
+        open_default(&mut g);
+        let theme = Theme::default();
+        let mut s = surface(&mut g, &theme);
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
+        terminal.draw(|frame| s.draw(frame)).unwrap();
+        let screen: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(screen.contains("repo"), "the menu names its repository");
+    }
+
     /// The whole screen as text, for the draw assertions.
     fn screen(g: &mut Git, w: u16, h: u16) -> String {
         let theme = Theme::default();

@@ -445,3 +445,360 @@ pub(super) fn read_denylist(path: &Path) -> Result<HashSet<String>> {
         .map(str::to_string)
         .collect())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn imports(pairs: &[(&str, u64)]) -> Vec<Import> {
+        pairs
+            .iter()
+            .map(|(command, timestamp)| Import {
+                command: (*command).to_string(),
+                timestamp: *timestamp,
+            })
+            .collect()
+    }
+
+    /// A catalogue with no paths, so every mutation below persists nowhere.
+    fn catalog(imports: Vec<Import>, presets: &[Preset], limit: usize) -> CommandCatalog {
+        CommandCatalog::from_sources(
+            imports,
+            presets,
+            Vec::new(),
+            HashSet::new(),
+            limit,
+            &[],
+            None,
+            None,
+        )
+        .expect("a catalogue with no paths always builds")
+    }
+
+    fn preset(label: &str, command: &str) -> Preset {
+        Preset {
+            label: label.into(),
+            command: command.into(),
+            cwd: "origin".into(),
+        }
+    }
+
+    fn commands(catalog: &CommandCatalog) -> Vec<&str> {
+        catalog
+            .records()
+            .iter()
+            .map(|r| r.command.as_str())
+            .collect()
+    }
+
+    /// A command typed a hundred times is one row, carrying the newest
+    /// timestamp — the history file is full of repeats and a list that showed
+    /// each one would be unusable.
+    #[test]
+    fn repeated_history_entries_become_one_record() {
+        let catalog = catalog(
+            imports(&[("cargo test", 100), ("ls", 150), ("cargo test", 200)]),
+            &[],
+            50,
+        );
+        assert_eq!(catalog.records().len(), 2);
+        let repeated = catalog
+            .records()
+            .iter()
+            .find(|r| r.command == "cargo test")
+            .expect("the repeated command is present");
+        assert_eq!(repeated.last_selected_at, 200, "the newest use wins");
+    }
+
+    /// `history_limit` bounds what is imported, keeping the newest.
+    #[test]
+    fn the_history_limit_keeps_the_newest_commands() {
+        let raw: Vec<(String, u64)> = (0..20)
+            .map(|i| (format!("echo {i}"), 100 + i as u64))
+            .collect();
+        let as_refs: Vec<(&str, u64)> = raw.iter().map(|(c, t)| (c.as_str(), *t)).collect();
+        let catalog = catalog(imports(&as_refs), &[], 5);
+
+        assert_eq!(catalog.records().len(), 5);
+        assert!(
+            commands(&catalog).contains(&"echo 19"),
+            "the newest survived: {:?}",
+            commands(&catalog)
+        );
+        assert!(
+            !commands(&catalog).contains(&"echo 0"),
+            "the oldest was dropped"
+        );
+    }
+
+    /// A preset reaches the catalogue carrying the label its config gave it and
+    /// marked as a preset, so the row can say where it came from.
+    #[test]
+    fn a_preset_reaches_the_catalogue_with_its_label_and_source() {
+        let catalog = catalog(
+            imports(&[("echo one", 100)]),
+            &[preset("Deploy", "make deploy")],
+            50,
+        );
+        let deploy = catalog
+            .records()
+            .iter()
+            .find(|r| r.command == "make deploy")
+            .expect("the preset is present");
+        assert_eq!(deploy.label, "Deploy");
+        assert!(
+            deploy.sources.iter().any(|s| s == "preset"),
+            "{:?}",
+            deploy.sources
+        );
+    }
+
+    /// The limit bounds the ordinary catalogue but never drops a star: a command
+    /// the user explicitly kept must survive an import that would otherwise
+    /// push it out.
+    #[test]
+    fn the_limit_never_drops_a_starred_command() {
+        let stored = vec![CommandRecord {
+            command: "make release".into(),
+            label: String::new(),
+            sources: vec!["shell".into()],
+            starred: true,
+            selected_count: 0,
+            last_selected_at: 1,
+            last_action: None,
+            recent_cwds: Vec::new(),
+            diagnostics: Vec::new(),
+        }];
+        let catalog = CommandCatalog::from_sources(
+            imports(&[("echo new", 500), ("echo newer", 600)]),
+            &[],
+            stored,
+            HashSet::new(),
+            1,
+            &[],
+            None,
+            None,
+        )
+        .unwrap();
+
+        assert!(
+            commands(&catalog).contains(&"make release"),
+            "a star survived the limit: {:?}",
+            commands(&catalog)
+        );
+    }
+
+    /// A preset carrying what looks like a literal secret is refused, and the
+    /// diagnostic that explains why quotes the label — so that label is stripped
+    /// of control characters and bounded before it is shown.
+    #[test]
+    fn a_preset_that_looks_like_a_secret_is_refused_with_a_sanitised_diagnostic() {
+        let hostile = format!("Deploy\u{1b}[31m\r\n{}", "x".repeat(80));
+        let catalog = catalog(
+            Vec::new(),
+            &[preset(
+                &hostile,
+                "curl -H 'Authorization: Bearer sk-live-abcdef123456'",
+            )],
+            50,
+        );
+
+        assert!(catalog.records().is_empty(), "the preset was not offered");
+        let diagnostic = catalog.diagnostics().join("\n");
+        assert!(diagnostic.contains("literal secret"), "{diagnostic}");
+        assert!(
+            !diagnostic.chars().any(|c| c == '\u{1b}' || c == '\r'),
+            "the quoted label still carries control characters: {diagnostic:?}"
+        );
+        // And the quoted label is bounded rather than echoing the whole string.
+        assert!(!diagnostic.contains(&"x".repeat(80)), "{diagnostic}");
+    }
+
+    /// Sorting cycles through every order and back, and each one actually
+    /// reorders — a cycle that silently kept one order would look like sorting
+    /// was broken only for some lists.
+    #[test]
+    fn cycling_the_sort_visits_every_order_and_reorders_the_list() {
+        let mut catalog = catalog(
+            imports(&[("zebra", 100), ("alpha", 300), ("middle", 200)]),
+            &[],
+            50,
+        );
+        for record in &mut catalog.records {
+            record.selected_count = match record.command.as_str() {
+                "zebra" => 9,
+                "middle" => 5,
+                _ => 1,
+            };
+        }
+
+        catalog.sort = CommandSort::Alphabetical;
+        catalog.sort_records();
+        assert_eq!(commands(&catalog), ["alpha", "middle", "zebra"]);
+
+        catalog.sort = CommandSort::Recent;
+        catalog.sort_records();
+        assert_eq!(commands(&catalog), ["alpha", "middle", "zebra"]);
+
+        catalog.sort = CommandSort::Frequency;
+        catalog.sort_records();
+        assert_eq!(commands(&catalog), ["zebra", "middle", "alpha"]);
+
+        // And the cycle returns to where it began after four steps.
+        catalog.sort = CommandSort::Frecency;
+        let start = std::mem::discriminant(&catalog.sort);
+        for step in 1..4 {
+            catalog.cycle_sort();
+            assert_ne!(
+                std::mem::discriminant(&catalog.sort),
+                start,
+                "step {step} came back to the start early"
+            );
+        }
+        catalog.cycle_sort();
+        assert_eq!(std::mem::discriminant(&catalog.sort), start);
+    }
+
+    /// Selecting a command is what makes it rise in the list, and it remembers
+    /// where it was run so `run here` has somewhere to go.
+    #[test]
+    fn selecting_a_command_counts_it_and_remembers_its_directory() {
+        let mut catalog = catalog(imports(&[("cargo test", 100)]), &[], 50);
+
+        catalog
+            .record_selection("cargo test", SelectionAction::Run, Some("/work/api"))
+            .unwrap();
+        catalog
+            .record_selection("cargo test", SelectionAction::Fill, Some("/work/web"))
+            .unwrap();
+
+        let record = &catalog.records()[0];
+        assert_eq!(record.selected_count, 2);
+        assert!(record.last_selected_at > 100, "the clock moved forward");
+        assert_eq!(record.last_action, Some(SelectionAction::Fill));
+        assert_eq!(
+            record.recent_cwds,
+            ["/work/web", "/work/api"],
+            "the newest directory is first"
+        );
+
+        // The same directory again moves it to the front rather than repeating.
+        catalog
+            .record_selection("cargo test", SelectionAction::Run, Some("/work/api"))
+            .unwrap();
+        assert_eq!(catalog.records()[0].recent_cwds, ["/work/api", "/work/web"]);
+    }
+
+    /// Only five directories are kept, so a command run all over the disk does
+    /// not grow without bound.
+    #[test]
+    fn only_the_five_newest_directories_are_remembered() {
+        let mut catalog = catalog(imports(&[("ls", 100)]), &[], 50);
+        for index in 0..8 {
+            catalog
+                .record_selection("ls", SelectionAction::Run, Some(&format!("/d{index}")))
+                .unwrap();
+        }
+        assert_eq!(catalog.records()[0].recent_cwds.len(), 5);
+        assert_eq!(catalog.records()[0].recent_cwds[0], "/d7");
+    }
+
+    /// Acting on a command that is gone must be refused rather than silently
+    /// recording against nothing.
+    #[test]
+    fn acting_on_a_command_that_is_gone_is_refused() {
+        let mut catalog = catalog(imports(&[("ls", 100)]), &[], 50);
+        let error = catalog
+            .record_selection("not here", SelectionAction::Run, None)
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("no longer in the catalog"),
+            "{error}"
+        );
+
+        let error = catalog.toggle_star("not here").unwrap_err();
+        assert!(
+            error.to_string().contains("no longer in the catalog"),
+            "{error}"
+        );
+    }
+
+    /// Starring toggles and reports the new state.
+    #[test]
+    fn starring_toggles_and_reports_the_state_it_reached() {
+        let mut catalog = catalog(imports(&[("cargo test", 100)]), &[], 50);
+        assert!(!catalog.records()[0].starred);
+
+        assert!(catalog.toggle_star("cargo test").unwrap(), "now starred");
+        assert!(catalog.records()[0].starred);
+        assert!(!catalog.toggle_star("cargo test").unwrap(), "now unstarred");
+        assert!(!catalog.records()[0].starred);
+    }
+
+    /// Forgetting removes the row *and* denies it, so the next import does not
+    /// bring it straight back from the shell history it still lives in.
+    #[test]
+    fn forgetting_a_command_also_denies_it_from_returning() {
+        let mut catalog = catalog(imports(&[("rm -rf build", 100), ("ls", 100)]), &[], 50);
+        catalog.forget("rm -rf build").unwrap();
+        assert_eq!(commands(&catalog), ["ls"]);
+
+        // A fresh import carrying the same command respects the denylist.
+        let reimported = CommandCatalog::from_sources(
+            imports(&[("rm -rf build", 200), ("ls", 200)]),
+            &[],
+            Vec::new(),
+            catalog.denied.clone(),
+            50,
+            &[],
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            commands(&reimported),
+            ["ls"],
+            "a forgotten command stays gone"
+        );
+    }
+
+    /// An exclude pattern keeps matching commands out of the catalogue
+    /// entirely — it is how a user keeps secrets out of a list they will show
+    /// on screen.
+    #[test]
+    fn an_exclude_pattern_keeps_matching_commands_out() {
+        let catalog = CommandCatalog::from_sources(
+            imports(&[("export TOKEN=abc", 100), ("cargo test", 100)]),
+            &[],
+            Vec::new(),
+            HashSet::new(),
+            50,
+            &["TOKEN".to_string()],
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(commands(&catalog), ["cargo test"]);
+    }
+
+    /// A multi-line command's first line stands in for it in the list, marked so
+    /// it is clear there is more.
+    #[test]
+    fn a_multiline_command_is_summarised_by_its_first_line() {
+        let multi = catalog(imports(&[("git commit -m x\n\nbody", 100)]), &[], 50);
+        assert_eq!(multi.records()[0].first_line(), "git commit -m x …");
+
+        let single = catalog(imports(&[("ls -la", 100)]), &[], 50);
+        assert_eq!(single.records()[0].first_line(), "ls -la");
+    }
+
+    /// The fingerprint is the row id, so two different commands must never
+    /// share one and the same command must always produce the same one.
+    #[test]
+    fn a_fingerprint_is_stable_and_distinguishes_commands() {
+        assert_eq!(fingerprint("cargo test"), fingerprint("cargo test"));
+        assert_ne!(fingerprint("cargo test"), fingerprint("cargo test "));
+        assert_ne!(fingerprint("cargo test"), fingerprint("cargo build"));
+        assert!(!fingerprint("cargo test").is_empty());
+    }
+}

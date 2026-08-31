@@ -1692,6 +1692,301 @@ mod tests {
         }
     }
 
+    /// Every navigation and editing action, driven through the same reducer the
+    /// keymap dispatches into.
+    ///
+    /// Table-driven on purpose: these arms are one line each, and the failure
+    /// they have is not a crash but a rebind that silently lands on the wrong
+    /// one. Checking them together is what makes a swapped pair visible.
+    #[test]
+    fn every_navigation_action_moves_the_selection_the_way_its_name_says() {
+        use keymap::Action;
+        let entries: Vec<Entry> = (0..30)
+            .map(|i| entry(Kind::Repo, &format!("gh/r{i}"), &format!("r{i}")))
+            .collect();
+        let mut app = App::new(entries, Theme::default(), Config::default(), ".".into());
+        app.catalog = CatalogState::Ready;
+
+        apply_action(&mut app, Action::Down);
+        assert_eq!(app.picker.selected, 1);
+        apply_action(&mut app, Action::Up);
+        assert_eq!(app.picker.selected, 0);
+        apply_action(&mut app, Action::PageDown);
+        assert_eq!(app.picker.selected, 10);
+        apply_action(&mut app, Action::PageUp);
+        assert_eq!(app.picker.selected, 0);
+        apply_action(&mut app, Action::Bottom);
+        assert_eq!(app.picker.selected, 29);
+        apply_action(&mut app, Action::Top);
+        assert_eq!(app.picker.selected, 0);
+
+        // Up from the first row wraps to the last rather than sticking.
+        apply_action(&mut app, Action::Up);
+        assert_eq!(app.picker.selected, 29);
+    }
+
+    /// The query editors each remove a different amount, and every one of them
+    /// must re-filter — a query box that no longer matches the list is the bug
+    /// these three share.
+    #[test]
+    fn every_query_editor_removes_its_own_amount_and_refilters() {
+        use keymap::Action;
+        let mut app = App::new(sample(), Theme::default(), Config::default(), ".".into());
+        app.catalog = CatalogState::Ready;
+
+        app.picker.query = "alpha beta".into();
+        app.picker.recompute();
+        apply_action(&mut app, Action::Backspace);
+        assert_eq!(app.picker.query, "alpha bet");
+
+        apply_action(&mut app, Action::DeleteWord);
+        assert_eq!(app.picker.query, "alpha ");
+
+        apply_action(&mut app, Action::ClearQuery);
+        assert_eq!(app.picker.query, "");
+        assert_eq!(
+            app.picker.filtered.len(),
+            sample().len(),
+            "the list came back"
+        );
+    }
+
+    /// Sorting cycles through all three orders and returns to where it started,
+    /// re-ordering the resting list each time.
+    #[test]
+    fn cycling_the_sort_visits_every_order_and_returns() {
+        use keymap::Action;
+        let mut app = App::new(sample(), Theme::default(), Config::default(), ".".into());
+        app.catalog = CatalogState::Ready;
+
+        let mut seen = vec![app.picker.sort.label()];
+        for _ in 0..3 {
+            apply_action(&mut app, Action::CycleSort);
+            seen.push(app.picker.sort.label());
+        }
+        assert_eq!(seen, ["recent", "name", "kind", "recent"]);
+    }
+
+    /// Group cycling wraps in both directions and always lands on a tab that
+    /// exists — a group with no entries would be an empty picker.
+    #[test]
+    fn cycling_groups_wraps_both_ways_over_the_tabs_that_exist() {
+        use keymap::Action;
+        let mut app = App::new(sample(), Theme::default(), Config::default(), ".".into());
+        app.catalog = CatalogState::Ready;
+        let tabs = app.picker.tabs();
+        assert!(tabs.len() > 2, "the fixture has several kinds");
+
+        for expected in tabs.iter().skip(1).chain(tabs.iter().take(1)) {
+            apply_action(&mut app, Action::NextGroup);
+            assert_eq!(app.picker.group, *expected);
+        }
+        // And back the other way.
+        for expected in tabs.iter().rev() {
+            apply_action(&mut app, Action::PrevGroup);
+            assert_eq!(app.picker.group, *expected);
+        }
+    }
+
+    /// Each overlay is opened by its own action, and they are mutually
+    /// exclusive because `Overlay` is one value rather than several booleans.
+    #[test]
+    fn each_overlay_action_opens_exactly_one_overlay() {
+        use keymap::Action;
+        let mut app = App::new(sample(), Theme::default(), Config::default(), ".".into());
+        app.catalog = CatalogState::Ready;
+        app.settings
+            .redirect(std::env::temp_dir().join("switchboard-never-written.toml"));
+
+        for (action, expected) in [
+            (Action::Help, Overlay::Help),
+            (Action::Changelog, Overlay::Changelog),
+            (Action::Settings, Overlay::Settings),
+        ] {
+            app.overlay = Overlay::None;
+            apply_action(&mut app, action);
+            assert_eq!(app.overlay, expected);
+        }
+    }
+
+    /// Insert and Normal are the two input modes, and entering Insert also
+    /// cancels a half-pressed leader — otherwise the next character typed would
+    /// be read as a leader verb.
+    #[test]
+    fn entering_insert_mode_cancels_a_pending_leader() {
+        use keymap::Action;
+        let mut app = App::new(sample(), Theme::default(), Config::default(), ".".into());
+        app.catalog = CatalogState::Ready;
+        app.mode = keymap::Mode::Normal;
+        app.leader_pending = true;
+
+        apply_action(&mut app, Action::EnterInsert);
+        assert_eq!(app.mode, keymap::Mode::Insert);
+        assert!(!app.leader_pending, "the leader was cancelled");
+
+        apply_action(&mut app, Action::EnterNormal);
+        assert_eq!(app.mode, keymap::Mode::Normal);
+    }
+
+    /// The preview toggles and scrolls without touching the selection.
+    #[test]
+    fn the_preview_toggles_and_scrolls_independently_of_the_list() {
+        use keymap::Action;
+        let mut app = app_with_preview(60, 20);
+        app.catalog = CatalogState::Ready;
+        let enabled = app.preview.enabled;
+
+        apply_action(&mut app, Action::TogglePreview);
+        assert_eq!(app.preview.enabled, !enabled);
+        apply_action(&mut app, Action::TogglePreview);
+        assert_eq!(app.preview.enabled, enabled);
+
+        apply_action(&mut app, Action::PreviewDown);
+        assert_eq!(app.preview.scroll, 1);
+        apply_action(&mut app, Action::PreviewUp);
+        assert_eq!(app.preview.scroll, 0);
+        assert_eq!(app.picker.selected, 0, "the selection never moved");
+    }
+
+    /// Three actions leave the reducer with work for the host to run, and each
+    /// carries the selected entry with it — resolving it later would risk a
+    /// different row.
+    #[test]
+    fn the_actions_that_need_the_host_carry_their_entry_out() {
+        use keymap::Action;
+        let with_dir = Entry {
+            dir: Some("/work/api".into()),
+            ..entry(Kind::Repo, "gh/api", "api")
+        };
+        let mut app = App::new(
+            vec![with_dir.clone()],
+            Theme::default(),
+            Config::default(),
+            ".".into(),
+        );
+        app.catalog = CatalogState::Ready;
+
+        match apply_action(&mut app, Action::CopyPath) {
+            Flow::CopyPath(entry) => assert_eq!(entry.id, with_dir.id),
+            _ => panic!("copy must carry its entry"),
+        }
+
+        match apply_action(&mut app, Action::SendToAgent) {
+            Flow::DiscoverTargets(entry) => assert_eq!(entry.id, with_dir.id),
+            _ => panic!("send must carry its entry"),
+        }
+        assert_eq!(
+            app.overlay,
+            Overlay::Handoff,
+            "the overlay opens immediately"
+        );
+
+        assert!(matches!(apply_action(&mut app, Action::Quit), Flow::Quit));
+    }
+
+    /// Copy and send resolve one absolute path, so a row that has none — a
+    /// Workspace spans several pane directories, an Agent may have no cwd — must
+    /// refuse rather than hand out an empty or relative one.
+    #[test]
+    fn copy_and_send_refuse_a_row_with_no_single_absolute_path() {
+        use keymap::Action;
+        for row in [
+            entry(Kind::Agent, "term-1", "alpha"),
+            Entry {
+                dir: Some("/work/ws".into()),
+                ..entry(Kind::Workspace, "ws-1", "work")
+            },
+            Entry {
+                dir: Some("relative/path".into()),
+                ..entry(Kind::Repo, "gh/rel", "rel")
+            },
+        ] {
+            let mut app = App::new(
+                vec![row.clone()],
+                Theme::default(),
+                Config::default(),
+                ".".into(),
+            );
+            app.catalog = CatalogState::Ready;
+            for action in [Action::CopyPath, Action::SendToAgent] {
+                assert!(
+                    matches!(apply_action(&mut app, action), Flow::Continue),
+                    "{action:?} acted on {:?}, which has no absolute path",
+                    row.id
+                );
+            }
+        }
+    }
+
+    /// A refresh keeps the old rows on screen, so every selection-dependent
+    /// action has to be locked until the new catalogue lands — acting on a row
+    /// that is about to be replaced is the failure this prevents.
+    #[test]
+    fn selection_actions_are_locked_while_the_catalogue_is_refreshing() {
+        use keymap::Action;
+        let mut app = App::new(
+            vec![Entry {
+                dir: Some("/work/api".into()),
+                ..entry(Kind::Repo, "gh/api", "api")
+            }],
+            Theme::default(),
+            Config::default(),
+            ".".into(),
+        );
+        app.catalog = CatalogState::Refreshing;
+
+        for action in [Action::CopyPath, Action::SendToAgent, Action::ToggleStar] {
+            assert!(
+                matches!(apply_action(&mut app, action), Flow::Continue),
+                "{action:?} ran against rows that are being replaced"
+            );
+        }
+        // Navigation is still fine: it does not act on the row.
+        apply_action(&mut app, Action::Help);
+        assert_eq!(app.overlay, Overlay::Help);
+    }
+
+    /// An action that needs a selection must do nothing when there is none,
+    /// rather than resolving to a row that is not there.
+    #[test]
+    fn selection_actions_do_nothing_when_the_list_is_empty() {
+        use keymap::Action;
+        let mut app = App::new(sample(), Theme::default(), Config::default(), ".".into());
+        app.catalog = CatalogState::Ready;
+        app.picker.query = "matches-absolutely-nothing".into();
+        app.picker.recompute();
+        assert!(app.picker.filtered.is_empty());
+
+        for action in [Action::CopyPath, Action::SendToAgent, Action::ToggleStar] {
+            assert!(
+                matches!(apply_action(&mut app, action), Flow::Continue),
+                "{action:?} acted on an empty list"
+            );
+        }
+    }
+
+    /// Starring is a durable write, so the reducer asks for it and changes
+    /// nothing until the snapshot comes back.
+    #[test]
+    fn starring_asks_for_the_write_rather_than_assuming_it() {
+        use keymap::Action;
+        let mut app = App::new(sample(), Theme::default(), Config::default(), ".".into());
+        app.catalog = CatalogState::Ready;
+        let selected = app.picker.selected_entry().unwrap().clone();
+
+        match apply_action(&mut app, Action::ToggleStar) {
+            Flow::SetStar(entry, starred) => {
+                assert_eq!(entry.id, selected.id);
+                assert!(starred, "an unstarred entry is being starred");
+            }
+            _ => panic!("star must request a write"),
+        }
+        assert!(
+            !app.picker.is_starred(&selected),
+            "the marker only changes once the write returns"
+        );
+    }
+
     /// A surface wrapping `app`, with no background work in flight.
     fn surface(app: &mut App) -> ProjectsSurface<'_> {
         ProjectsSurface {
