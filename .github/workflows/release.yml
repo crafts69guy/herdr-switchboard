@@ -43,20 +43,23 @@ jobs:
         with:
           key: ${{ matrix.target }}
 
+      # `dist`, not `release`: see Cargo.toml. Compile time here is CI's, so the
+      # shipped archive is built for run time. `bin/picker.sh`'s local fallback
+      # keeps the fast-to-build `release` profile.
       - name: Build release binary
-        run: cargo build --locked --release --target "${{ matrix.target }}"
+        run: cargo build --locked --profile dist --target "${{ matrix.target }}"
 
       - name: Verify embedded version
         run: |
           expected="${GITHUB_REF_NAME#v}"
-          actual="$("target/${{ matrix.target }}/release/herdr-switchboard" --version)"
+          actual="$("target/${{ matrix.target }}/dist/herdr-switchboard" --version)"
           test "$actual" = "herdr-switchboard $expected"
 
       - name: Package binary
         shell: bash
         run: |
           asset="herdr-switchboard-${GITHUB_REF_NAME}-${{ matrix.target }}.tar.gz"
-          tar -C "target/${{ matrix.target }}/release" -czf "$asset" herdr-switchboard
+          tar -C "target/${{ matrix.target }}/dist" -czf "$asset" herdr-switchboard
 
       - uses: actions/upload-artifact@v4
         with:

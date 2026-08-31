@@ -32,6 +32,9 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **Pickers with nothing loading no longer wake twenty times a second.** Commands, Agents, the
   Menu, and the Zen picker now idle until you press something, matching Projects and Git.
 
+- **Released binaries are built for speed rather than build time.** Published archives now use a
+  fully optimised profile; building from a linked checkout stays as quick as it was.
+
 ## [2.1.0] - 2026-08-28
 
 ### Changed

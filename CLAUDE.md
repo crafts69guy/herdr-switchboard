@@ -193,6 +193,51 @@ order so the list stays stable.
   `␣g`. Adding an action is one row in `keymap::NAMES`, its default chord in a table, and an
   `apply_action` arm; a new `Accept` also needs the footer curated list and `dispatch`. Cheatsheet
   descriptions must still fit `HELP_DESC`.
+- **One frame absorbs every event already queued, and a list row borrows rather than copies.**
+  These two are one fact from opposite ends. A terminal delivers a wheel turn or a held key as a
+  burst, and `surface::run` used to answer each with its own full repaint; meanwhile `draw_list`
+  (`projects/view.rs`) and the shared picker's row builder cloned every column of every *filtered*
+  entry per frame — including the rows a `List` scrolls past and never paints, over a Commands
+  catalogue that is `commands.history_limit` (5,000) rows deep by default. So a burst multiplied a
+  per-entry cost that was already linear. `drain_frame` now takes queued input up to
+  `MAX_COALESCED_EVENTS` before repainting — the cap is what stops a paste from starving the
+  screen — and rows borrow out of `state.items` / `picker.entries`, which is why both draw
+  functions destructure their `&mut` state into disjoint field borrows and why the shared picker
+  moves its `ListState` out with `mem::take` before building rows. Padding comes from
+  `tui::spaces`, a slice of one static. Do not "tidy" a row builder back to `to_string()`: it
+  compiles, it looks identical, and it silently restores the whole cost.
+- **`Stars::contains` and the tab counts must not allocate or rescan.** `contains` is asked once
+  per entry per keystroke by the reducer, once per entry per group by the Context panel, and once
+  per entry per frame by the list. It answers from `StarSet`, which stores one ID set *per kind* so
+  the probe is a borrowed `&str`; a `BTreeSet<StarKey>` cannot, because building the probe key
+  means cloning the entry's ID. `StarKey` stays the on-disk shape, so the file is unchanged.
+  Tab counts are cached on `Picker` and rebuilt by `recount` at the three points that can
+  invalidate them — construction, `replace_stars`, `replace_entries` — never in `recompute`, which
+  runs per keystroke and cannot change them. A stale cache here fails silently, so
+  `tab_counts_are_rebuilt_whenever_the_entries_or_the_stars_change` checks every tab against a
+  fresh scan.
+- **A probe that a `read_dir` can rule out must not be a process.** `may_have_worktrees`
+  (`data.rs`) asks whether `.git/worktrees/` has anything in it before spending a `git worktree
+  list` on a repository, because that probe runs once per *ghq repository* — hundreds of forks for
+  the handful of repositories that actually have linked worktrees. It **fails open**: a `.git`
+  *file* (this path is itself a linked worktree or a submodule) and an unreadable directory both
+  still probe, since a wrong "no" loses a worktree from the catalogue silently while a wrong "yes"
+  costs one subprocess. `the_worktree_prefilter_only_refuses_what_the_filesystem_settles` pins
+  every case.
+- **Independent reads that each pay a process start are overlapped, and only those.**
+  `projects/effect.rs` overlaps `ghq root` with `ghq list`, `source.rs` overlaps `herdr agent list`
+  with `herdr workspace list`, and `repo_card` (`projects/preview.rs`) fans out branch, dirty
+  state, last commit, and the `preview.sh` tree so the card costs the slowest rather than their
+  sum. This is only sound because every one of them is an independent *read*. Nothing that mutates,
+  and nothing whose result another call depends on, goes in a scope like these.
+- **`state.rs` owns every durable write, and a read-modify-write is one locked transaction.**
+  Five callers used to hand-roll `fs::write` to a **fixed** `.tmp` sibling and rename — so two
+  Switchboard processes writing the same file raced on one temp name, and `history` and
+  `review_archive`, which load-modify-write, silently erased each other's rows. All of them now go
+  through `state`: `write_private` / `update_private` for this plugin's own state (owner-only), and
+  `replace_atomically` for a file the *user* owns — its own `config.toml` and, for zen chrome,
+  herdr's — which gains the lock and the unique tempfile but keeps the mode its owner gave it. A
+  new persistent file adds no sixth implementation.
 - **The mouse is turned on by hand, and must be turned off on every exit path.** `surface.rs`
   writes `?1000h`/`?1006h` itself rather than using crossterm's `EnableMouseCapture`, which
   also enables any-event tracking (`?1003h`) — every pointer move would wake the loop into
@@ -270,6 +315,13 @@ order so the list stays stable.
   which is what keeps the IO edge mockable. herdr composites the scrim **opaque** regardless of the
   alpha byte, so there is no translucency knob to add — and the scrim is painted over *parked
   gutters*, never over live panes, because a pane that redraws would punch through it.
+- **Two build profiles, because two consumers want opposite things.** `release` stays
+  `opt-level = "s"` with no LTO: it is what `bin/picker.sh` falls back to for an offline install or
+  a linked checkout, compiled on the user's machine while they wait for a pane. `dist` (`opt-level
+  = 3`, thin LTO, one codegen unit) is what `.github/workflows/release.yml` ships, where the
+  compile time is CI's and the run time is the installer's. Archives are packaged from
+  `target/<triple>/dist/`; `bin/lib.sh` still builds and reads `target/release/`. Do not collapse
+  them — either the local fallback gets eight times slower or every shipped binary gets slower.
 - **Version sync:** `Cargo.toml` and `herdr-plugin.toml` versions must match; `tests/manifest_spec.sh`
   enforces it. `bin/release.sh` bumps both, so bump through it rather than by hand.
 - **The changelog is the release notes.** Every user-facing change adds a line to

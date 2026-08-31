@@ -69,10 +69,10 @@ the module inventory.
 
 | Module | Interface | Implementation hides |
 | --- | --- | --- |
-| `surface` | `Surface`, `Transition`, `run` | Terminal lease, mouse capture, polling, ticks, redraw, teardown |
+| `surface` | `Surface`, `Transition`, `run` | Terminal lease, mouse capture, polling, ticks, input coalescing, redraw, teardown |
 | `tui` | `SurfaceBackground`, shared frames and pills | Transparent/opaque painting, clearing, frame and hit-zone vocabulary |
 | `config` | Typed section fields, `parse`, `try_load`, finite `value_for_cli` | Namespaced deserialization, defaults, validation |
-| `state` | XDG paths and clock; private write/update operations | Cross-process locking, private unique tempfiles, atomic replacement |
+| `state` | XDG paths and clock; `write_private`, `update_private`, `replace_atomically` | Cross-process locking, unique tempfiles, atomic replacement, permission policy |
 | `source::ProjectCatalog` | `new`, `load`, canonical `kinds` | Source enablement and load order |
 | `data` | Source loaders, entry and browse types, `Theme` | Response parsing and presentation mapping |
 | `fnm` | `inspect`, `prepare`, `Declaration`, `Preparation` | Version-file precedence, recursive lookup, engine parsing, installed PATH resolution |
@@ -118,6 +118,13 @@ or resting sort as every other group.
 - A new project source is added to `ProjectCatalog` and keeps its response parser in `data`.
 - A new external call goes through `CommandRunner`. Slow work initiated by a surface runs as a
   typed background effect, as Git list loading does.
+- A new persistent file goes through `state`. `write_private` and `update_private` for this
+  plugin's own state; `replace_atomically` for a configuration file the user owns, which must keep
+  its permissions. A read-modify-write uses `update_private` so the read and the write are one
+  locked transaction — two panes changing different keys must not erase each other.
+- A surface that waits on background work reports it, so the host can tick quickly only while
+  something is in flight. Projects and Git derive this from their own effect state; a shared-picker
+  mode answers `PickerMode::is_polling` from the same receiver its `poll` reads.
 - A new configuration value is a typed section field. Add it to `value_for_cli` only when a Bash
   entrypoint genuinely consumes it.
 - Interactive or process-replacing work returns a typed surface output and runs after the host has
@@ -125,12 +132,16 @@ or resting sort as every other group.
 
 ## Architecture audit
 
-This audit was taken on 2026-08-20 against Ratatui 0.29. External guidance was rechecked on the
-same date. File length is a navigation signal, not a design rule: a long cohesive module can have a
-better interface than several shallow pass-through modules. Production and test lines are recorded
+**Historical.** This audit records the state on 2026-08-20, *before* the refactoring roadmap below
+was carried out; the [implementation result](#implementation-result) supersedes its numbers. It is
+kept because the reasoning that produced the roadmap is only legible against the shape it started
+from. External guidance was rechecked against Ratatui 0.29 on the same date.
+
+File length is a navigation signal, not a design rule: a long cohesive module can have a better
+interface than several shallow pass-through modules. Production and test lines are recorded
 separately because moving tests alone would make a file smaller without improving its structure.
 
-| Feature file | Production lines | Test lines | Main responsibilities currently colocated |
+| Feature file | Production lines | Test lines | Responsibilities colocated *at the time* |
 | --- | ---: | ---: | --- |
 | `usage.rs` | 1,683 | 915 | Provider protocols, credential and network adapters, parsing, time formatting, runtime, rendering |
 | `git.rs` | 1,624 | 836 | State reduction, command effects, response parsing, configuration, runtime, rendering |
@@ -272,13 +283,21 @@ application-wide framework. Each feature keeps a narrow root module and private 
 | Feature root | Root production lines | Private implementation children |
 | --- | ---: | --- |
 | `main.rs` | 140 | Projects moved behind `projects.rs` and private view, preview, and handoff children |
+| `projects.rs` | 1,483 | `projects/effect.rs`, `projects/handoff.rs`, `projects/preview.rs`, `projects/stars.rs`, `projects/view.rs` |
 | `git.rs` | 1,119 | `git/effect.rs`, `git/handoff.rs`, `git/menu_config.rs`, `git/review_archive.rs`, `git/view.rs` |
 | `usage.rs` | 324 | domain, time, view, shared provider primitives, and Codex/Claude adapters under `usage/` |
 | `zen.rs` | 130 | geometry, session persistence, effect engine, and picker adapter under `zen/` |
 | `settings.rs` | 373 | catalogue, validated TOML document writer, and view under `settings/` |
 | `commands.rs` | 29 | catalogue, bounded history ingestion, terminal actions, and picker under `commands/` |
 
-Projects now uses one closed `Overlay` enum for help, changelog, and settings ownership. Rendering,
+`projects.rs` is the largest feature root, and deliberately: it holds the search model, the
+reducer, the surface adapter, catalogue-generation bookkeeping, and the restored-terminal effects,
+all of which read and write the same `Picker`. If it is ever split, the cluster with genuinely
+separable pure behaviour is the search model (`Picker`, `browse_order`) — and the reason would be
+that its group counts, star lookups, and resting orders deserve a testable home, not that the file
+is long.
+
+Projects uses one closed `Overlay` enum for help, changelog, and settings ownership. Rendering,
 mouse routing, wheel routing, and keyboard routing all match that state, so mutually exclusive
 popups cannot be represented as several simultaneously active booleans.
 

@@ -24,8 +24,20 @@ sha2 = "0.10"
 listeners = "0.6"
 sysinfo = { version = "0.39", default-features = false, features = ["system", "user"] }
 
-# Favour a fast first-run build (the wrapper builds on demand) over a maximally
-# small binary; still strip symbols to keep it lean.
+# Two consumers build this crate, and they want opposite things.
+#
+# `release` is the one `bin/picker.sh` falls back to when there is no versioned
+# archive: an offline install or a linked checkout, built on the user's machine
+# while they wait for a pane to open. Compile time is theirs, so favour it.
 [profile.release]
 opt-level = "s"
 strip = true
+
+# `dist` is what the release workflow ships. Its compile time belongs to CI and
+# its run time belongs to whoever installs the archive, so this end is optimised
+# without regard for how long the build takes.
+[profile.dist]
+inherits = "release"
+opt-level = 3
+lto = "thin"
+codegen-units = 1
