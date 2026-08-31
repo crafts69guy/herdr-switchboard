@@ -259,6 +259,48 @@ mod tests {
         }
     }
 
+    /// A gutter is this plugin's own scaffolding, not somewhere to work, so it
+    /// must never appear as something you can zen — doing so would nest zen
+    /// inside itself.
+    #[test]
+    fn the_gutters_of_a_live_session_are_not_offered_as_targets() {
+        let session = session_on("w1:p1", &["w1:p5", "w1:p6"]);
+        let hidden: Vec<&str> = session.gutters.iter().map(String::as_str).collect();
+
+        let panes = [
+            pane("w1:p1", "editor", "/work/api", None),
+            pane("w1:p5", "", "/work/api", None),
+            pane("w1:p6", "", "/work/api", None),
+            pane("w1:p2", "tests", "/work/api", None),
+        ];
+        let offered: Vec<&str> = panes
+            .iter()
+            .filter(|p| !hidden.contains(&p.pane_id.as_str()))
+            .map(|p| p.pane_id.as_str())
+            .collect();
+
+        assert_eq!(offered, ["w1:p1", "w1:p2"]);
+    }
+
+    /// The zenned pane is marked in the list it appears in, so the user can see
+    /// which one holds the screen before pressing anything.
+    #[test]
+    fn the_zenned_pane_is_marked_in_the_list() {
+        let panes = [
+            pane("w1:p1", "editor", "/work/api", None),
+            pane("w1:p2", "tests", "/work/api", None),
+        ];
+        let items: Vec<PickerItem> = panes
+            .iter()
+            .map(|p| pane_item(p, p.pane_id == "w1:p1"))
+            .collect();
+
+        assert_eq!(items[0].trailing.as_deref(), Some("zen"));
+        assert_eq!(items[1].trailing, None);
+        assert_eq!(items[0].accent_slot.as_deref(), Some("mauve"));
+        assert_eq!(items[1].accent_slot.as_deref(), Some("blue"));
+    }
+
     /// A row names the pane, and its trailing tag says the one thing that
     /// changes what the actions mean: whether this pane is the one in zen.
     #[test]

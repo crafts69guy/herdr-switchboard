@@ -354,7 +354,8 @@ mod tests {
     use std::collections::{HashMap, HashSet};
 
     use super::*;
-    use crate::commands::catalog::{empty_record, CommandCatalog, SelectionAction};
+    use crate::commands::catalog::{empty_record, CommandCatalog, Import, SelectionAction};
+    use crate::config::Preset;
 
     fn command_mode() -> CommandMode {
         let mut starred = empty_record("cargo test".into(), String::new());
@@ -378,6 +379,90 @@ mod tests {
             notifier: Notifier::silent(),
             bindings: HashMap::new(),
         }
+    }
+
+    /// A catalogue with nothing safe to offer but something to say puts the
+    /// diagnostic in the list itself — an empty pane with the reason hidden in a
+    /// card nobody can select reads as a bug.
+    #[test]
+    fn diagnostics_reach_the_list_even_when_there_is_nothing_to_run() {
+        let mut empty = CommandMode {
+            catalog: CommandCatalog::from_sources(
+                Vec::new(),
+                &[Preset {
+                    label: "Deploy".into(),
+                    command: "curl -H 'Authorization: Bearer sk-live-abcdef123456'".into(),
+                    cwd: "origin".into(),
+                }],
+                Vec::new(),
+                HashSet::new(),
+                5_000,
+                &[],
+                None,
+                None,
+            )
+            .unwrap(),
+            tab: CommandTab::History,
+            origin_pane: String::new(),
+            origin_cwd: None,
+            notifier: Notifier::silent(),
+            bindings: HashMap::new(),
+        };
+
+        let items = empty.items();
+        assert_eq!(items.len(), 1, "the diagnostic is the only row");
+        assert_eq!(items[0].id, "__diagnostic");
+        assert!(
+            items[0].preview.join("\n").contains("literal secret"),
+            "{:?}",
+            items[0].preview
+        );
+
+        // Starred is a different view and does not carry the placeholder.
+        assert!(empty.activate_tab("starred").unwrap().is_empty());
+    }
+
+    /// When there *are* commands, the diagnostics ride along on the first card
+    /// rather than taking a row of their own.
+    #[test]
+    fn diagnostics_ride_the_first_card_when_there_are_commands_to_show() {
+        let mut mode = CommandMode {
+            catalog: CommandCatalog::from_sources(
+                vec![Import {
+                    command: "cargo test".into(),
+                    timestamp: 100,
+                }],
+                &[Preset {
+                    label: "Deploy".into(),
+                    command: "curl -H 'Authorization: Bearer sk-live-abcdef123456'".into(),
+                    cwd: "origin".into(),
+                }],
+                Vec::new(),
+                HashSet::new(),
+                5_000,
+                &[],
+                None,
+                None,
+            )
+            .unwrap(),
+            tab: CommandTab::History,
+            origin_pane: String::new(),
+            origin_cwd: None,
+            notifier: Notifier::silent(),
+            bindings: HashMap::new(),
+        };
+
+        let items = mode.items();
+        assert!(
+            items.iter().all(|item| item.id != "__diagnostic"),
+            "no placeholder row when there is something to run"
+        );
+        assert!(
+            items[0].preview.join("\n").contains("warning"),
+            "the warning rides the first card: {:?}",
+            items[0].preview
+        );
+        assert_eq!(mode.initial().unwrap().len(), items.len());
     }
 
     /// A row leads with the label a preset gave it, or the command itself, and

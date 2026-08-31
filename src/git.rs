@@ -1195,6 +1195,97 @@ mod tests {
         }
     }
 
+    /// Typing filters a sub-list, and backspace takes it back — the filter is
+    /// the only way through a long pull-request list.
+    #[test]
+    fn typing_filters_a_sub_list_and_backspace_restores_it() {
+        let mut g = Git::new();
+        open_default(&mut g);
+        g.show_list(ListKind::PullRequests, rows());
+        let all = g.filtered.len();
+        assert!(all > 1, "the fixture has several rows");
+
+        for character in rows()[0].label.chars().take(4) {
+            g.on_key(key(KeyCode::Char(character)));
+        }
+        assert!(!g.query.is_empty(), "the query took the keys");
+        assert!(g.filtered.len() <= all, "the list narrowed");
+
+        while !g.query.is_empty() {
+            g.on_key(key(KeyCode::Backspace));
+        }
+        assert_eq!(g.filtered.len(), all, "the whole list came back");
+    }
+
+    /// The wheel moves the sub-list selection the way the arrow keys do.
+    #[test]
+    fn the_wheel_moves_the_sub_list_selection() {
+        let mut g = Git::new();
+        open_default(&mut g);
+        g.show_list(ListKind::PullRequests, rows());
+        let first = g.lsel;
+
+        g.on_wheel(1);
+        assert_ne!(g.lsel, first, "the wheel moved the sub-list");
+        g.on_wheel(-1);
+        assert_eq!(g.lsel, first);
+    }
+
+    /// Every step that needs external work becomes an outstanding effect rather
+    /// than a blocking call, so the menu stays responsive while it runs.
+    #[test]
+    fn every_background_step_becomes_an_outstanding_effect() {
+        let theme = Theme::default();
+        let steps = || {
+            vec![
+                Step::Load(ListKind::PullRequests),
+                Step::CountFiles,
+                Step::LoadTargets("session-1".into()),
+                Step::SetReviewArchived {
+                    slug: "session-1".into(),
+                    archived: true,
+                },
+            ]
+        };
+
+        for step in steps() {
+            let mut g = Git::new();
+            open_default(&mut g);
+            let mut s = surface(&mut g, &theme);
+            assert!(
+                matches!(s.apply_step(step), Transition::Redraw),
+                "a background step must redraw and keep going"
+            );
+            assert!(s.effect.is_some(), "no background work was started");
+            assert_eq!(s.tick_rate(), Duration::from_millis(50));
+        }
+    }
+
+    /// The menu navigates with both the arrow keys and their Vim equivalents.
+    /// `sel` is the menu's own cursor, so a rebind that lands `j` on the wrong
+    /// handler would move nothing while still looking like it worked.
+    #[test]
+    fn the_menu_navigates_with_arrows_and_their_vim_equivalents() {
+        let mut g = Git::new();
+        open_default(&mut g);
+        let first = g.sel;
+
+        g.on_key(key(KeyCode::Down));
+        let after_down = g.sel;
+        assert_ne!(after_down, first, "Down moved the selection");
+        g.on_key(key(KeyCode::Up));
+        assert_eq!(g.sel, first);
+
+        g.on_key(key(KeyCode::Char('j')));
+        assert_eq!(g.sel, after_down, "j is Down");
+        g.on_key(key(KeyCode::Char('k')));
+        assert_eq!(g.sel, first, "k is Up");
+
+        // And it wraps rather than sticking at the ends.
+        g.on_key(key(KeyCode::Up));
+        assert_ne!(g.sel, first, "up from the first entry wraps");
+    }
+
     /// The host may only spin fast while an effect is outstanding.
     #[test]
     fn the_git_tick_rate_is_fast_only_while_an_effect_is_in_flight() {

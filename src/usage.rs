@@ -472,6 +472,62 @@ mod tests {
         assert!(matches!(app.on_tick().unwrap(), Transition::Redraw));
     }
 
+    /// A refresh with only offline providers loads them inline and starts no
+    /// worker — the whole point of splitting offline from networked is that
+    /// Codex is on screen while Claude's request is still open.
+    ///
+    /// Deliberately configured to Codex alone: the networked provider would
+    /// otherwise open a real socket from the test suite.
+    #[test]
+    fn a_refresh_with_only_offline_providers_starts_no_worker() {
+        let mut app = popup(Vec::new());
+        app.cfg.usage.providers = vec!["codex".into()];
+
+        app.refresh();
+
+        assert_eq!(app.slots.len(), 1, "one card per configured provider");
+        assert!(
+            app.inbox.is_none(),
+            "an offline-only refresh must not start a worker"
+        );
+        // Loaded or unavailable, but never still Loading: an offline provider
+        // is answered before the frame.
+        assert!(
+            !matches!(app.slots[0], Slot::Loading { .. }),
+            "an offline provider was left pending"
+        );
+        assert_eq!(app.slots[0].name(), "Codex");
+        assert!(app.now > 0, "the clock was sampled once for the whole read");
+    }
+
+    /// A refresh with no providers at all leaves nothing to draw and nothing
+    /// outstanding, rather than a popup that waits forever.
+    #[test]
+    fn a_refresh_with_no_providers_leaves_nothing_outstanding() {
+        let mut app = popup(vec![Slot::Loading {
+            name: "Codex".into(),
+        }]);
+        app.cfg.usage.providers = Vec::new();
+
+        app.refresh();
+
+        assert!(app.slots.is_empty());
+        assert!(app.inbox.is_none());
+    }
+
+    /// `r` asks for fresh numbers, which is the only reason the popup exists.
+    #[test]
+    fn r_refreshes_the_cards() {
+        let mut app = popup(Vec::new());
+        app.cfg.usage.providers = vec!["codex".into()];
+
+        assert!(matches!(
+            app.on_key(KeyEvent::from(KeyCode::Char('r'))),
+            Transition::Redraw
+        ));
+        assert_eq!(app.slots.len(), 1, "the cards were rebuilt");
+    }
+
     /// A provider's result becomes either a card or a stated reason — never an
     /// empty slot, because a card that silently disappears reads as "you have no
     /// limits" rather than "this could not be read".

@@ -27,6 +27,8 @@ cargo build --release                        # what bin/picker.sh actually launc
 cargo test                                   # unit tests (sorting, group filter, history parsing)
 cargo test recent_sort_puts_latest_opened_first   # single test by name
 bash bin/check.sh                            # complete local/CI/release gate
+bash bin/coverage.sh                         # line coverage, gated at 90% (CI runs this too)
+bash bin/coverage.sh --open                  # ... and open the annotated HTML report
 bash bin/release.sh 0.5.0                    # cut a release (gates, bump, changelog, tag, gh release)
 
 herdr plugin link /path/to/herdr-switchboard         # install this checkout for manual testing
@@ -37,6 +39,12 @@ herdr plugin config-dir switchboard          # where the runtime config.toml liv
 `bin/check.sh` is the single full-gate interface for local sessions, CI, and releases. Layout,
 keybinding, or Herdr CLI changes still need manual exercise in a real Herdr session in addition to
 Rust render tests.
+
+Coverage is deliberately **not** part of `check.sh`: it needs its own instrumented build, which
+would turn the ~5s gate you run constantly into a ~90s one. CI runs `bin/coverage.sh` as a separate
+job. It needs `rustup component add llvm-tools-preview` and `cargo install cargo-llvm-cov --locked`;
+the script prefers a rustup toolchain when one carries the tools, because a Homebrew rust can sit
+first on PATH beside a perfectly good rustup toolchain and only the latter can instrument.
 
 ## Architecture
 
@@ -322,6 +330,15 @@ order so the list stays stable.
   compile time is CI's and the run time is the installer's. Archives are packaged from
   `target/<triple>/dist/`; `bin/lib.sh` still builds and reads `target/release/`. Do not collapse
   them — either the local fallback gets eight times slower or every shipped binary gets slower.
+- **Nothing is excluded from the coverage denominator.** Some code genuinely cannot be reached by a
+  unit test — a mode's `main`, `surface::run` claiming a real terminal, `SystemProbe` reading real
+  sockets, a worker's thread body — and it still counts against the 90% in `bin/coverage.sh`. An
+  exclusion list is a second thing to argue about and a place for the number to quietly stop meaning
+  what it says; the answer to a low file is a test, or an honest seam. The seams that exist for this
+  are narrow and each replaces something a test has no business starting: `PortWorker::seeded` (a
+  real system scan), `CatalogWorker::disconnected` (a thread that died), `AgentsMode::initial_with`
+  and `SessionStore::at` (the machine's own state). A test that would fire a real notification uses
+  `Notifier::silent`.
 - **Version sync:** `Cargo.toml` and `herdr-plugin.toml` versions must match; `tests/manifest_spec.sh`
   enforces it. `bin/release.sh` bumps both, so bump through it rather than by hand.
 - **The changelog is the release notes.** Every user-facing change adds a line to

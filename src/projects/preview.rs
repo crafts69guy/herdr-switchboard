@@ -888,6 +888,186 @@ mod tests {
         Ink::new(&Theme::default(), &Config::default())
     }
 
+    /// `render` is the one entry point the worker calls, and it must route each
+    /// kind to its own card — a repo rendered with the agent card would be a
+    /// silently wrong panel rather than an error.
+    #[test]
+    fn render_routes_each_kind_to_its_own_card() {
+        let dir = std::env::temp_dir().join(format!("ghq-render-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.to_string_lossy().into_owned();
+
+        let agent = r#"{"result":{"agent":{"agent":"claude","agent_status":"working","foreground_cwd":"/tmp/x","pane_id":"p1"}}}"#;
+        let workspace =
+            r#"{"result":{"workspace":{"workspace_id":"ws-1","label":"work","pane_count":1}}}"#;
+        let runner = MockRunner::new()
+            .on("agent get", agent)
+            .on("workspace get", workspace)
+            .on("pane list", r#"{"result":{"panes":[]}}"#)
+            .on("symbolic-ref", "main")
+            .on("status --porcelain", "");
+
+        let cases = [
+            (Kind::Agent, "term-1", None, "claude"),
+            (Kind::Workspace, "ws-1", None, "work"),
+            (Kind::Repo, "gh/api", Some(path.clone()), "branch"),
+            (Kind::Worktree, path.as_str(), Some(path.clone()), "branch"),
+        ];
+        for (kind, id, entry_dir, expected) in cases {
+            let entry = Entry {
+                kind,
+                id: id.into(),
+                dir: entry_dir,
+                label: "api".into(),
+                icon: String::new(),
+                icon_color: Color::Reset,
+                primary: String::new(),
+                secondary: String::new(),
+                search: String::new(),
+            };
+            let text = render(
+                &entry,
+                &runner,
+                ".",
+                &Config::default(),
+                &Theme::default(),
+                60,
+            );
+            let flat: String = text
+                .lines
+                .iter()
+                .flat_map(|line| line.spans.iter().map(|span| span.content.as_ref()))
+                .collect();
+            assert!(flat.contains(expected), "{kind:?} card: {flat}");
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A pane this narrow is unusable, but the card must still render rather
+    /// than panic on saturating arithmetic.
+    #[test]
+    fn a_card_survives_an_absurdly_narrow_pane() {
+        let entry = Entry {
+            kind: Kind::Repo,
+            id: "gh/api".into(),
+            dir: None,
+            label: "api".into(),
+            icon: String::new(),
+            icon_color: Color::Reset,
+            primary: String::new(),
+            secondary: String::new(),
+            search: String::new(),
+        };
+        for width in [0, 1, 8, 24] {
+            let text = render(
+                &entry,
+                &MockRunner::new(),
+                ".",
+                &Config::default(),
+                &Theme::default(),
+                width,
+            );
+            assert!(!text.lines.is_empty(), "width {width} rendered nothing");
+        }
+    }
+
+    /// ghq listed the repository a moment ago, so a directory that has since
+    /// gone says so plainly rather than rendering a card full of blanks.
+    #[test]
+    fn a_repository_that_has_vanished_says_so_instead_of_showing_blanks() {
+        let entry = Entry {
+            kind: Kind::Repo,
+            id: "gh/gone".into(),
+            dir: Some("/definitely/not/a/real/path".into()),
+            label: "gone".into(),
+            icon: String::new(),
+            icon_color: Color::Reset,
+            primary: String::new(),
+            secondary: String::new(),
+            search: String::new(),
+        };
+        let runner = MockRunner::new();
+        let out = flat(&repo_card(
+            &entry,
+            &runner,
+            ".",
+            &Config::default(),
+            60,
+            &ink(),
+            &Theme::default(),
+        ));
+
+        assert!(out.contains("missing"), "{out}");
+        assert!(out.contains("path"), "the path is still shown: {out}");
+        assert!(
+            runner.calls().is_empty(),
+            "git was run against a path that is gone: {:?}",
+            runner.calls()
+        );
+    }
+
+    /// An entry with no directory at all is a stated absence, not an empty card.
+    #[test]
+    fn a_repository_row_with_no_directory_states_that() {
+        let entry = Entry {
+            kind: Kind::Repo,
+            id: "gh/api".into(),
+            dir: None,
+            label: "api".into(),
+            icon: String::new(),
+            icon_color: Color::Reset,
+            primary: String::new(),
+            secondary: String::new(),
+            search: String::new(),
+        };
+        let out = flat(&repo_card(
+            &entry,
+            &MockRunner::new(),
+            ".",
+            &Config::default(),
+            60,
+            &ink(),
+            &Theme::default(),
+        ));
+        assert!(out.contains("no directory"), "{out}");
+    }
+
+    /// The worker skips ahead to the newest request: while the user scrolls,
+    /// only the entry they land on is worth a subprocess.
+    #[test]
+    fn the_preview_worker_answers_only_the_newest_request() {
+        let worker = Worker::spawn(".".into(), Config::default(), Theme::default());
+        let entry = |id: &str| Entry {
+            kind: Kind::Repo,
+            id: id.into(),
+            dir: None,
+            label: id.into(),
+            icon: String::new(),
+            icon_color: Color::Reset,
+            primary: String::new(),
+            secondary: String::new(),
+            search: String::new(),
+        };
+
+        for seq in 0..5u64 {
+            assert!(worker.request(seq, entry(&format!("gh/r{seq}")), 60));
+        }
+
+        // The newest seq must arrive; earlier ones may be skipped entirely.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mut newest = None;
+        while std::time::Instant::now() < deadline {
+            if let Some(done) = worker.poll() {
+                newest = Some(done.seq);
+                if done.seq == 4 {
+                    break;
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert_eq!(newest, Some(4), "the newest request was never answered");
+    }
+
     #[test]
     fn agent_card_reads_herdr_json_into_name_status_doing_and_output() {
         let get = r#"{"result":{"agent":{"agent":"claude","agent_status":"working","foreground_cwd":"/tmp/x","terminal_title_stripped":"building the thing","pane_id":"p1"}}}"#;

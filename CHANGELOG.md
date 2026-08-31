@@ -7,6 +7,13 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **A line-coverage gate.** `bash bin/coverage.sh` reports per-file coverage and fails under 90%,
+  and CI enforces it on every pull request. It is a separate job from `bin/check.sh`, which stays
+  fast. Coverage went from 78.5% to 90.1%, and closing that gap found and pinned several behaviours
+  that were previously untested.
+
 ### Fixed
 
 - **Concurrent panes no longer lose recency or archive state.** Recording an open and archiving a

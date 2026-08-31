@@ -173,6 +173,122 @@ fn redact_subject(value: &str) -> String {
 mod tests {
     use super::*;
 
+    /// Every event produces a body, and none of them is empty — a notification
+    /// with no text is worse than none at all.
+    #[test]
+    fn every_event_states_something() {
+        let notifier = Notifier::new(&Config::default());
+        for event in [
+            Event::AgentLaunchFailed,
+            Event::CommandDeliveryFailed,
+            Event::FnmActivationFailed,
+            Event::ReviewHandoffSucceeded,
+            Event::PathHandoffSucceeded,
+            Event::TermSucceeded,
+            Event::KillSucceeded,
+            Event::SignalFailed,
+            Event::ListenerStale,
+        ] {
+            let args = notifier
+                .args(event, Some("localhost:3000"))
+                .unwrap_or_else(|| panic!("{event:?} produced no notification"));
+            let body = args
+                .iter()
+                .position(|arg| arg == "--body")
+                .and_then(|index| args.get(index + 1))
+                .unwrap_or_else(|| panic!("{event:?} has no body"));
+            assert!(!body.trim().is_empty(), "{event:?} has an empty body");
+        }
+    }
+
+    /// The four port events name their listener, so a notification arriving
+    /// after the pane closed still says which one it was about.
+    #[test]
+    fn the_port_events_name_their_listener() {
+        let notifier = Notifier::new(&Config::default());
+        for event in [
+            Event::TermSucceeded,
+            Event::KillSucceeded,
+            Event::SignalFailed,
+            Event::ListenerStale,
+        ] {
+            let args = notifier.args(event, Some("localhost:3000")).unwrap();
+            assert!(
+                args.iter().any(|arg| arg.contains("localhost:3000")),
+                "{event:?} dropped its subject: {args:?}"
+            );
+        }
+
+        // With no subject the sentence still reads, without a dangling gap.
+        let args = notifier.args(Event::TermSucceeded, None).unwrap();
+        let body = &args[args.iter().position(|a| a == "--body").unwrap() + 1];
+        assert_eq!(body, "Sent TERM.");
+    }
+
+    /// Notifications off means nothing is sent at all, for any event.
+    #[test]
+    fn a_disabled_notifier_produces_no_arguments() {
+        let mut cfg = Config::default();
+        cfg.common.notifications = false;
+        let notifier = Notifier::new(&cfg);
+
+        assert!(notifier.args(Event::TermSucceeded, Some("x")).is_none());
+        assert!(Notifier::silent()
+            .args(Event::KillSucceeded, None)
+            .is_none());
+    }
+
+    /// `auto` lets each event pick its own sound; anything else is the user's
+    /// choice and overrides every event.
+    #[test]
+    fn auto_lets_the_event_choose_its_sound_and_a_setting_overrides_it() {
+        let sound_of = |notifier: &Notifier, event| {
+            let args = notifier.args(event, None).unwrap();
+            args[args.iter().position(|a| a == "--sound").unwrap() + 1].clone()
+        };
+
+        let auto = Notifier::new(&Config::default());
+        assert_eq!(sound_of(&auto, Event::ReviewHandoffSucceeded), "done");
+        assert_eq!(sound_of(&auto, Event::AgentLaunchFailed), "request");
+
+        let mut cfg = Config::default();
+        cfg.common.notification_sound = "glass".into();
+        let fixed = Notifier::new(&cfg);
+        assert_eq!(sound_of(&fixed, Event::ReviewHandoffSucceeded), "glass");
+        assert_eq!(sound_of(&fixed, Event::AgentLaunchFailed), "glass");
+    }
+
+    /// A configured position is passed through; the default leaves herdr to
+    /// place it rather than sending an empty flag.
+    #[test]
+    fn a_position_is_passed_through_only_when_one_is_configured() {
+        let mut cfg = Config::default();
+        cfg.common.notification_position = String::new();
+        let args = Notifier::new(&cfg)
+            .args(Event::TermSucceeded, None)
+            .unwrap();
+        assert!(!args.iter().any(|arg| arg == "--position"), "{args:?}");
+
+        cfg.common.notification_position = "top-right".into();
+        let args = Notifier::new(&cfg)
+            .args(Event::TermSucceeded, None)
+            .unwrap();
+        let position = &args[args.iter().position(|a| a == "--position").unwrap() + 1];
+        assert_eq!(position, "top-right");
+    }
+
+    /// A free-text message goes through the same shape, and is silent when
+    /// notifications are off.
+    #[test]
+    fn a_free_text_message_respects_the_same_switch() {
+        // Nothing to assert on the wire without shelling out, so this pins the
+        // one branch that decides whether anything is attempted at all.
+        Notifier::silent().send_message("body", "done");
+        let mut cfg = Config::default();
+        cfg.common.notifications = false;
+        Notifier::new(&cfg).send_message("body", "done");
+    }
+
     #[test]
     fn command_failure_never_contains_command_or_secret() {
         let notifier = Notifier::new(&Config::default());

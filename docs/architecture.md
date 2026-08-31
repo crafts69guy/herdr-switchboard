@@ -309,7 +309,8 @@ popups cannot be represented as several simultaneously active booleans.
   results, failure behavior, and secret handling.
 - `TestBackend` render tests cover supported widths, both background modes, live key labels, and
   hit zones for any changed surface.
-- Run the complete local/CI/release gate with `bash bin/check.sh`.
+- Run the complete local/CI/release gate with `bash bin/check.sh`, and the coverage gate with
+  `bash bin/coverage.sh` (line coverage, 90%, nothing excluded from the denominator).
 - Manually exercise every affected Herdr pane. Attach a current screenshot when layout or
   interaction changes.
 - Any user-visible change receives an `[Unreleased]` changelog entry in the same implementation

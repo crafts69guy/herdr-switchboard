@@ -509,6 +509,31 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// A worktree is openable but not a repository to update or remove: those
+    /// verbs have different semantics on a linked checkout, so they are refused
+    /// rather than run against the wrong thing.
+    #[test]
+    fn every_accept_either_opens_or_is_local_work() {
+        // The four that open name a surface; the rest do local work with no
+        // surface of their own. Exhaustive on purpose: a new variant that
+        // belongs in neither group is a dispatch arm somebody forgot.
+        let opens = [Accept::Workspace, Accept::Tab, Accept::Split, Accept::Pane];
+        let local = [
+            Accept::Default,
+            Accept::Update,
+            Accept::Remove,
+            Accept::Clone,
+            Accept::UpdatePlugin,
+        ];
+        assert_eq!(
+            opens.len() + local.len(),
+            9,
+            "a variant was added or removed"
+        );
+        assert!(opens.iter().all(|a| open_kind(*a).is_some()));
+        assert!(local.iter().all(|a| open_kind(*a).is_none()));
+    }
+
     /// Only the four opening accepts name a herdr surface; the rest are local
     /// work with no surface of their own.
     #[test]

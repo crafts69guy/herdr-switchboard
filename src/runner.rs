@@ -220,3 +220,88 @@ mod mock {
         }
     }
 }
+
+#[cfg(test)]
+mod system_tests {
+    use super::*;
+
+    /// The production runner against real, trivial programs. These are the four
+    /// verbs every caller in the crate goes through, and `MockRunner` can only
+    /// prove the argv — not that the real one spawns, waits, and reports
+    /// correctly.
+    #[test]
+    fn the_system_runner_captures_output_and_reports_exit_status() {
+        let runner = SystemRunner;
+
+        let out = runner.output("echo", &["hello"]).expect("echo runs");
+        assert!(out.status.success());
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "hello");
+
+        // `capture` trims and gives up on a non-zero exit.
+        assert_eq!(
+            runner.capture("echo", &["  spaced  "]).as_deref(),
+            Some("spaced")
+        );
+        assert_eq!(
+            runner.capture("false", &[]),
+            None,
+            "a failure captures nothing"
+        );
+        assert_eq!(
+            runner.capture("definitely-not-a-real-program", &[]),
+            None,
+            "a missing program is not a panic"
+        );
+
+        // `ok` is the "did it work" path.
+        assert!(runner.ok("true", &[]));
+        assert!(!runner.ok("false", &[]));
+        assert!(!runner.ok("definitely-not-a-real-program", &[]));
+
+        assert!(runner.status("true", &[]).expect("true runs").success());
+        assert!(runner.output("definitely-not-a-real-program", &[]).is_err());
+    }
+
+    /// `output_stdin` exists for exactly one reason: a secret must never reach a
+    /// command line, because `argv` is world-readable through `ps` for the whole
+    /// life of the call. This proves the pipe is actually written, closed, and
+    /// read to EOF — a handle left open would hang the wait forever.
+    #[test]
+    fn the_system_runner_feeds_stdin_and_closes_it() {
+        let runner = SystemRunner;
+
+        let out = runner
+            .output_stdin("cat", &[], "a secret that never reaches argv\n")
+            .expect("cat runs");
+        assert!(
+            out.status.success(),
+            "cat did not exit; was stdin left open?"
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout).trim(),
+            "a secret that never reaches argv"
+        );
+
+        // An empty body still terminates.
+        let empty = runner.output_stdin("cat", &[], "").expect("cat runs");
+        assert!(empty.stdout.is_empty());
+
+        assert!(runner
+            .output_stdin("definitely-not-a-real-program", &[], "x")
+            .is_err());
+    }
+
+    /// A detached spawn returns immediately and does not report the child's
+    /// exit — the update check outlives the picker precisely because nothing
+    /// waits on it.
+    #[test]
+    fn a_detached_spawn_returns_without_waiting() {
+        let runner = SystemRunner;
+        assert!(runner.spawn_detached(OsStr::new("true"), &[]).is_ok());
+        // Even a child that will fail spawns fine; only an unspawnable program errors.
+        assert!(runner.spawn_detached(OsStr::new("false"), &[]).is_ok());
+        assert!(runner
+            .spawn_detached(OsStr::new("definitely-not-a-real-program"), &[])
+            .is_err());
+    }
+}

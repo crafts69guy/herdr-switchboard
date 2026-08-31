@@ -1200,6 +1200,134 @@ mod tests {
             accent_slot: None,
         }
     }
+
+    /// A mode that overrides nothing gets the documented defaults. These are
+    /// what every simple mode relies on, so a changed default silently changes
+    /// four pickers at once.
+    #[test]
+    fn a_mode_that_overrides_nothing_gets_the_documented_defaults() {
+        let mut mode = TestMode;
+
+        assert!(mode.tabs().is_empty(), "no tabs by default");
+        assert!(
+            mode.activate_tab("anything").is_none(),
+            "a mode with no tabs cannot activate one"
+        );
+        assert!(mode.key_bindings().is_empty());
+        assert!(
+            mode.action_disabled_reason("any", "any").is_none(),
+            "nothing is disabled unless a mode says so"
+        );
+        assert!(
+            !mode.emphasize_head(),
+            "the leading word is plain by default"
+        );
+        assert_eq!(mode.list_pct(), 42);
+        assert_eq!(mode.action_bar_rows(), 1);
+        assert!(!mode.is_polling(), "no background source by default");
+        assert!(mode.poll().is_none());
+        assert!(
+            !mode.empty_message().is_empty(),
+            "an empty list still says something"
+        );
+        mode.reload_config(&Config::default()).unwrap();
+    }
+
+    /// The surface draws through the shared frame, and a wide pane lays out the
+    /// list beside its preview card.
+    #[test]
+    fn the_surface_draws_the_list_its_title_and_the_command_bar() {
+        let mut h = Harness::new(items(3), true);
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 20)).unwrap();
+        terminal.draw(|frame| h.surface().draw(frame)).unwrap();
+
+        let screen: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(
+            screen.contains("Ports"),
+            "the mode title is on the list: {screen}"
+        );
+        assert!(screen.contains("Search"), "the query box is captioned");
+        assert!(screen.contains("item-0"), "the rows are drawn");
+        assert!(screen.contains("open"), "the command bar carries its pills");
+
+        // Drawing publishes the zones the click router reads.
+        assert!(h.state.list_area.width > 0);
+        assert!(!h.state.bar_rows.is_empty());
+    }
+
+    /// A tabbed mode draws its tabs into the list's caption slot and publishes a
+    /// click zone for each, measured by the loop that lays them out.
+    #[test]
+    fn a_tabbed_mode_draws_its_tabs_and_publishes_a_zone_for_each() {
+        let mode = TabbedMode { active: "history" };
+        let mut state = State::new(mode.items(), true);
+        let buffer = render_tabbed(&mode, &mut state);
+
+        let screen: String = (0..12)
+            .flat_map(|y| (0..80).map(move |x| (x, y)))
+            .map(|(x, y)| buffer[(x, y)].symbol())
+            .collect();
+        assert!(screen.contains("History"), "{screen}");
+        assert!(screen.contains("Starred"), "{screen}");
+        assert_eq!(
+            state.tab_zones.len(),
+            2,
+            "one click zone per tab, measured where it was drawn"
+        );
+        assert!(state.tab_zones.iter().all(|(zone, _)| zone.width > 0));
+    }
+
+    /// A runtime error replaces the ordinary result line, so a failed action
+    /// says why rather than looking like it did nothing.
+    #[test]
+    fn a_runtime_error_is_drawn_where_the_result_count_goes() {
+        let mut h = Harness::new(items(2), true);
+        h.state.runtime_error = Some("listener is stale".into());
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 20)).unwrap();
+        terminal.draw(|frame| h.surface().draw(frame)).unwrap();
+
+        let screen: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(screen.contains("listener is stale"), "{screen}");
+    }
+
+    /// A malformed query is reported where it went wrong rather than silently
+    /// matching nothing.
+    #[test]
+    fn a_malformed_query_is_reported_rather_than_matching_nothing() {
+        let mut h = Harness::new(items(2), false);
+        h.state.query = "cmd:\"unterminated".into();
+        h.state.recompute(&h.schema);
+
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 20)).unwrap();
+        terminal.draw(|frame| h.surface().draw(frame)).unwrap();
+        let screen: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(
+            screen.contains("quote") || screen.contains("unterminated"),
+            "the diagnostic is shown: {screen}"
+        );
+    }
+
     /// The scroll offset lives in `State` between frames, and turning a click
     /// back into an item is the only thing that can read it. `draw` moves the
     /// `ListState` out so the rows can borrow their text across the render, so

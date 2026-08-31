@@ -288,6 +288,66 @@ pub fn disengage<R: CommandRunner>(runner: &R, overrides: &[Override]) -> bool {
 mod tests {
     use super::*;
 
+    /// Each level asks for strictly more than the one below it. `Off` asks for
+    /// nothing at all, which is what makes it the safe default.
+    #[test]
+    fn each_level_asks_for_more_than_the_one_below() {
+        let doc = "".parse::<DocumentMut>().unwrap();
+        let keys = |level| {
+            plan_overrides(&doc, level)
+                .into_iter()
+                .map(|change| change.key)
+                .collect::<std::collections::BTreeSet<_>>()
+        };
+
+        let off = keys(Level::Off);
+        let panes = keys(Level::Panes);
+        let full = keys(Level::Full);
+
+        assert!(off.is_empty(), "Off must change nothing: {off:?}");
+        assert!(!panes.is_empty());
+        assert!(
+            panes.is_subset(&full),
+            "Full must include everything Panes does"
+        );
+        assert!(full.len() > panes.len(), "Full must go further than Panes");
+    }
+
+    /// An unknown level degrades to `Off` rather than erroring: this setting
+    /// decides how a session looks, and a typo must not stop zen.
+    #[test]
+    fn an_unknown_level_degrades_to_off() {
+        assert_eq!(Level::parse("off"), Level::Off);
+        assert_eq!(Level::parse("panes"), Level::Panes);
+        assert_eq!(Level::parse("full"), Level::Full);
+        assert_eq!(
+            Level::parse("  full  "),
+            Level::Full,
+            "whitespace is trimmed"
+        );
+        assert_eq!(Level::parse("maximum"), Level::Off);
+        assert_eq!(Level::parse(""), Level::Off);
+    }
+
+    /// A value that is not valid TOML is skipped rather than written as a
+    /// literal — a malformed prior would corrupt the user's config on restore.
+    #[test]
+    fn a_prior_that_is_not_valid_toml_is_skipped_rather_than_written() {
+        let mut doc = "[ui]\nsidebar = true\n".parse::<DocumentMut>().unwrap();
+        let bogus = vec![Override {
+            key: "sidebar".into(),
+            want: "not = valid = toml".into(),
+            prior: Some("true".into()),
+        }];
+
+        apply(&mut doc, &bogus);
+        let written = doc.to_string();
+        assert!(
+            written.contains("sidebar = true"),
+            "a malformed value reached the file: {written}"
+        );
+    }
+
     const SAMPLE: &str = "\
 # herdr config
 [ui]

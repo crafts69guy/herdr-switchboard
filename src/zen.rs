@@ -588,6 +588,73 @@ mod tests {
         }
     }
 
+    /// `toggle` is the single-key entry point, so what it decides has to be
+    /// exactly "is a session live right now".
+    #[test]
+    fn toggling_enters_when_nothing_is_zenned() {
+        let runner = entering();
+        let store = temp_store();
+
+        toggle(&runner, "w1:p1", &cfg(false), &Notifier::silent(), &store).unwrap();
+
+        let calls: Vec<String> = runner.calls().iter().map(|c| c.join(" ")).collect();
+        assert!(
+            calls
+                .iter()
+                .any(|c| c.contains("pane move") && c.contains("--new-tab")),
+            "entering must move the target to its own tab: {calls:?}"
+        );
+        assert!(store.load().is_some(), "a session was recorded");
+    }
+
+    /// With a live session, the same key is the way out.
+    #[test]
+    fn toggling_leaves_when_the_zenned_pane_is_still_alive() {
+        let runner = MockRunner::new()
+            .on("pane list", PANES)
+            .on("tab get", r#"{"result":{"tab":{"pane_count":0}}}"#);
+        let store = temp_store();
+        store.save(&session_of(&[])).unwrap();
+
+        toggle(&runner, "w1:p1", &cfg(false), &Notifier::silent(), &store).unwrap();
+
+        let calls: Vec<String> = runner.calls().iter().map(|c| c.join(" ")).collect();
+        assert!(
+            calls
+                .iter()
+                .any(|c| c.contains("pane move w1:p1") && c.contains("--tab w1:t1")),
+            "leaving must move the target home: {calls:?}"
+        );
+        assert!(store.load().is_none(), "the session was cleared");
+    }
+
+    /// A session file left behind by a crashed herdr names a pane that no longer
+    /// exists. That must resolve to "enter" rather than trapping the user in a
+    /// zen they cannot leave.
+    #[test]
+    fn a_stale_session_naming_a_dead_pane_enters_rather_than_trapping() {
+        let runner = entering();
+        let store = temp_store();
+        let mut stale = session_of(&[]);
+        stale.target = "w9:p9".into(); // not in PANES
+        store.save(&stale).unwrap();
+
+        toggle(&runner, "w1:p1", &cfg(false), &Notifier::silent(), &store).unwrap();
+
+        let calls: Vec<String> = runner.calls().iter().map(|c| c.join(" ")).collect();
+        assert!(
+            calls
+                .iter()
+                .any(|c| c.contains("pane move") && c.contains("--new-tab")),
+            "a stale session must not block entering: {calls:?}"
+        );
+        assert_eq!(
+            store.load().map(|s| s.target),
+            Some("w1:p1".to_string()),
+            "the new session replaced the stale one"
+        );
+    }
+
     #[test]
     fn leaving_closes_the_gutters_and_moves_the_target_home() {
         let runner = MockRunner::new()

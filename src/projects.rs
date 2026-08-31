@@ -1692,6 +1692,130 @@ mod tests {
         }
     }
 
+    /// Input reaches the reducer through the surface, and only a *press* does —
+    /// a terminal that reports releases would otherwise act twice per key.
+    #[test]
+    fn only_a_key_press_reaches_the_reducer() {
+        let mut app = ready_app();
+        let mut surface = surface(&mut app);
+
+        let release = crossterm::event::KeyEvent::new_with_kind(
+            KeyCode::Char('j'),
+            KeyModifiers::NONE,
+            KeyEventKind::Release,
+        );
+        assert!(matches!(
+            surface.on_event(Event::Key(release)).unwrap(),
+            SurfaceTransition::Wait
+        ));
+        assert_eq!(
+            surface.app.picker.selected, 0,
+            "a release moved the selection"
+        );
+
+        let press = crossterm::event::KeyEvent::new(KeyCode::Down, KeyModifiers::NONE);
+        assert!(matches!(
+            surface.on_event(Event::Key(press)).unwrap(),
+            SurfaceTransition::Redraw
+        ));
+        assert_eq!(surface.app.picker.selected, 1);
+
+        // An event that is neither key nor mouse costs nothing.
+        assert!(matches!(
+            surface.on_event(Event::Resize(80, 24)).unwrap(),
+            SurfaceTransition::Wait
+        ));
+    }
+
+    /// Insert mode types unbound printable keys into the query; Normal mode
+    /// does not, because there the list is driven by commands.
+    #[test]
+    fn an_unbound_printable_key_types_only_in_insert_mode() {
+        let mut app = ready_app();
+        app.mode = keymap::Mode::Insert;
+        handle_key(&mut app, key(KeyCode::Char('z'), KeyModifiers::NONE));
+        assert_eq!(app.picker.query, "z");
+
+        // Backspace takes it back out and re-filters.
+        handle_key(&mut app, key(KeyCode::Backspace, KeyModifiers::NONE));
+        assert_eq!(app.picker.query, "");
+        assert_eq!(app.picker.filtered.len(), sample().len());
+
+        // A modified key is a command, not text.
+        handle_key(&mut app, key(KeyCode::Char('z'), KeyModifiers::ALT));
+        assert_eq!(app.picker.query, "", "⌥z typed into the query");
+
+        let mut app = ready_app();
+        app.mode = keymap::Mode::Normal;
+        handle_key(&mut app, key(KeyCode::Char('z'), KeyModifiers::NONE));
+        assert_eq!(app.picker.query, "", "Normal mode typed into the query");
+    }
+
+    /// The leader arms on `␣` and fires on the next key — and an unbound
+    /// follow-up simply disarms, so the leader can never trap you.
+    #[test]
+    fn the_leader_arms_fires_and_never_traps() {
+        let mut app = ready_app();
+        app.mode = keymap::Mode::Normal;
+
+        handle_key(&mut app, key(KeyCode::Char(' '), KeyModifiers::NONE));
+        assert!(app.leader_pending, "space armed the leader");
+
+        // An unbound follow-up disarms without acting.
+        handle_key(&mut app, key(KeyCode::Char('§'), KeyModifiers::NONE));
+        assert!(!app.leader_pending, "the leader stayed armed");
+        assert_eq!(app.overlay, Overlay::None);
+
+        // A bound follow-up runs its action.
+        handle_key(&mut app, key(KeyCode::Char(' '), KeyModifiers::NONE));
+        let flow = handle_key(&mut app, key(KeyCode::Char('?'), KeyModifiers::NONE));
+        assert!(matches!(flow, Flow::Continue));
+        assert!(!app.leader_pending);
+    }
+
+    /// The wheel moves the selection over the list and scrolls the card over
+    /// the preview — the pointer decides which.
+    #[test]
+    fn the_wheel_moves_the_selection_or_scrolls_the_preview_by_position() {
+        let mut app = app_with_preview(60, 20);
+        app.catalog = CatalogState::Ready;
+        app.zones.list_area = Rect::new(0, 10, 40, 12);
+        app.preview.area = Some(Rect::new(50, 10, 40, 12));
+        let mut surface = surface(&mut app);
+
+        let wheel = |kind, column, row| {
+            Event::Mouse(crossterm::event::MouseEvent {
+                kind,
+                column,
+                row,
+                modifiers: KeyModifiers::NONE,
+            })
+        };
+
+        surface
+            .on_event(wheel(MouseEventKind::ScrollDown, 10, 12))
+            .unwrap();
+        assert_eq!(
+            surface.app.picker.selected, 1,
+            "over the list, the selection moves"
+        );
+        assert_eq!(surface.app.preview.scroll, 0);
+
+        surface
+            .on_event(wheel(MouseEventKind::ScrollDown, 60, 12))
+            .unwrap();
+        // Three rows a notch over the card — the conventional feel for text,
+        // and deliberately not the one-row step the list uses.
+        assert_eq!(
+            surface.app.preview.scroll, 3,
+            "over the card, the card scrolls"
+        );
+        assert_eq!(
+            surface.app.picker.selected, 1,
+            "and the selection stays put"
+        );
+    }
+
     fn agent_target(pane: &str, cwd: &str) -> AgentTarget {
         AgentTarget {
             pane_id: pane.into(),
@@ -1865,6 +1989,82 @@ mod tests {
             app.handoff.selected, before,
             "a click past the rows selected one"
         );
+    }
+
+    /// The preview shows a placeholder while a card is being built, naming the
+    /// entry so it is clear *what* is loading rather than just that something is.
+    #[test]
+    fn the_preview_shows_a_named_placeholder_while_a_card_is_built() {
+        let mut app = app_with_preview(60, 20);
+        app.catalog = CatalogState::Ready;
+        app.preview.label = "api".into();
+        app.preview.since = Some(Instant::now() - Duration::from_secs(1));
+        app.preview.pending = true;
+
+        let screen = rendered(&mut app, 140, 24);
+        assert!(
+            screen.contains("api"),
+            "the placeholder names its entry:\n{screen}"
+        );
+    }
+
+    /// The cheatsheet lists what each key does, and its descriptions have to fit
+    /// the column — one that overruns is cut with no ellipsis and ships looking
+    /// like a shorter phrase.
+    #[test]
+    fn the_cheatsheet_fits_every_description_in_its_column() {
+        let mut app = app_with_layout();
+        app.overlay = Overlay::Help;
+
+        // `row`'s debug_assert fires during this render if a description is too
+        // wide for HELP_DESC.
+        let screen = rendered(&mut app, 120, 40);
+        assert!(screen.contains("Select or run it"), "{screen}");
+        assert!(
+            screen.contains("Scroll"),
+            "the wheel row is present:\n{screen}"
+        );
+    }
+
+    /// A catalogue that failed to load says so and offers only Close, rather
+    /// than presenting an empty list as though nothing exists.
+    #[test]
+    fn a_failed_catalogue_states_the_reason_and_accepts_only_close() {
+        let mut app = App::new(Vec::new(), Theme::default(), Config::default(), ".".into());
+        app.catalog = CatalogState::Failed("discovery stopped".into());
+        let screen = rendered(&mut app, 120, 24);
+        assert!(screen.contains("Could not load projects"), "{screen}");
+        assert!(screen.contains("discovery stopped"), "{screen}");
+
+        let mut surface = surface(&mut app);
+        // Navigation is refused while there is nothing to navigate.
+        assert!(matches!(
+            surface
+                .on_event(Event::Key(crossterm::event::KeyEvent::new(
+                    KeyCode::Down,
+                    KeyModifiers::NONE
+                )))
+                .unwrap(),
+            SurfaceTransition::Wait
+        ));
+        // But whichever key the live keymap binds to Quit still works — asked of
+        // the keymap rather than hard-coded, so a rebind cannot leave the user
+        // stuck on a failure screen with no way out.
+        let quit = surface
+            .app
+            .keymap
+            .label_for(surface.app.mode, keymap::Action::Quit)
+            .expect("some key must always quit");
+        assert!(!quit.is_empty(), "the quit key has no cap");
+        assert!(matches!(
+            surface
+                .on_event(Event::Key(crossterm::event::KeyEvent::new(
+                    KeyCode::Char('q'),
+                    KeyModifiers::NONE
+                )))
+                .unwrap(),
+            SurfaceTransition::Exit(None)
+        ));
     }
 
     /// The update badge is a fact, not a prompt: it sits at the far end and
