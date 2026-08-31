@@ -46,15 +46,27 @@ impl<'a> ProjectCatalog<'a> {
 
     fn load_snapshot(&self, repos: &[String]) -> Vec<Entry> {
         let mut entries = Vec::new();
-        if self.config.projects.include_agents {
-            entries.extend(data::load_agents(self.context.runner, self.context.theme));
-        }
-        if self.config.projects.include_workspaces {
-            entries.extend(data::load_workspaces(
-                self.context.runner,
-                self.context.theme,
-            ));
-        }
+        // `herdr agent list` and `herdr workspace list` answer independent
+        // questions, and each pays a full process start. Overlap them the way
+        // the effect runtime already overlaps `ghq root` with `ghq list`, then
+        // extend in catalog order regardless of which finished first. A disabled
+        // source is still never queried.
+        let (agents, workspaces) = std::thread::scope(|scope| {
+            let agents = self.config.projects.include_agents.then(|| {
+                scope.spawn(|| data::load_agents(self.context.runner, self.context.theme))
+            });
+            let workspaces = if self.config.projects.include_workspaces {
+                data::load_workspaces(self.context.runner, self.context.theme)
+            } else {
+                Vec::new()
+            };
+            let agents = agents
+                .map(|handle| handle.join().unwrap_or_default())
+                .unwrap_or_default();
+            (agents, workspaces)
+        });
+        entries.extend(agents);
+        entries.extend(workspaces);
         // Repositories are the product's anchor and are always present. Take
         // one ghq snapshot and share it with bounded worktree discovery.
         entries.extend(data::load_repos(

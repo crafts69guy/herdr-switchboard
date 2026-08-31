@@ -125,11 +125,30 @@ pub trait PickerMode {
         Ok(())
     }
     fn initial(&mut self) -> Result<Vec<PickerItem>>;
+    /// Whether [`poll`](Self::poll) currently has a background source behind it.
+    ///
+    /// The host waits on input at an idle tick unless this says otherwise. A
+    /// mode with nothing in flight has nothing a tick could discover, and waking
+    /// the process twenty times a second to ask an empty channel is cost with no
+    /// answer behind it — the same adaptive tick Projects and Git already use,
+    /// which this shared picker was the last surface to be missing.
+    ///
+    /// Derive it from the state `poll` itself reads rather than returning a
+    /// hard-coded `true`, so a mode cannot claim to be waiting when it is not.
+    fn is_polling(&self) -> bool {
+        false
+    }
     fn poll(&mut self) -> Option<Result<Vec<PickerItem>>> {
         None
     }
     fn execute(&mut self, item_id: &str, action: &str) -> Result<ActionOutcome>;
 }
+
+/// How often the host looks for a background answer while one is in flight.
+const POLL_TICK: Duration = Duration::from_millis(50);
+/// How often it looks when nothing is. Input still wakes the loop immediately;
+/// this is only how long a wait can sit before it is re-armed.
+const IDLE_TICK: Duration = Duration::from_secs(1);
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum InputMode {
@@ -300,7 +319,11 @@ impl<M: PickerMode> Surface for PickerSurface<'_, M> {
     }
 
     fn tick_rate(&self) -> Duration {
-        Duration::from_millis(50)
+        if self.mode.is_polling() {
+            POLL_TICK
+        } else {
+            IDLE_TICK
+        }
     }
 
     fn on_tick(&mut self) -> Result<Transition<Self::Output>> {
@@ -566,6 +589,36 @@ fn delete_word(query: &mut String) {
     }
 }
 
+/// Append `text` to a row, clipped to what is left of `budget` and ellipsised
+/// if it does not fit.
+///
+/// A free function rather than a closure so its output can borrow `text`: the
+/// overwhelmingly common case is a column that fits, and copying it into a
+/// `String` meant one allocation per column per row per frame — paid for every
+/// row in the catalogue, including the ones the `List` scrolls past. Only the
+/// clipped tail, which has to be rebuilt with its ellipsis, allocates.
+fn push_clipped<'a>(
+    text: &'a str,
+    style: Style,
+    budget: usize,
+    used: &mut usize,
+    spans: &mut Vec<Span<'a>>,
+) {
+    if *used >= budget {
+        return;
+    }
+    let len = text.chars().count();
+    if *used + len <= budget {
+        *used += len;
+        spans.push(Span::styled(text, style));
+    } else {
+        let room = budget - *used;
+        let cut: String = text.chars().take(room.saturating_sub(1)).collect();
+        *used = budget;
+        spans.push(Span::styled(format!("{cut}…"), style));
+    }
+}
+
 fn draw<M: PickerMode>(
     frame: &mut Frame,
     mode: &M,
@@ -692,120 +745,14 @@ fn draw<M: PickerMode>(
         .unwrap_or(0);
     let gutter = tag_width + marker_width + usize::from(marker_width > 0 && tag_width > 0);
     let emphasize = mode.emphasize_head();
-    let items = state
-        .filtered
-        .iter()
-        .enumerate()
-        .map(|(visible_index, index)| {
-            let item = &state.items[*index];
-            let selected = visible_index == state.selected;
-            let slot = item
-                .accent_slot
-                .as_deref()
-                .map(|slot| theme.or(slot, accent));
-            // An emphasized head falls back to the mode's accent, never to `muted`:
-            // the point of the head is to stand out, and a slotless item drawing it
-            // dimmer than its own tail is the opposite of that. The secondary note
-            // does fall back to `muted` — being quiet is its job.
-            let head_color = slot.unwrap_or(accent);
-            let note_color = slot.unwrap_or(muted);
-            // Reserve the gutter (plus a space before it) so no row can grow into
-            // the column the tags live in.
-            let budget = row_width.saturating_sub(if gutter == 0 { 0 } else { gutter + 2 });
 
-            let mut spans: Vec<Span<'static>> = Vec::new();
-            let mut used = 0usize;
-            let mut push = |text: &str, style: Style, spans: &mut Vec<Span<'static>>| {
-                if used >= budget {
-                    return;
-                }
-                let len = text.chars().count();
-                if used + len <= budget {
-                    used += len;
-                    spans.push(Span::styled(text.to_string(), style));
-                } else {
-                    let room = budget - used;
-                    let cut: String = text.chars().take(room.saturating_sub(1)).collect();
-                    used = budget;
-                    spans.push(Span::styled(format!("{cut}…"), style));
-                }
-            };
-
-            // For a wall of shell commands the leading word is what the eye hunts
-            // for, so a mode can ask for it in its own colour and bold. Everything
-            // else stays plain `text`, the projects picker's division of colour.
-            match item.primary.split_once(' ').filter(|_| emphasize) {
-                Some((head, tail)) => {
-                    push(
-                        head,
-                        Style::default()
-                            .fg(if selected { accent } else { head_color })
-                            .add_modifier(Modifier::BOLD),
-                        &mut spans,
-                    );
-                    push(" ", Style::default(), &mut spans);
-                    push(
-                        tail,
-                        Style::default().fg(if selected { accent } else { text }),
-                        &mut spans,
-                    );
-                }
-                None => {
-                    let style = if emphasize {
-                        Style::default()
-                            .fg(if selected { accent } else { head_color })
-                            .add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default().fg(if selected { accent } else { text })
-                    };
-                    push(&item.primary, style, &mut spans);
-                }
-            }
-            if !item.secondary.is_empty() {
-                push("  ", Style::default(), &mut spans);
-                push(
-                    &item.secondary,
-                    Style::default()
-                        .fg(if selected { accent } else { note_color })
-                        .add_modifier(Modifier::DIM),
-                    &mut spans,
-                );
-            }
-
-            // Right-align the tag: pad out to the gutter, then draw it.
-            if gutter > 0 {
-                let tag = item.trailing.clone().unwrap_or_default();
-                let pad = row_width.saturating_sub(used).saturating_sub(gutter);
-                spans.push(Span::raw(" ".repeat(pad)));
-                if marker_width > 0 {
-                    if let Some(marker) = &item.trailing_marker {
-                        spans.push(Span::raw(
-                            " ".repeat(marker_width.saturating_sub(marker.text.chars().count())),
-                        ));
-                        spans.push(Span::styled(
-                            marker.text.clone(),
-                            Style::default().fg(theme.or(&marker.color_slot, Color::Yellow)),
-                        ));
-                    } else {
-                        spans.push(Span::raw(" ".repeat(marker_width)));
-                    }
-                    if tag_width > 0 {
-                        spans.push(Span::raw(" "));
-                    }
-                }
-                spans.push(Span::raw(
-                    " ".repeat(tag_width.saturating_sub(tag.chars().count())),
-                ));
-                spans.push(Span::styled(
-                    tag,
-                    Style::default()
-                        .fg(if selected { accent } else { muted })
-                        .add_modifier(Modifier::DIM),
-                ));
-            }
-            ListItem::new(Line::from(spans))
-        })
-        .collect::<Vec<_>>();
+    // The frame and the list state are both settled *before* the rows are built,
+    // and the state is moved out rather than borrowed. Rows borrow their text
+    // straight out of `state.items` instead of copying every column into a fresh
+    // `String` per row per frame — a catalogue is `commands.history_limit` rows
+    // deep by default — and that borrow has to outlive the render call, which it
+    // can only do if nothing else is holding `state` mutably at the time. The
+    // scroll offset rides along inside the moved-out state and is put back below.
     let tabs = mode.tabs();
     state.tab_zones.clear();
     let list_block = if tabs.is_empty() {
@@ -833,14 +780,120 @@ fn draw<M: PickerMode>(
         }
         tui::framed(border).title(Line::from(spans))
     };
+    let mut list_state = std::mem::take(&mut state.list_state);
+    list_state.select((!state.filtered.is_empty()).then_some(state.selected));
+
+    let items = state
+        .filtered
+        .iter()
+        .enumerate()
+        .map(|(visible_index, index)| {
+            let item = &state.items[*index];
+            let selected = visible_index == state.selected;
+            let slot = item
+                .accent_slot
+                .as_deref()
+                .map(|slot| theme.or(slot, accent));
+            // An emphasized head falls back to the mode's accent, never to `muted`:
+            // the point of the head is to stand out, and a slotless item drawing it
+            // dimmer than its own tail is the opposite of that. The secondary note
+            // does fall back to `muted` — being quiet is its job.
+            let head_color = slot.unwrap_or(accent);
+            let note_color = slot.unwrap_or(muted);
+            // Reserve the gutter (plus a space before it) so no row can grow into
+            // the column the tags live in.
+            let budget = row_width.saturating_sub(if gutter == 0 { 0 } else { gutter + 2 });
+
+            let mut spans: Vec<Span<'_>> = Vec::new();
+            let mut used = 0usize;
+
+            // For a wall of shell commands the leading word is what the eye hunts
+            // for, so a mode can ask for it in its own colour and bold. Everything
+            // else stays plain `text`, the projects picker's division of colour.
+            match item.primary.split_once(' ').filter(|_| emphasize) {
+                Some((head, tail)) => {
+                    push_clipped(
+                        head,
+                        Style::default()
+                            .fg(if selected { accent } else { head_color })
+                            .add_modifier(Modifier::BOLD),
+                        budget,
+                        &mut used,
+                        &mut spans,
+                    );
+                    push_clipped(" ", Style::default(), budget, &mut used, &mut spans);
+                    push_clipped(
+                        tail,
+                        Style::default().fg(if selected { accent } else { text }),
+                        budget,
+                        &mut used,
+                        &mut spans,
+                    );
+                }
+                None => {
+                    let style = if emphasize {
+                        Style::default()
+                            .fg(if selected { accent } else { head_color })
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(if selected { accent } else { text })
+                    };
+                    push_clipped(&item.primary, style, budget, &mut used, &mut spans);
+                }
+            }
+            if !item.secondary.is_empty() {
+                push_clipped("  ", Style::default(), budget, &mut used, &mut spans);
+                push_clipped(
+                    &item.secondary,
+                    Style::default()
+                        .fg(if selected { accent } else { note_color })
+                        .add_modifier(Modifier::DIM),
+                    budget,
+                    &mut used,
+                    &mut spans,
+                );
+            }
+
+            // Right-align the tag: pad out to the gutter, then draw it.
+            if gutter > 0 {
+                let tag = item.trailing.as_deref().unwrap_or_default();
+                let pad = row_width.saturating_sub(used).saturating_sub(gutter);
+                spans.push(Span::raw(tui::spaces(pad)));
+                if marker_width > 0 {
+                    if let Some(marker) = &item.trailing_marker {
+                        spans.push(Span::raw(tui::spaces(
+                            marker_width.saturating_sub(marker.text.chars().count()),
+                        )));
+                        spans.push(Span::styled(
+                            marker.text.as_str(),
+                            Style::default().fg(theme.or(&marker.color_slot, Color::Yellow)),
+                        ));
+                    } else {
+                        spans.push(Span::raw(tui::spaces(marker_width)));
+                    }
+                    if tag_width > 0 {
+                        spans.push(Span::raw(" "));
+                    }
+                }
+                spans.push(Span::raw(tui::spaces(
+                    tag_width.saturating_sub(tag.chars().count()),
+                )));
+                spans.push(Span::styled(
+                    tag,
+                    Style::default()
+                        .fg(if selected { accent } else { muted })
+                        .add_modifier(Modifier::DIM),
+                ));
+            }
+            ListItem::new(Line::from(spans))
+        })
+        .collect::<Vec<_>>();
     let list = List::new(items)
         .block(list_block)
         .highlight_style(Style::default().bg(surface).add_modifier(Modifier::BOLD))
         .highlight_symbol("▌ ");
-    state
-        .list_state
-        .select((!state.filtered.is_empty()).then_some(state.selected));
-    frame.render_stateful_widget(list, cols[0], &mut state.list_state);
+    frame.render_stateful_widget(list, cols[0], &mut list_state);
+    state.list_state = list_state;
 
     let preview = state
         .selected_item()
@@ -999,13 +1052,6 @@ fn first_enabled<M: PickerMode>(
         .map(|action| action.id)
 }
 
-pub fn fields(pairs: &[(&str, String)]) -> HashMap<String, String> {
-    pairs
-        .iter()
-        .map(|(key, value)| ((*key).to_string(), value.clone()))
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1148,13 +1194,75 @@ mod tests {
             secondary: format!("{id} detail"),
             trailing: None,
             trailing_marker: None,
-            document: Document {
-                fuzzy: id.into(),
-                fields: HashMap::new(),
-            },
+            document: Document::fuzzy(id),
             preview: Vec::new(),
             accent_slot: None,
         }
+    }
+    /// The scroll offset lives in `State` between frames, and turning a click
+    /// back into an item is the only thing that can read it. `draw` moves the
+    /// `ListState` out so the rows can borrow their text across the render, so
+    /// this pins that it is put back — a stranded offset would not error, it
+    /// would quietly start resolving clicks to the wrong row.
+    #[test]
+    fn a_draw_returns_the_scroll_offset_it_borrowed() {
+        let items: Vec<PickerItem> = (0..60).map(|i| test_item(&format!("item-{i}"))).collect();
+        let mut state = State::new(items, false);
+        state.selected = 55;
+
+        let _ = render(&mut state);
+        let scrolled = state.list_state.offset();
+        assert!(
+            scrolled > 0,
+            "a selection past the fold should have scrolled the list"
+        );
+
+        // A second frame with nothing changed must resume from the same place.
+        let _ = render(&mut state);
+        assert_eq!(state.list_state.offset(), scrolled);
+        assert_eq!(state.list_state.selected(), Some(55));
+    }
+
+    /// A row's columns are assembled from borrowed slices of the item, with a
+    /// clipped tail the only part that is rebuilt, and its tag is right-aligned
+    /// with padding sliced from a static. This pins the three shapes that
+    /// arrangement has to keep producing: a row that fits, a row clipped with an
+    /// ellipsis, and a right-aligned trailing tag.
+    #[test]
+    fn a_row_borrows_what_fits_clips_what_does_not_and_right_aligns_its_tag() {
+        let wide = "W".repeat(120);
+        let mut items = vec![test_item("keep"), test_item(&wide)];
+        items[0].trailing = Some("9s".into());
+        items[1].trailing = Some("11s".into());
+        let mut state = State::new(items, false);
+
+        let buffer = render(&mut state);
+        let rows: Vec<String> = (0..12)
+            .map(|y| (0..80).map(|x| buffer[(x, y)].symbol()).collect::<String>())
+            .collect();
+
+        let fitting = rows.iter().find(|row| row.contains("keep")).expect("row");
+        assert!(
+            fitting.contains("keep  keep detail"),
+            "a fitting row keeps both columns verbatim: {fitting}"
+        );
+        let clipped = rows.iter().find(|row| row.contains("WWW")).expect("row");
+        assert!(
+            clipped.contains('…'),
+            "an overlong row is clipped with an ellipsis: {clipped}"
+        );
+        assert!(
+            !clipped.contains(wide.as_str()),
+            "the clipped row must not carry the full text: {clipped}"
+        );
+
+        // Both tags end in the same column: the shorter one is padded out to it.
+        let end = |row: &str, tag: &str| row.find(tag).expect("tag") + tag.len();
+        assert_eq!(
+            end(fitting, "9s"),
+            end(clipped, "11s"),
+            "tags share a right-aligned gutter:\n{fitting}\n{clipped}"
+        );
     }
 
     /// The mode title belongs to the list, not the search box: herdr already puts
@@ -1471,10 +1579,7 @@ mod tests {
             secondary: String::new(),
             trailing: Some(tag.into()),
             trailing_marker: None,
-            document: Document {
-                fuzzy: primary.into(),
-                fields: HashMap::new(),
-            },
+            document: Document::fuzzy(primary),
             preview: Vec::new(),
             accent_slot: None,
         }
@@ -1604,10 +1709,7 @@ mod tests {
             secondary: String::new(),
             trailing: None,
             trailing_marker: None,
-            document: Document {
-                fuzzy: id.into(),
-                fields: HashMap::new(),
-            },
+            document: Document::fuzzy(id),
             preview: Vec::new(),
             accent_slot: None,
         };

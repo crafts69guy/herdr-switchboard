@@ -4,7 +4,7 @@
 //! background effect seam because `fnm list-remote` performs network work.
 //! Mutations run only after the picker has restored the terminal.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::io::{self, Write};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 
@@ -228,6 +228,12 @@ impl PickerMode for FnmMode {
         Ok(self.items())
     }
 
+    /// Only while a `fnm list-remote` lookup is actually outstanding — the same
+    /// receiver `poll` reads, so the two cannot disagree.
+    fn is_polling(&self) -> bool {
+        self.remote_rx.is_some()
+    }
+
     fn poll(&mut self) -> Option<Result<Vec<PickerItem>>> {
         let receiver = self.remote_rx.as_ref()?;
         let result = match receiver.try_recv() {
@@ -415,14 +421,14 @@ fn version_item(version: &Version) -> PickerItem {
         secondary: detail,
         trailing: (!status.is_empty()).then_some(status.clone()),
         trailing_marker: None,
-        document: Document {
-            fuzzy: format!("{} {source} {status}", version.value),
-            fields: HashMap::from([
-                ("version".into(), version.value.clone()),
-                ("source".into(), source.into()),
-                ("status".into(), status),
-            ]),
-        },
+        document: Document::new(
+            format!("{} {source} {status}", version.value),
+            &[
+                ("version", version.value.clone()),
+                ("source", source.into()),
+                ("status", status),
+            ],
+        ),
         preview: vec![
             "Node version".into(),
             String::new(),
@@ -448,10 +454,7 @@ fn status_item(id: &str, title: &str, detail: &str) -> PickerItem {
         secondary: detail.into(),
         trailing: None,
         trailing_marker: None,
-        document: Document {
-            fuzzy: format!("{title} {detail}"),
-            fields: HashMap::from([("source".into(), "status".into())]),
-        },
+        document: Document::new(format!("{title} {detail}"), &[("source", "status".into())]),
         preview: vec![title.into(), String::new(), detail.into()],
         accent_slot: Some("yellow".into()),
     }

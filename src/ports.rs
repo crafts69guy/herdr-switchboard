@@ -407,6 +407,12 @@ impl PickerMode for PortMode {
     fn initial(&mut self) -> Result<Vec<PickerItem>> {
         Ok(Vec::new())
     }
+    /// The refresh worker runs for the whole life of the pane, so an answer can
+    /// land at any moment.
+    fn is_polling(&self) -> bool {
+        true
+    }
+
     fn poll(&mut self) -> Option<Result<Vec<PickerItem>>> {
         self.worker.latest().map(|result| match result {
             Ok(entries) => {
@@ -526,12 +532,12 @@ fn port_item(entry: &PortEntry) -> PickerItem {
         secondary: format!("{} · pid {pid}", entry.process_name),
         trailing: None,
         trailing_marker: None,
-        document: Document {
-            fuzzy: format!(
+        document: Document::new(
+            format!(
                 "{port} {addresses} {pid} {} {} {cwd} {repo} {user}",
                 entry.process_name, entry.command
             ),
-            fields: picker::fields(&[
+            &[
                 ("port", port),
                 ("address", addresses),
                 ("pid", pid),
@@ -542,8 +548,8 @@ fn port_item(entry: &PortEntry) -> PickerItem {
                 ("cwd", cwd),
                 ("repo", repo),
                 ("user", user),
-            ]),
-        },
+            ],
+        ),
         preview,
         accent_slot: Some("teal".into()),
     }

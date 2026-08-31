@@ -335,15 +335,15 @@ pub(super) fn command_item(record: &CommandRecord) -> PickerItem {
         },
         trailing: Some(format!("{:>4}", ago(record.last_selected_at))),
         trailing_marker: record.starred.then(|| PickerMarker::new("★", "peach")),
-        document: Document {
-            fuzzy: format!("{} {} {} {}", record.command, record.label, cwd, source),
-            fields: picker::fields(&[
+        document: Document::new(
+            format!("{} {} {} {}", record.command, record.label, cwd, source),
+            &[
                 ("command", record.command.clone()),
                 ("label", record.label.clone()),
                 ("cwd", cwd),
                 ("source", source),
-            ]),
-        },
+            ],
+        ),
         preview,
         accent_slot: Some("blue".into()),
     }

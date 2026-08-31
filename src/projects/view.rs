@@ -413,6 +413,13 @@ fn draw_input(
     }
 }
 
+/// The Navigator's fixed primary column.
+///
+/// The column is padded with [`crate::tui::spaces`] rather than by growing a
+/// clone of the entry's own text: two adjacent spans that share one style paint
+/// exactly the cells one pre-padded span did, and neither of them allocates.
+pub(super) const PRIMARY_WIDTH: usize = 38;
+
 #[allow(clippy::too_many_arguments)]
 fn draw_list(
     f: &mut Frame,
@@ -425,49 +432,57 @@ fn draw_list(
     surface: Color,
     show_tabs: bool,
 ) {
-    let items: Vec<ListItem> = if app.picker.filtered.is_empty()
-        && app.picker.group == crate::data::GroupFilter::Starred
-        && app.picker.query.is_empty()
+    // Split `app` into disjoint field borrows up front. Each row's text is
+    // borrowed straight out of `picker.entries` instead of cloning the icon,
+    // primary, and secondary columns per row per frame — and that borrow has to
+    // stay alive across the zone write-back below, which is only possible
+    // because the two touch different fields of `App`.
+    let App {
+        picker,
+        theme,
+        catalog,
+        zones,
+        ..
+    } = app;
+    let star_color = theme.or("peach", Color::Yellow);
+
+    let items: Vec<ListItem> = if picker.filtered.is_empty()
+        && picker.group == crate::data::GroupFilter::Starred
+        && picker.query.is_empty()
     {
         vec![ListItem::new(Line::from(Span::styled(
             "  No starred repos or worktrees yet",
             Style::default().fg(border).add_modifier(Modifier::DIM),
         )))]
     } else {
-        app.picker
+        picker
             .filtered
             .iter()
             .enumerate()
             .map(|(visible_index, &i)| {
-                let e = &app.picker.entries[i];
-                let selected = visible_index == app.picker.selected;
-                let mut primary = e.primary.clone();
-                let width = 38usize;
-                let plen = primary.chars().count();
-                if plen < width {
-                    primary.push_str(&" ".repeat(width - plen));
-                }
+                let e = &picker.entries[i];
+                let selected = visible_index == picker.selected;
+                let primary_style = Style::default().fg(if selected { accent } else { text });
+                let pad = PRIMARY_WIDTH.saturating_sub(e.primary.chars().count());
                 // The secondary column carries the entry's own colour (host tint
                 // for repos, live state for agents, accent for workspaces) so the
                 // list reads as colourful at a glance instead of a wall of grey.
                 ListItem::new(Line::from(vec![
                     Span::styled(
-                        e.icon.clone(),
+                        e.icon.as_str(),
                         Style::default().fg(if selected { accent } else { e.icon_color }),
                     ),
                     Span::raw(" "),
                     Span::styled(
-                        if app.picker.is_starred(e) { "★" } else { " " },
-                        Style::default().fg(app.theme.or("peach", Color::Yellow)),
+                        if picker.is_starred(e) { "★" } else { " " },
+                        Style::default().fg(star_color),
                     ),
                     Span::raw(" "),
-                    Span::styled(
-                        primary,
-                        Style::default().fg(if selected { accent } else { text }),
-                    ),
+                    Span::styled(e.primary.as_str(), primary_style),
+                    Span::styled(crate::tui::spaces(pad), primary_style),
                     Span::raw(" "),
                     Span::styled(
-                        e.secondary.clone(),
+                        e.secondary.as_str(),
                         Style::default()
                             .fg(if selected { accent } else { e.icon_color })
                             .add_modifier(Modifier::DIM),
@@ -479,16 +494,16 @@ fn draw_list(
 
     // Title row = a group tab strip (All + each present kind) with the active
     // tab highlighted, plus a right-aligned sort indicator when both fit.
-    let ink = app.theme.or("panel_bg", Color::Rgb(16, 18, 20));
+    let ink = theme.or("panel_bg", Color::Rgb(16, 18, 20));
     // `framed` rather than `boxed`: this panel's caption slot is the tab strip,
     // a multi-span line, not a word — but the frame itself must still be the
     // shared one, or it drifts the way the git card did.
     let catalog_unavailable = matches!(
-        app.catalog,
+        *catalog,
         super::CatalogState::Loading | super::CatalogState::Failed(_)
     );
     let block = if show_tabs && !catalog_unavailable {
-        let groups = app.picker.tabs();
+        let groups = picker.tabs();
         let available = area.width.saturating_sub(2);
         let full = tab_labels(&groups, TabDensity::Full);
         let labels = if tab_row_width(&full) <= available {
@@ -501,7 +516,7 @@ fn draw_list(
                 tab_labels(&groups, TabDensity::Minimal)
             }
         };
-        let sort_text = format!(" sort: {} ", app.picker.sort.label());
+        let sort_text = format!(" sort: {} ", picker.sort.label());
         let show_sort =
             tab_row_width(&labels).saturating_add(sort_text.chars().count() as u16) <= available;
 
@@ -509,10 +524,10 @@ fn draw_list(
         // cannot drift, because there is only one place that decides where a tab is.
         // Titles start one column in, past the block's corner.
         let mut x = area.x + 1;
-        let mut zones = Vec::new();
+        let mut tab_zones = Vec::new();
         let mut tab_spans = Vec::new();
         for (group, label) in groups.into_iter().zip(labels) {
-            let style = if group == app.picker.group {
+            let style = if group == picker.group {
                 Style::default()
                     .fg(ink)
                     .bg(title)
@@ -521,12 +536,12 @@ fn draw_list(
                 Style::default().fg(border)
             };
             let width = label.chars().count() as u16;
-            zones.push((Rect::new(x, area.y, width, 1), group));
+            tab_zones.push((Rect::new(x, area.y, width, 1), group));
             x += width + 1;
             tab_spans.push(Span::styled(label, style));
             tab_spans.push(Span::raw(" "));
         }
-        app.zones.tab_zones = zones;
+        zones.tab_zones = tab_zones;
         let block = crate::tui::framed(border).title(Line::from(tab_spans));
         if show_sort {
             block.title(
@@ -539,7 +554,7 @@ fn draw_list(
         // Wide layouts publish their visible Context row zones in draw_context;
         // only clear stale Navigator-title zones when this layout owns them.
         if show_tabs {
-            app.zones.tab_zones.clear();
+            zones.tab_zones.clear();
         }
         crate::tui::framed(border).title(Span::styled(
             " Navigator ",
@@ -547,12 +562,12 @@ fn draw_list(
         ))
     };
 
-    if let super::CatalogState::Loading | super::CatalogState::Failed(_) = &app.catalog {
-        app.zones.list_state.select(None);
-        app.zones.list_area = area;
+    if let super::CatalogState::Loading | super::CatalogState::Failed(_) = &*catalog {
+        zones.list_state.select(None);
+        zones.list_area = area;
         f.render_widget(block, area);
 
-        let (headline, detail) = match &app.catalog {
+        let (headline, detail) = match &*catalog {
             super::CatalogState::Loading => (
                 "Standing by…",
                 "Loading agents, workspaces, repositories, and worktrees",
@@ -592,10 +607,10 @@ fn draw_list(
     // turned back into an entry if we know which row was showing first. It also
     // means the list keeps its scroll position instead of re-deriving it from
     // the top on every frame.
-    let selected = (!app.picker.filtered.is_empty()).then_some(app.picker.selected);
-    app.zones.list_state.select(selected);
-    app.zones.list_area = area;
-    f.render_stateful_widget(list, area, &mut app.zones.list_state);
+    let selected = (!picker.filtered.is_empty()).then_some(picker.selected);
+    zones.list_state.select(selected);
+    zones.list_area = area;
+    f.render_stateful_widget(list, area, &mut zones.list_state);
 }
 
 #[derive(Clone, Copy)]

@@ -52,6 +52,14 @@ pub struct Picker {
     pub present_kinds: Vec<Kind>,
     /// Durable local favourites, private to the Projects feature.
     stars: stars::Stars,
+    /// How many entries each tab holds, in [`Picker::tabs`] order.
+    ///
+    /// Cached rather than counted on demand because the Context panel asks for
+    /// every tab's count on every frame, and each answer is a full scan of the
+    /// catalogue. The counts depend only on the entries and the stars, never on
+    /// the query, group, or sort — so they are rebuilt by [`Picker::recount`] at
+    /// the three points those two change, not by `recompute`.
+    group_counts: Vec<(GroupFilter, usize)>,
 }
 
 /// The async preview pipeline and everything the pane needs to draw and scroll.
@@ -200,10 +208,29 @@ impl Picker {
             recent,
             present_kinds,
             stars: stars::Stars::load(),
+            group_counts: Vec::new(),
         };
+        picker.recount();
         // Apply the initial sort (Recent by default) to the resting list.
         picker.recompute();
         picker
+    }
+
+    /// Rebuild the per-tab counts. One pass over the catalogue for all tabs
+    /// rather than one pass per tab, and the only place `stars` is consulted for
+    /// counting.
+    fn recount(&mut self) {
+        let mut counts: Vec<(GroupFilter, usize)> =
+            self.tabs().into_iter().map(|group| (group, 0)).collect();
+        for entry in &self.entries {
+            let starred = self.stars.contains(entry);
+            for (group, count) in &mut counts {
+                if group.matches(entry.kind, starred) {
+                    *count += 1;
+                }
+            }
+        }
+        self.group_counts = counts;
     }
 
     fn recompute(&mut self) {
@@ -288,10 +315,10 @@ impl Picker {
     }
 
     pub fn group_count(&self, group: GroupFilter) -> usize {
-        self.entries
+        self.group_counts
             .iter()
-            .filter(|entry| group.matches(entry.kind, self.stars.contains(entry)))
-            .count()
+            .find(|(candidate, _)| *candidate == group)
+            .map_or(0, |(_, count)| *count)
     }
 
     /// Install a persisted star snapshot without making a toggle jump the
@@ -301,6 +328,7 @@ impl Picker {
         let selected_id = self.selected_entry().map(|entry| entry.id.clone());
         let selected_rank = self.selected;
         self.stars = stars;
+        self.recount();
         self.recompute();
         if let Some(id) = selected_id {
             if let Some(position) = self
@@ -329,6 +357,8 @@ impl Picker {
             .into_iter()
             .filter(|&kind| self.entries.iter().any(|entry| entry.kind == kind))
             .collect();
+        // After `present_kinds`, because the tab list it counts is derived from it.
+        self.recount();
         self.select_group_or_all(requested_group);
         if let Some(id) = selected_id {
             if let Some(position) = self
@@ -806,26 +836,18 @@ fn browse_order(
     let mut idx: Vec<usize> = (0..entries.len())
         .filter(|&i| group.matches(entries[i].kind, stars.contains(&entries[i])))
         .collect();
+    // `sort_by_cached_key` rather than `sort_by`: each key is derived once per
+    // entry instead of once per comparison. The Name order was lowercasing both
+    // sides inside the comparator, which is two String allocations per compare
+    // and O(n log n) of them; Recent was re-hashing an id into the recency map
+    // just as often. Every key ends in the entry's load index, so ties still
+    // break on load order exactly as before.
     match sort {
-        SortMode::Recent => idx.sort_by(|&a, &b| {
-            let ra = recent.get(&entries[a].id).copied().unwrap_or(0);
-            let rb = recent.get(&entries[b].id).copied().unwrap_or(0);
-            rb.cmp(&ra).then(a.cmp(&b))
+        SortMode::Recent => idx.sort_by_cached_key(|&i| {
+            (Reverse(recent.get(&entries[i].id).copied().unwrap_or(0)), i)
         }),
-        SortMode::Name => idx.sort_by(|&a, &b| {
-            entries[a]
-                .primary
-                .to_lowercase()
-                .cmp(&entries[b].primary.to_lowercase())
-                .then(a.cmp(&b))
-        }),
-        SortMode::Kind => idx.sort_by(|&a, &b| {
-            entries[a]
-                .kind
-                .order()
-                .cmp(&entries[b].kind.order())
-                .then(a.cmp(&b))
-        }),
+        SortMode::Name => idx.sort_by_cached_key(|&i| (entries[i].primary.to_lowercase(), i)),
+        SortMode::Kind => idx.sort_by_cached_key(|&i| (entries[i].kind.order(), i)),
     }
     idx
 }
@@ -1602,6 +1624,74 @@ mod tests {
             .join("\n")
     }
 
+    /// The column `needle` starts at in a rendered row. Every fixture below uses
+    /// ASCII markers, so a byte offset into the joined row is its column.
+    fn column_of(row: &str, needle: &str) -> usize {
+        row.find(needle)
+            .unwrap_or_else(|| panic!("`{needle}` is not in `{row}`"))
+    }
+
+    /// One row per (primary, secondary) pair, with a marker icon.
+    fn marked_rows(rows: &[(&str, &str)]) -> Vec<Entry> {
+        rows.iter()
+            .enumerate()
+            .map(|(index, (primary, secondary))| Entry {
+                icon: "@".into(),
+                secondary: (*secondary).into(),
+                ..entry(Kind::Repo, &format!("gh/{index}"), primary)
+            })
+            .collect()
+    }
+
+    /// The Navigator's columns are fixed: icon, star, a `PRIMARY_WIDTH` primary,
+    /// then the secondary one column further on.
+    ///
+    /// The primary is padded by a second blank span rather than by growing a
+    /// clone of the entry's own text, so this pins that the pair still paints
+    /// one identical row. A drift here would not error — it would silently shift
+    /// the whole secondary column, and only on rows short enough to need padding.
+    #[test]
+    fn a_navigator_row_pads_its_primary_column_to_a_fixed_width() {
+        // One primary well short of the column and one that overruns it, so both
+        // the padded and the unpadded branch are covered.
+        let long = "L".repeat(ui::PRIMARY_WIDTH + 4);
+        let entries = marked_rows(&[("ALPHA", "SEC"), (&long, "TAIL")]);
+        let mut app = App::new(entries, Theme::default(), Config::default(), ".".into());
+        app.catalog = CatalogState::Ready;
+        // Give the Navigator the whole body: a preview pane would narrow it to
+        // less than the fixed column and clip the answer away.
+        app.preview.enabled = false;
+
+        for width in [140u16, 100, 80] {
+            let screen = rendered(&mut app, width, 24);
+            let short_row = screen
+                .lines()
+                .find(|line| line.contains("ALPHA"))
+                .unwrap_or_else(|| panic!("no ALPHA row at width {width}:\n{screen}"));
+            let icon = column_of(short_row, "@");
+            let primary = column_of(short_row, "ALPHA");
+            // icon, space, star, space — then the primary column starts.
+            assert_eq!(primary, icon + 4, "width {width}: {short_row}");
+            assert_eq!(
+                column_of(short_row, "SEC"),
+                primary + ui::PRIMARY_WIDTH + 1,
+                "width {width}: a padded primary must reach the fixed column\n{short_row}"
+            );
+
+            let long_row = screen
+                .lines()
+                .find(|line| line.contains("TAIL"))
+                .unwrap_or_else(|| panic!("no overlong row at width {width}:\n{screen}"));
+            // An overlong primary is not truncated and not padded: the secondary
+            // simply follows it one column later.
+            assert_eq!(
+                column_of(long_row, "TAIL"),
+                column_of(long_row, &long) + long.chars().count() + 1,
+                "width {width}: an overlong primary must not be padded\n{long_row}"
+            );
+        }
+    }
+
     /// The same render as [`rendered`], handing back the cells themselves.
     fn rendered_buffer(app: &mut App, w: u16, h: u16) -> ratatui::buffer::Buffer {
         let mut terminal =
@@ -2181,6 +2271,56 @@ mod tests {
 
         assert_eq!(picker.tabs().last(), Some(&GroupFilter::Starred));
         assert_eq!(picker.group_count(GroupFilter::Starred), 1);
+    }
+
+    /// The tab counts are cached, because the Context panel asks for every one
+    /// of them on every frame and each answer used to be a full scan. A cache
+    /// fails by going stale rather than by erroring, so this walks the three
+    /// points that can invalidate it — construction, a star change, and a whole
+    /// new catalogue — and checks each count against a fresh scan.
+    #[test]
+    fn tab_counts_are_rebuilt_whenever_the_entries_or_the_stars_change() {
+        fn scan(picker: &Picker, group: GroupFilter) -> usize {
+            picker
+                .entries
+                .iter()
+                .filter(|entry| group.matches(entry.kind, picker.is_starred(entry)))
+                .count()
+        }
+        fn agrees(picker: &Picker) {
+            for group in picker.tabs() {
+                assert_eq!(
+                    picker.group_count(group),
+                    scan(picker, group),
+                    "cached count for {group:?} went stale"
+                );
+            }
+        }
+
+        let entries = sample();
+        let mut picker = Picker::new(entries.clone(), SortMode::Recent, HashMap::new());
+        agrees(&picker);
+        assert_eq!(picker.group_count(GroupFilter::All), entries.len());
+        assert_eq!(picker.group_count(GroupFilter::Starred), 0);
+
+        picker.replace_stars(stars::Stars::memory(&[
+            entries[0].clone(),
+            entries[2].clone(),
+        ]));
+        agrees(&picker);
+        assert_eq!(picker.group_count(GroupFilter::Starred), 2);
+
+        // A refresh that drops a whole kind must drop its tab and its count with
+        // it, not leave the previous catalogue's number behind.
+        picker.replace_entries(
+            vec![entry(Kind::Repo, "gh/only", "only")],
+            GroupFilter::All,
+            false,
+        );
+        agrees(&picker);
+        assert_eq!(picker.group_count(GroupFilter::All), 1);
+        assert_eq!(picker.group_count(GroupFilter::Only(Kind::Agent)), 0);
+        assert!(!picker.tabs().contains(&GroupFilter::Only(Kind::Agent)));
     }
 
     #[test]

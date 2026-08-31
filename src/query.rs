@@ -37,7 +37,37 @@ impl FieldSchema {
 #[derive(Clone, Debug, Default)]
 pub struct Document {
     pub fuzzy: String,
-    pub fields: HashMap<String, String>,
+    /// Named field values, **case-folded on the way in**.
+    ///
+    /// Filters compare case-insensitively, so the folding happens either once
+    /// here or once per filter per item per keystroke inside [`score`]. It used
+    /// to happen there, which put a `String` allocation on the hottest loop the
+    /// picker has — over a catalogue that is `commands.history_limit` rows deep
+    /// by default. Folding at construction is one pass over data the caller is
+    /// building anyway, and it is why this field is private: the whole point is
+    /// that nothing can put an unfolded value in.
+    fields: HashMap<String, String>,
+}
+
+impl Document {
+    /// A document with fuzzy text only and no filterable fields.
+    pub fn fuzzy(text: impl Into<String>) -> Self {
+        Self {
+            fuzzy: text.into(),
+            fields: HashMap::new(),
+        }
+    }
+
+    /// A document with named fields, folded for comparison.
+    pub fn new(fuzzy: impl Into<String>, fields: &[(&str, String)]) -> Self {
+        Self {
+            fuzzy: fuzzy.into(),
+            fields: fields
+                .iter()
+                .map(|(name, value)| ((*name).to_string(), value.to_lowercase()))
+                .collect(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -108,14 +138,17 @@ impl CompiledQuery {
 
     pub fn score(&self, document: &Document, matcher: &mut Matcher) -> Option<u32> {
         for filter in &self.filters {
-            let candidate = document
+            // Both sides are already folded — the filter value at compile time,
+            // the field at construction — so this compares without allocating.
+            let matched = document
                 .fields
                 .get(&filter.field)
-                .map(|value| value.to_lowercase());
-            let matched = candidate.is_some_and(|candidate| match filter.kind {
-                MatchKind::Exact => candidate.split(',').any(|part| part.trim() == filter.value),
-                MatchKind::Contains => candidate.contains(&filter.value),
-            });
+                .is_some_and(|candidate| match filter.kind {
+                    MatchKind::Exact => {
+                        candidate.split(',').any(|part| part.trim() == filter.value)
+                    }
+                    MatchKind::Contains => candidate.contains(&filter.value),
+                });
             if matched == filter.negated {
                 return None;
             }
@@ -198,14 +231,14 @@ mod tests {
             &commands(),
         )
         .expect("valid query");
-        let document = Document {
-            fuzzy: "deploy workspace cargo test".into(),
-            fields: HashMap::from([
-                ("command".into(), "cargo test --workspace".into()),
-                ("cwd".into(), "/work/api".into()),
-                ("source".into(), "preset".into()),
-            ]),
-        };
+        let document = Document::new(
+            "deploy workspace cargo test",
+            &[
+                ("command", "cargo test --workspace".into()),
+                ("cwd", "/work/api".into()),
+                ("source", "preset".into()),
+            ],
+        );
 
         assert!(query
             .score(&document, &mut Matcher::new(Config::DEFAULT))
@@ -222,10 +255,7 @@ mod tests {
     #[test]
     fn exact_fields_do_not_partially_match() {
         let query = CompiledQuery::compile("source:pre", &commands()).unwrap();
-        let document = Document {
-            fuzzy: String::new(),
-            fields: HashMap::from([("source".into(), "preset".into())]),
-        };
+        let document = Document::new("", &[("source", "preset".into())]);
         assert_eq!(
             query.score(&document, &mut Matcher::new(Config::DEFAULT)),
             None
@@ -239,16 +269,47 @@ mod tests {
             &commands(),
         )
         .unwrap();
-        let document = Document {
-            fuzzy: String::new(),
-            fields: HashMap::from([
-                ("source".into(), "shell,preset".into()),
-                ("cwd".into(), "/work/current".into()),
-            ]),
-        };
+        let document = Document::new(
+            "",
+            &[
+                ("source", "shell,preset".into()),
+                ("cwd", "/work/current".into()),
+            ],
+        );
         assert!(query
             .score(&document, &mut Matcher::new(Config::DEFAULT))
             .is_some());
+    }
+
+    /// Filters are case-insensitive, and the folding that makes them so now
+    /// happens once when the document is built rather than once per filter per
+    /// item per keystroke. This pins that the behaviour survived the move — for
+    /// non-ASCII text as well, which is why the fold is `to_lowercase` and not
+    /// `eq_ignore_ascii_case`.
+    #[test]
+    fn filters_ignore_case_on_both_sides_including_non_ascii() {
+        let document = Document::new(
+            "",
+            &[
+                ("command", "Cargo TEST --Workspace".into()),
+                ("cwd", "/work/Dự Án".into()),
+                ("source", "Preset,SHELL".into()),
+            ],
+        );
+        let mut matcher = Matcher::new(Config::DEFAULT);
+
+        for raw in [
+            r#"cmd:"CARGO test""#,
+            "cwd:DỰ",
+            "source:shell",
+            "source:PRESET",
+        ] {
+            let query = CompiledQuery::compile(raw, &commands()).expect("valid query");
+            assert!(
+                query.score(&document, &mut matcher).is_some(),
+                "`{raw}` should match regardless of case"
+            );
+        }
     }
 
     #[test]

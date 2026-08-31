@@ -187,17 +187,17 @@ fn pane_item(pane: &PaneInfo, zenned: bool) -> PickerItem {
             .then(|| "zen".to_string())
             .or_else(|| (!agent.is_empty()).then(|| agent.clone())),
         trailing_marker: None,
-        document: Document {
-            fuzzy: format!("{} {title} {} {repo} {agent}", pane.pane_id, pane.cwd),
-            fields: picker::fields(&[
+        document: Document::new(
+            format!("{} {title} {} {repo} {agent}", pane.pane_id, pane.cwd),
+            &[
                 ("pane", pane.pane_id.clone()),
                 ("title", title),
                 ("cwd", pane.cwd.clone()),
                 ("repo", repo),
                 ("agent", agent),
                 ("tab", pane.tab_id.clone()),
-            ]),
-        },
+            ],
+        ),
         preview,
         accent_slot: Some(if zenned { "mauve" } else { "blue" }.into()),
     }

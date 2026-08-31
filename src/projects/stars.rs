@@ -12,36 +12,101 @@ use crate::data::{Entry, Kind};
 #[cfg(not(test))]
 const STATE_FILE: &str = "project-stars.json";
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum StarKind {
     Repo,
     Worktree,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+/// One persisted star. This is the *file* shape only — the in-memory set is
+/// [`StarSet`], and the order records appear in comes from its two sets rather
+/// than from sorting these, which is why they carry no `Ord`.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 struct StarKey {
     kind: StarKind,
     id: String,
 }
 
-impl StarKey {
-    fn from_entry(entry: &Entry) -> Option<Self> {
-        let kind = match entry.kind {
-            Kind::Repo => StarKind::Repo,
-            Kind::Worktree => StarKind::Worktree,
-            Kind::Agent | Kind::Workspace => return None,
+/// The star kind an entry maps to, or `None` for the live kinds whose IDs must
+/// never reach durable state.
+fn star_kind(entry: &Entry) -> Option<StarKind> {
+    match entry.kind {
+        Kind::Repo => Some(StarKind::Repo),
+        Kind::Worktree => Some(StarKind::Worktree),
+        Kind::Agent | Kind::Workspace => None,
+    }
+}
+
+/// The in-memory star set: one ID set per kind rather than a set of composite
+/// keys.
+///
+/// [`contains`](StarSet::contains) sits on the hottest path in the whole picker
+/// — it is asked once per entry per keystroke by the reducer, once per entry per
+/// group by the tab counts, and once per entry per frame by the list — so it has
+/// to answer from a borrowed `&str`. A `BTreeSet<StarKey>` cannot: building the
+/// probe key means cloning the entry's ID, which turned a set lookup into an
+/// allocation. Splitting by kind makes the ID the whole key and the lookup free.
+///
+/// [`StarKey`] remains the on-disk shape, so the file this reads and writes is
+/// byte-for-byte what it always was.
+#[derive(Clone, Debug, Default)]
+struct StarSet {
+    repos: BTreeSet<String>,
+    worktrees: BTreeSet<String>,
+}
+
+impl StarSet {
+    fn ids(&self, kind: StarKind) -> &BTreeSet<String> {
+        match kind {
+            StarKind::Repo => &self.repos,
+            StarKind::Worktree => &self.worktrees,
+        }
+    }
+
+    fn ids_mut(&mut self, kind: StarKind) -> &mut BTreeSet<String> {
+        match kind {
+            StarKind::Repo => &mut self.repos,
+            StarKind::Worktree => &mut self.worktrees,
+        }
+    }
+
+    fn contains(&self, kind: StarKind, id: &str) -> bool {
+        self.ids(kind).contains(id)
+    }
+
+    #[cfg(test)]
+    fn is_empty(&self) -> bool {
+        self.repos.is_empty() && self.worktrees.is_empty()
+    }
+
+    /// The persisted form: every key, ordered by kind then ID. `StarKind::Repo`
+    /// sorts before `StarKind::Worktree`, so emitting the repo set first
+    /// reproduces exactly the order a `BTreeSet<StarKey>` produced.
+    fn to_keys(&self) -> Vec<StarKey> {
+        let key = |kind: StarKind| {
+            self.ids(kind).iter().map(move |id| StarKey {
+                kind,
+                id: id.clone(),
+            })
         };
-        Some(Self {
-            kind,
-            id: entry.id.clone(),
-        })
+        key(StarKind::Repo).chain(key(StarKind::Worktree)).collect()
+    }
+
+    fn from_keys(keys: impl IntoIterator<Item = StarKey>) -> Self {
+        let mut set = Self::default();
+        for key in keys {
+            if !key.id.is_empty() {
+                set.ids_mut(key.kind).insert(key.id);
+            }
+        }
+        set
     }
 }
 
 #[derive(Clone, Debug, Default)]
 pub(super) struct Stars {
-    keys: BTreeSet<StarKey>,
+    keys: StarSet,
     path: Option<PathBuf>,
 }
 
@@ -60,11 +125,12 @@ impl Stars {
     }
 
     pub(super) fn supports(entry: &Entry) -> bool {
-        StarKey::from_entry(entry).is_some()
+        star_kind(entry).is_some()
     }
 
+    /// Whether `entry` is starred. Allocation-free on purpose — see [`StarSet`].
     pub(super) fn contains(&self, entry: &Entry) -> bool {
-        StarKey::from_entry(entry).is_some_and(|key| self.keys.contains(&key))
+        star_kind(entry).is_some_and(|kind| self.keys.contains(kind, &entry.id))
     }
 
     /// Persist one desired state and return the complete updated snapshot.
@@ -72,7 +138,7 @@ impl Stars {
     /// Re-read immediately before the mutation so two Projects panes opened at
     /// different times do not overwrite changes that one of them already saved.
     pub(super) fn set(self, entry: &Entry, starred: bool) -> Result<Self> {
-        let key = StarKey::from_entry(entry).context("entry kind cannot be starred")?;
+        let kind = star_kind(entry).context("entry kind cannot be starred")?;
         let path = self
             .path
             .clone()
@@ -80,11 +146,12 @@ impl Stars {
         let keys = crate::state::update_private(&path, |current| {
             let mut keys = current.map(parse).unwrap_or_default();
             if starred {
-                keys.insert(key);
+                keys.ids_mut(kind).insert(entry.id.clone());
             } else {
-                keys.remove(&key);
+                keys.ids_mut(kind).remove(&entry.id);
             }
-            let bytes = serde_json::to_vec_pretty(&keys).context("serialize project stars")?;
+            let bytes =
+                serde_json::to_vec_pretty(&keys.to_keys()).context("serialize project stars")?;
             Ok((bytes, keys))
         })?;
         Ok(Self {
@@ -105,7 +172,12 @@ impl Stars {
     #[cfg(test)]
     pub(super) fn memory(entries: &[Entry]) -> Self {
         Self {
-            keys: entries.iter().filter_map(StarKey::from_entry).collect(),
+            keys: StarSet::from_keys(entries.iter().filter_map(|entry| {
+                Some(StarKey {
+                    kind: star_kind(entry)?,
+                    id: entry.id.clone(),
+                })
+            })),
             path: None,
         }
     }
@@ -113,41 +185,44 @@ impl Stars {
 
 /// Missing, unreadable, and malformed state are all an empty star list. Stars
 /// are convenience state and must never prevent Projects from opening.
-fn load_from(path: &Path) -> BTreeSet<StarKey> {
+fn load_from(path: &Path) -> StarSet {
     let Ok(bytes) = fs::read(path) else {
-        return BTreeSet::new();
+        return StarSet::default();
     };
     parse(&bytes)
 }
 
-fn parse(bytes: &[u8]) -> BTreeSet<StarKey> {
-    serde_json::from_slice::<Vec<StarKey>>(bytes)
-        .ok()
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|key| !key.id.is_empty())
-        .collect()
+fn parse(bytes: &[u8]) -> StarSet {
+    StarSet::from_keys(
+        serde_json::from_slice::<Vec<StarKey>>(bytes)
+            .ok()
+            .unwrap_or_default(),
+    )
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::{Arc, Barrier};
     use std::thread;
-    use std::time::{SystemTime, UNIX_EPOCH};
 
     use ratatui::style::Color;
 
     use super::*;
 
+    /// A path no other test can collide with.
+    ///
+    /// The nanosecond clock alone was not enough: tests run in parallel threads
+    /// and macOS does not hand out a distinct nanosecond per call, so two
+    /// fixtures could land on one directory — and one of these tests puts a
+    /// *directory* where another expects a file.
     fn test_path(name: &str) -> PathBuf {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("test clock is after epoch")
-            .as_nanos();
+        static NONCE: AtomicU64 = AtomicU64::new(0);
         std::env::temp_dir()
             .join(format!(
-                "switchboard-project-stars-{}-{nonce}",
-                std::process::id()
+                "switchboard-project-stars-{}-{}",
+                std::process::id(),
+                NONCE.fetch_add(1, Ordering::Relaxed)
             ))
             .join(name)
     }
@@ -209,6 +284,42 @@ mod tests {
                 .file_name()
                 .to_string_lossy()
                 .ends_with(".tmp")));
+        fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    /// The in-memory set is split by kind so a lookup can borrow the entry's ID,
+    /// but the file is still a flat array of `{kind, id}` ordered by kind then
+    /// ID. This pins both directions: a file written before the split still
+    /// loads, and what we write back is byte-identical to what we read.
+    #[test]
+    fn the_persisted_shape_survives_the_split_by_kind() {
+        let path = test_path("stars.json");
+        let existing = "[\
+            {\"kind\":\"repo\",\"id\":\"github.com/o/a\"},\
+            {\"kind\":\"repo\",\"id\":\"github.com/o/b\"},\
+            {\"kind\":\"worktree\",\"id\":\"/tmp/wt\"}]";
+        fs::create_dir_all(path.parent().expect("test path has a parent")).unwrap();
+        fs::write(&path, existing).unwrap();
+
+        let stars = Stars::at(path.clone());
+        assert!(stars.contains(&entry(Kind::Repo, "github.com/o/a")));
+        assert!(stars.contains(&entry(Kind::Repo, "github.com/o/b")));
+        assert!(stars.contains(&entry(Kind::Worktree, "/tmp/wt")));
+        // A worktree and a repo that share an ID are different stars.
+        assert!(!stars.contains(&entry(Kind::Worktree, "github.com/o/a")));
+        assert!(!stars.contains(&entry(Kind::Repo, "/tmp/wt")));
+
+        // Star and unstar the same entry: the file must come back to the shape
+        // and order it started in.
+        let extra = entry(Kind::Repo, "github.com/o/c");
+        let stars = stars.set(&extra, true).unwrap();
+        stars.set(&extra, false).unwrap();
+        let written: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(
+            written,
+            serde_json::from_str::<serde_json::Value>(existing).unwrap()
+        );
         fs::remove_dir_all(path.parent().unwrap()).ok();
     }
 

@@ -653,19 +653,45 @@ fn repo_card(
         ];
     }
 
-    // Detached HEAD has no symbolic ref; fall back to the short sha.
-    let branch = branch_from_head(dir)
-        .or_else(|| {
-            git(runner, dir, &["symbolic-ref", "--short", "HEAD"]).filter(|s| !s.is_empty())
-        })
-        .or_else(|| git(runner, dir, &["rev-parse", "--short", "HEAD"]).filter(|s| !s.is_empty()))
-        .unwrap_or_else(|| "—".into());
-    let dirty = git(
-        runner,
-        dir,
-        &["status", "--porcelain", "--untracked-files=no"],
-    )
-    .is_some_and(|s| !s.is_empty());
+    // Four independent reads, each paying a process start: the branch, the dirty
+    // flag, the last commit, and the file tree. None of them depends on another,
+    // so the card can cost the slowest rather than their sum — which is exactly
+    // what the module note above describes when it says ~50 ms "spread across
+    // several small git calls with no single dominant one". The tree is the one
+    // shell-out, so it runs here rather than paying for a fourth thread.
+    let (branch, dirty, last, tree_lines) = std::thread::scope(|scope| {
+        // Detached HEAD has no symbolic ref; fall back to the short sha.
+        let branch = scope.spawn(|| {
+            branch_from_head(dir)
+                .or_else(|| {
+                    git(runner, dir, &["symbolic-ref", "--short", "HEAD"]).filter(|s| !s.is_empty())
+                })
+                .or_else(|| {
+                    git(runner, dir, &["rev-parse", "--short", "HEAD"]).filter(|s| !s.is_empty())
+                })
+        });
+        let dirty = scope.spawn(|| {
+            git(
+                runner,
+                dir,
+                &["status", "--porcelain", "--untracked-files=no"],
+            )
+            .is_some_and(|s| !s.is_empty())
+        });
+        let last = scope.spawn(|| {
+            git(runner, dir, &["log", "-1", "--format=%cr · %s"]).filter(|s| !s.is_empty())
+        });
+        let tree_lines = tree(runner, dir, script_dir, width);
+        // A panicked probe degrades to the same answer an unreadable repository
+        // gives: the row goes unsaid rather than taking the card down with it.
+        (
+            branch.join().ok().flatten(),
+            dirty.join().unwrap_or(false),
+            last.join().unwrap_or_default(),
+            tree_lines,
+        )
+    });
+    let branch = branch.unwrap_or_else(|| "—".into());
     let (state, state_c) = if dirty {
         ("dirty", theme.or("yellow", Color::Yellow))
     } else {
@@ -684,9 +710,7 @@ fn repo_card(
         meta("branch", &branch, width, p),
     ];
     // A repo with no commits yet has no last commit; the row simply goes unsaid.
-    if let Some(last) =
-        git(runner, dir, &["log", "-1", "--format=%cr · %s"]).filter(|s| !s.is_empty())
-    {
+    if let Some(last) = last {
         lines.push(meta("last", &last, width, p));
     }
     if cfg.fnm.enabled {
@@ -702,7 +726,7 @@ fn repo_card(
     lines.push(meta("path", &tilde(dir), width, p));
     lines.push(Line::raw(""));
     lines.push(rule("files", width, p));
-    lines.extend(tree(runner, dir, script_dir, width));
+    lines.extend(tree_lines);
 
     if cfg.projects.preview_readme {
         if let Some((name, body)) = readme(dir) {

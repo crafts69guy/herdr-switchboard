@@ -383,6 +383,40 @@ fn parse_worktree_list(raw: &str) -> Vec<WorktreeRecord> {
     records
 }
 
+/// Whether a checkout could possibly have linked worktrees, cheaply enough to
+/// ask before forking `git`.
+///
+/// Git records every linked worktree of an ordinary checkout as a directory
+/// under `.git/worktrees/`, so an empty or absent one is a definitive no — and
+/// answering it is a `read_dir` rather than a process spawn. That matters
+/// because the probe runs once per ghq repository: on a machine with a few
+/// hundred repositories and worktrees on a handful, this is the difference
+/// between a few hundred `git` processes and a few.
+///
+/// It **fails open** in every case it cannot settle from the filesystem. A
+/// `.git` file rather than a directory means this path is itself a linked
+/// worktree or a submodule, whose administrative directory lives elsewhere; an
+/// unreadable `.git/worktrees` could be a permissions problem rather than an
+/// absence. Both still probe, because the cost of a wrong "no" is a worktree
+/// silently missing from the catalogue, and the cost of a wrong "yes" is one
+/// subprocess.
+fn may_have_worktrees(repo: &str) -> bool {
+    let git = std::path::Path::new(repo).join(".git");
+    let Ok(metadata) = std::fs::metadata(&git) else {
+        // No `.git` at all: not a checkout ghq can have worktrees for. Probing
+        // would only make git report the same thing, slower.
+        return false;
+    };
+    if !metadata.is_dir() {
+        return true;
+    }
+    match std::fs::read_dir(git.join("worktrees")) {
+        Ok(mut entries) => entries.next().is_some(),
+        // Absent is a definitive no; unreadable for any other reason is not.
+        Err(error) => error.kind() != std::io::ErrorKind::NotFound,
+    }
+}
+
 /// Linked worktrees attached to every ghq repository. The first porcelain record
 /// is the main worktree, already represented by the Repos source, so it is skipped.
 pub fn load_worktrees(
@@ -407,6 +441,9 @@ pub fn load_worktrees(
                 for index in (worker..repos.len()).step_by(worker_count) {
                     let rel = &repos[index];
                     let repo = format!("{}/{rel}", root.trim_end_matches('/'));
+                    if !may_have_worktrees(&repo) {
+                        continue;
+                    }
                     if let Some(raw) = runner.capture(
                         "git",
                         &["-C", &repo, "worktree", "list", "--porcelain", "-z"],
@@ -480,6 +517,7 @@ mod tests {
     use std::ffi::OsStr;
     use std::io;
     use std::os::unix::process::ExitStatusExt;
+    use std::path::PathBuf;
     use std::process::{ExitStatus, Output};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
@@ -545,9 +583,27 @@ mod tests {
         assert_eq!(e[0].label, "repo-a");
     }
 
+    /// A throwaway ghq root holding `count` checkouts. Each gets a real
+    /// `.git/worktrees/` entry, which is the shape [`may_have_worktrees`] reads
+    /// to decide whether the repository is worth a `git` process at all.
+    fn ghq_root_with_registered_worktrees(tag: &str, count: usize) -> (PathBuf, Vec<String>) {
+        let root = std::env::temp_dir().join(format!("ghq-{tag}-{}", std::process::id()));
+        std::fs::remove_dir_all(&root).ok();
+        let repos = (0..count)
+            .map(|index| {
+                let rel = format!("github.com/o/repo-{index}");
+                std::fs::create_dir_all(root.join(&rel).join(".git").join("worktrees").join("wt"))
+                    .unwrap();
+                rel
+            })
+            .collect();
+        (root, repos)
+    }
+
     #[test]
     fn load_worktrees_keeps_only_live_linked_records() {
-        let dir = std::env::temp_dir().join(format!("ghq-worktrees-{}", std::process::id()));
+        let (root, repos) = ghq_root_with_registered_worktrees("worktrees", 1);
+        let dir = root.join("checkouts");
         let linked = dir.join("feature branch\nodd");
         let detached = dir.join("detached");
         let stale = dir.join("stale");
@@ -556,24 +612,85 @@ mod tests {
         std::fs::create_dir_all(&stale).unwrap();
 
         let raw = format!(
-            "worktree /root/github.com/o/repo-a\0HEAD aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\0branch refs/heads/main\0\0worktree {}\0HEAD bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\0branch refs/heads/feature/nul-safe\0locked keep it\0\0worktree {}\0HEAD 1234567890abcdef1234567890abcdef12345678\0detached\0\0worktree {}\0HEAD cccccccccccccccccccccccccccccccccccccccc\0branch refs/heads/stale\0prunable missing gitdir\0\0",
+            "worktree /root/github.com/o/repo-0\0HEAD aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\0branch refs/heads/main\0\0worktree {}\0HEAD bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\0branch refs/heads/feature/nul-safe\0locked keep it\0\0worktree {}\0HEAD 1234567890abcdef1234567890abcdef12345678\0detached\0\0worktree {}\0HEAD cccccccccccccccccccccccccccccccccccccccc\0branch refs/heads/stale\0prunable missing gitdir\0\0",
             linked.display(),
             detached.display(),
             stale.display()
         );
-        let runner = MockRunner::new().on("git -C /root/github.com/o/repo-a worktree list", &raw);
-        let repos = vec!["github.com/o/repo-a".to_string()];
+        let runner = MockRunner::new().on("worktree list", &raw);
 
-        let e = load_worktrees(&runner, &repos, &Theme::default(), "/root");
+        let e = load_worktrees(&runner, &repos, &Theme::default(), &root.to_string_lossy());
         assert_eq!(e.len(), 2);
         assert!(e.iter().all(|entry| entry.kind == Kind::Worktree));
         assert_eq!(e[0].dir.as_deref(), linked.to_str());
-        assert_eq!(e[0].primary, "o/repo-a");
+        assert_eq!(e[0].primary, "o/repo-0");
         assert_eq!(e[0].secondary, "feature/nul-safe");
         assert_eq!(e[1].secondary, "detached@12345678");
         assert!(e[0].search.contains("feature branch\nodd"));
 
-        std::fs::remove_dir_all(&dir).ok();
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// The probe is skipped for a checkout that has registered no worktrees, and
+    /// that is the whole point: it runs once per ghq repository, so on a machine
+    /// with hundreds of them the spawns saved are almost all of them.
+    #[test]
+    fn a_repository_with_no_registered_worktrees_is_never_probed() {
+        let (root, mut repos) = ghq_root_with_registered_worktrees("skip", 1);
+        let bare = "github.com/o/plain".to_string();
+        std::fs::create_dir_all(root.join(&bare).join(".git")).unwrap();
+        repos.push(bare);
+        let runner = MockRunner::new();
+
+        load_worktrees(&runner, &repos, &Theme::default(), &root.to_string_lossy());
+
+        let probed: Vec<String> = runner
+            .calls()
+            .iter()
+            .filter_map(|argv| {
+                argv.iter()
+                    .find(|arg| arg.contains("github.com/o/"))
+                    .cloned()
+            })
+            .collect();
+        assert_eq!(
+            probed.len(),
+            1,
+            "only the checkout with a registered worktree is worth a process: {probed:?}"
+        );
+        assert!(probed[0].ends_with("repo-0"), "{probed:?}");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// The prefilter fails open. A wrong "no" loses a worktree from the
+    /// catalogue silently; a wrong "yes" costs one subprocess. Only the two
+    /// cases the filesystem settles outright answer no.
+    #[test]
+    fn the_worktree_prefilter_only_refuses_what_the_filesystem_settles() {
+        let root = std::env::temp_dir().join(format!("ghq-prefilter-{}", std::process::id()));
+        std::fs::remove_dir_all(&root).ok();
+        let at = |name: &str| root.join(name).to_string_lossy().into_owned();
+
+        // No `.git` at all, and a `.git` directory with no `worktrees/`: git
+        // would only report the same absence, slower.
+        std::fs::create_dir_all(root.join("not-a-checkout")).unwrap();
+        std::fs::create_dir_all(root.join("plain").join(".git")).unwrap();
+        assert!(!may_have_worktrees(&at("not-a-checkout")));
+        assert!(!may_have_worktrees(&at("plain")));
+
+        // A registered worktree.
+        std::fs::create_dir_all(root.join("host").join(".git").join("worktrees").join("wt"))
+            .unwrap();
+        assert!(may_have_worktrees(&at("host")));
+
+        // A `.git` *file* points at an administrative directory somewhere else —
+        // this path is itself a linked worktree or a submodule, and nothing here
+        // can rule out worktrees from the pointer alone.
+        std::fs::create_dir_all(root.join("linked")).unwrap();
+        std::fs::write(root.join("linked").join(".git"), "gitdir: /elsewhere\n").unwrap();
+        assert!(may_have_worktrees(&at("linked")));
+
+        std::fs::remove_dir_all(&root).ok();
     }
 
     struct ProbeRunner {
@@ -619,11 +736,9 @@ mod tests {
     #[test]
     fn worktree_discovery_uses_at_most_four_parallel_probes() {
         let runner = ProbeRunner::new();
-        let repos: Vec<String> = (0..8)
-            .map(|index| format!("github.com/o/repo-{index}"))
-            .collect();
+        let (root, repos) = ghq_root_with_registered_worktrees("probes", 8);
 
-        let entries = load_worktrees(&runner, &repos, &Theme::default(), "/root");
+        let entries = load_worktrees(&runner, &repos, &Theme::default(), &root.to_string_lossy());
 
         assert!(entries.is_empty());
         let maximum = runner.maximum.load(Ordering::SeqCst);
@@ -631,6 +746,7 @@ mod tests {
             (2..=4).contains(&maximum),
             "maximum concurrency was {maximum}"
         );
+        std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]

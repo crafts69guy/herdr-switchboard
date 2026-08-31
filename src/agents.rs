@@ -148,13 +148,10 @@ impl PickerMode for AgentsMode {
                 secondary: integration.status.clone(),
                 trailing: Some(integration.kind.clone()),
                 trailing_marker: None,
-                document: Document {
-                    fuzzy: format!(
-                        "{} {} {} {}",
-                        integration.title, integration.id, integration.kind, integration.status
-                    ),
-                    fields: Default::default(),
-                },
+                document: Document::fuzzy(format!(
+                    "{} {} {} {}",
+                    integration.title, integration.id, integration.kind, integration.status
+                )),
                 preview: vec![
                     "Installed AI integration".into(),
                     String::new(),

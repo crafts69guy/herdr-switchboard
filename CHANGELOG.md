@@ -7,6 +7,21 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **Projects and the Commands, Ports, Agents and Menu pickers scroll and filter faster.** Every
+  visible and off-screen row was rebuilt from scratch on each frame; rows now reuse the text they
+  already have. Star lookups, tab counts, the name ordering, and field filters no longer redo work
+  per keystroke. A burst of wheel or held-key input is drawn once instead of once per event.
+
+- **Projects opens faster on machines with many repositories.** Repositories with no linked
+  worktrees are recognised from disk instead of costing a `git` process each, the two Herdr
+  catalogue queries run at the same time, and a repository Inspector gathers its branch, status,
+  last commit, and file tree concurrently.
+
+- **Pickers with nothing loading no longer wake twenty times a second.** Commands, Agents, the
+  Menu, and the Zen picker now idle until you press something, matching Projects and Git.
+
 ## [2.1.0] - 2026-08-28
 
 ### Changed

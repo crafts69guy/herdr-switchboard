@@ -2,6 +2,8 @@
 //! form, coloured command-bar pills, and measured hit zones. Terminal lifetime
 //! and event scheduling live in the deep [`crate::surface`] module.
 
+use std::borrow::Cow;
+
 use ratatui::layout::{Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Span;
@@ -10,6 +12,21 @@ use ratatui::Frame;
 
 use crate::config::Transparency;
 use crate::data::Theme;
+
+/// A run of `n` spaces, for padding a rendered row out to a column.
+///
+/// Row padding is the single most repeated allocation in a long list: a
+/// `" ".repeat(n)` per column per row per frame, built even for the rows a
+/// `List` scrolls past and never paints. Every width a terminal realistically
+/// has is a slice of one static; only an implausibly wide pad allocates.
+pub fn spaces(n: usize) -> Cow<'static, str> {
+    const RUN: &str =
+        "                                                                                                                                                                ";
+    match RUN.get(..n) {
+        Some(run) => Cow::Borrowed(run),
+        None => Cow::Owned(" ".repeat(n)),
+    }
+}
 
 /// The background policy for every Switchboard-owned rectangle. Callers only
 /// decide *where* they draw; this module owns how transparent and opaque modes
