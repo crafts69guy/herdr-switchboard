@@ -366,6 +366,169 @@ mod tests {
         cfg
     }
 
+    /// A directory that exists, so the open is not refused before it starts.
+    fn repo_dir(tag: &str) -> std::path::PathBuf {
+        static NONCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "switchboard-open-{tag}-{}-{}",
+            std::process::id(),
+            NONCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// `open_target` is the seam `bin/get.sh` calls after a clone, and it must
+    /// build the same herdr verbs the picker's own opens do — that is the whole
+    /// point of it not being reimplemented in bash.
+    #[test]
+    fn the_clone_flow_opens_a_repo_through_the_same_herdr_verbs() {
+        for (target, verb) in [
+            ("workspace", "workspace"),
+            ("tab", "tab"),
+            ("split", "pane"),
+        ] {
+            let dir = repo_dir(target);
+            let path = dir.to_string_lossy().into_owned();
+            let runner = MockRunner::new();
+            open_target(&runner, target, &path, "w1:p1", "api", &Config::default()).unwrap();
+
+            let calls = runner.calls();
+            assert!(
+                calls
+                    .iter()
+                    .any(|argv| argv[0] == "herdr" && argv.contains(&verb.to_string())),
+                "`{target}` did not reach `herdr {verb}`: {calls:?}"
+            );
+            assert!(
+                calls.iter().any(|argv| argv.iter().any(|arg| arg == &path)),
+                "`{target}` did not carry the path: {calls:?}"
+            );
+            std::fs::remove_dir_all(&dir).ok();
+        }
+    }
+
+    /// A repository that has been deleted since the catalogue was built is
+    /// refused before any herdr verb runs — opening a workspace onto a path
+    /// that is gone leaves an empty pane with no explanation.
+    #[test]
+    fn opening_a_path_that_no_longer_exists_is_refused_before_herdr_is_called() {
+        let runner = MockRunner::new();
+        let error = open_target(
+            &runner,
+            "workspace",
+            "/definitely/not/a/real/path",
+            "w1:p1",
+            "api",
+            &Config::default(),
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("no longer exists"), "{error}");
+        assert!(runner.calls().is_empty(), "herdr was called anyway");
+    }
+
+    /// A failed herdr verb is reported rather than treated as an open.
+    #[test]
+    fn a_failed_open_is_reported() {
+        let dir = repo_dir("failing");
+        let runner = MockRunner::new().failing("herdr");
+        let error = open_target(
+            &runner,
+            "workspace",
+            &dir.to_string_lossy(),
+            "w1:p1",
+            "api",
+            &Config::default(),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("herdr"), "{error}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The current pane is a `cd`, not a new surface: opening "here" must not
+    /// create a workspace, tab or pane.
+    #[test]
+    fn opening_in_the_current_pane_only_sends_a_cd() {
+        let dir = repo_dir("pane");
+        let runner = MockRunner::new();
+        open_target(
+            &runner,
+            "pane",
+            &dir.to_string_lossy(),
+            "w1:p1",
+            "api",
+            &Config::default(),
+        )
+        .unwrap();
+
+        let calls = runner.calls();
+        assert!(
+            !calls
+                .iter()
+                .any(|argv| argv.contains(&"create".to_string())),
+            "opening in place created a surface: {calls:?}"
+        );
+        assert!(
+            calls
+                .iter()
+                .any(|argv| argv.iter().any(|arg| arg.contains("cd "))),
+            "no cd was sent: {calls:?}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// An unrecognised target on the `open` subcommand is refused by name.
+    ///
+    /// Note the deliberate asymmetry with `resolve_default_target`, which
+    /// degrades an unknown *config* value to `workspace`: a config written for a
+    /// later version must not stop the picker opening, but an explicit CLI
+    /// argument that means nothing is a caller bug, and opening somewhere
+    /// arbitrary would hide it.
+    #[test]
+    fn an_unrecognised_open_target_is_refused_rather_than_guessed() {
+        let dir = repo_dir("unknown");
+        let runner = MockRunner::new();
+        let error = open_target(
+            &runner,
+            "nonsense",
+            &dir.to_string_lossy(),
+            "w1:p1",
+            "api",
+            &Config::default(),
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("unknown target"), "{error}");
+        assert!(runner.calls().is_empty(), "it opened something anyway");
+        assert_eq!(
+            resolve_default_target(None, "nonsense"),
+            "workspace",
+            "a config value degrades where a CLI argument errors"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Only the four opening accepts name a herdr surface; the rest are local
+    /// work with no surface of their own.
+    #[test]
+    fn only_the_opening_accepts_name_a_herdr_surface() {
+        assert_eq!(open_kind(Accept::Workspace), Some("workspace"));
+        assert_eq!(open_kind(Accept::Tab), Some("tab"));
+        assert_eq!(open_kind(Accept::Split), Some("split"));
+        assert_eq!(open_kind(Accept::Pane), Some("pane"));
+
+        for accept in [
+            Accept::Default,
+            Accept::Update,
+            Accept::Remove,
+            Accept::Clone,
+            Accept::UpdatePlugin,
+        ] {
+            assert_eq!(open_kind(accept), None, "{accept:?} is not an open");
+        }
+    }
+
     #[test]
     fn dispatch_tab_builds_the_herdr_tab_create_verb() {
         let dir = tmp_repo("tab");

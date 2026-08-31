@@ -380,6 +380,127 @@ impl Settings {
 mod tests {
     use super::*;
 
+    fn press(settings: &mut Settings, code: KeyCode) -> bool {
+        settings.on_key(crossterm::event::KeyEvent::new(
+            code,
+            crossterm::event::KeyModifiers::NONE,
+        ))
+    }
+
+    /// Tab moves between groups and lands on the first row of each — leaving
+    /// the selection on a row from the previous tab would edit something the
+    /// user cannot see.
+    #[test]
+    fn tab_cycles_the_groups_and_always_lands_inside_the_new_one() {
+        let mut settings = Settings::new(&Config::default());
+        settings.open();
+
+        let start = settings.tab;
+        let mut seen = Vec::new();
+        for _ in 0..TABS.len() {
+            press(&mut settings, KeyCode::Tab);
+            seen.push(settings.tab);
+            assert_eq!(
+                setting_tab(SETTINGS[settings.sel].key),
+                settings.tab,
+                "the selection stayed in the previous group"
+            );
+        }
+        assert_eq!(
+            seen.last(),
+            Some(&start),
+            "the cycle returns to where it began"
+        );
+        assert_eq!(
+            seen.iter().collect::<std::collections::HashSet<_>>().len(),
+            TABS.len(),
+            "every group was visited exactly once: {seen:?}"
+        );
+
+        // And back the other way, from wherever the cycle left it.
+        let before = settings.tab;
+        press(&mut settings, KeyCode::BackTab);
+        assert_eq!(settings.tab, (before + TABS.len() - 1) % TABS.len());
+        assert_eq!(setting_tab(SETTINGS[settings.sel].key), settings.tab);
+    }
+
+    /// Moving wraps within the group rather than escaping into the next one.
+    #[test]
+    fn moving_wraps_inside_the_current_group() {
+        let mut settings = Settings::new(&Config::default());
+        settings.open();
+        let group: Vec<usize> = settings.indices_in_tab();
+        assert!(group.len() > 1, "the first group has several rows");
+
+        press(&mut settings, KeyCode::Home);
+        assert_eq!(settings.sel, group[0]);
+        press(&mut settings, KeyCode::Up);
+        assert_eq!(
+            settings.sel,
+            *group.last().unwrap(),
+            "up from the top wraps"
+        );
+        press(&mut settings, KeyCode::Down);
+        assert_eq!(settings.sel, group[0], "and down comes back");
+
+        press(&mut settings, KeyCode::End);
+        assert_eq!(settings.sel, *group.last().unwrap());
+        // j/k are the same movements.
+        press(&mut settings, KeyCode::Char('k'));
+        assert_eq!(settings.sel, group[group.len() - 2]);
+        press(&mut settings, KeyCode::Char('j'));
+        assert_eq!(settings.sel, *group.last().unwrap());
+    }
+
+    /// The wheel walks the form the way j/k do — but never while a value is
+    /// being typed, where a stray scroll would move off the field mid-edit.
+    #[test]
+    fn the_wheel_walks_the_form_but_not_while_a_value_is_being_typed() {
+        let mut settings = Settings::new(&Config::default());
+        settings.open();
+        press(&mut settings, KeyCode::Home);
+        let first = settings.sel;
+
+        settings.on_wheel(1);
+        assert_ne!(settings.sel, first, "the wheel moved the selection");
+        settings.on_wheel(-1);
+        assert_eq!(settings.sel, first);
+
+        // While editing, the wheel is inert.
+        settings.editing = Some("value".into());
+        let during = settings.sel;
+        settings.on_wheel(1);
+        assert_eq!(
+            settings.sel, during,
+            "the wheel moved off a field being typed"
+        );
+    }
+
+    /// Typing into a prompted value edits the draft, and backspace removes from
+    /// it — neither touches disk.
+    #[test]
+    fn typing_edits_the_prompted_draft_only() {
+        let mut settings = Settings::new(&Config::default());
+        settings.open();
+        let prompted = SETTINGS
+            .iter()
+            .position(|setting| matches!(setting.cycle, Cycle::Prompt))
+            .expect("some setting is typed rather than cycled");
+        settings.sel = prompted;
+        settings.tab = setting_tab(SETTINGS[prompted].key);
+
+        press(&mut settings, KeyCode::Enter);
+        assert!(settings.editing.is_some(), "Enter starts an edit");
+
+        press(&mut settings, KeyCode::Backspace);
+        press(&mut settings, KeyCode::Char('7'));
+        assert!(
+            settings.editing.as_deref().unwrap().ends_with('7'),
+            "{:?}",
+            settings.editing
+        );
+    }
+
     #[test]
     fn ring_cycles_and_wraps() {
         let ring = &["workspace", "tab", "split", "pane"];

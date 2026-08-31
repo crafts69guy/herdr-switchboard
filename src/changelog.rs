@@ -199,6 +199,147 @@ pub fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A pager with `height` rendered rows in a `rows`-tall pane.
+    fn pager(height: u16, rows: u16) -> App {
+        let theme = Theme::default();
+        App {
+            background: crate::tui::SurfaceBackground::resolve(
+                &theme,
+                crate::config::Transparency::Transparent,
+            ),
+            title_color: Color::Yellow,
+            theme,
+            blocks: Vec::new(),
+            scroll: 0,
+            height,
+            rows,
+            bar_row: 0,
+            bar_zones: Vec::new(),
+        }
+    }
+
+    /// Every movement key reaches the pager, and the scroll stops at both ends —
+    /// past the last screenful there is nothing but blank rows.
+    #[test]
+    fn every_movement_key_scrolls_and_stops_at_both_ends() {
+        let mut app = pager(100, 20);
+        let max = 80;
+
+        for (code, expected) in [
+            (KeyCode::Down, 1),
+            (KeyCode::Char('j'), 2),
+            (KeyCode::Up, 1),
+            (KeyCode::Char('k'), 0),
+        ] {
+            app.on_key(KeyEvent::from(code));
+            assert_eq!(app.scroll, expected, "{code:?}");
+        }
+
+        app.on_key(KeyEvent::from(KeyCode::PageDown));
+        assert_eq!(app.scroll, 18, "a page is the visible rows less two");
+        app.on_key(KeyEvent::from(KeyCode::PageUp));
+        assert_eq!(app.scroll, 0);
+        app.on_key(KeyEvent::from(KeyCode::Char(' ')));
+        assert_eq!(app.scroll, 18, "space pages the way a pager does");
+
+        app.on_key(KeyEvent::from(KeyCode::End));
+        assert_eq!(app.scroll, max);
+        app.on_key(KeyEvent::from(KeyCode::Down));
+        assert_eq!(app.scroll, max, "it cannot scroll past the end");
+        app.on_key(KeyEvent::from(KeyCode::Char('G')));
+        assert_eq!(app.scroll, max);
+
+        app.on_key(KeyEvent::from(KeyCode::Home));
+        assert_eq!(app.scroll, 0);
+        app.on_key(KeyEvent::from(KeyCode::Up));
+        assert_eq!(app.scroll, 0, "and cannot scroll above the top");
+        app.on_key(KeyEvent::from(KeyCode::Char('g')));
+        assert_eq!(app.scroll, 0);
+    }
+
+    /// Content shorter than the pane cannot scroll at all.
+    #[test]
+    fn content_that_fits_never_scrolls() {
+        let mut app = pager(5, 20);
+        for code in [KeyCode::Down, KeyCode::PageDown, KeyCode::End] {
+            app.on_key(KeyEvent::from(code));
+            assert_eq!(app.scroll, 0, "{code:?} scrolled content that fits");
+        }
+    }
+
+    /// Both ways out, from the keyboard.
+    #[test]
+    fn the_popup_closes_on_esc_q_and_ctrl_c() {
+        for code in [KeyCode::Esc, KeyCode::Char('q')] {
+            let mut app = pager(100, 20);
+            assert!(matches!(
+                app.on_key(KeyEvent::from(code)),
+                Transition::Exit(())
+            ));
+        }
+        let mut app = pager(100, 20);
+        let ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        assert!(matches!(app.on_key(ctrl_c), Transition::Exit(())));
+        // A plain `c` is not a close.
+        let mut app = pager(100, 20);
+        assert!(matches!(
+            app.on_key(KeyEvent::from(KeyCode::Char('c'))),
+            Transition::Redraw
+        ));
+    }
+
+    /// A wheel notch is three rows — the conventional feel for reading text.
+    #[test]
+    fn a_wheel_notch_moves_three_rows() {
+        let mut app = pager(100, 20);
+        let wheel = |kind| crossterm::event::MouseEvent {
+            kind,
+            column: 5,
+            row: 5,
+            modifiers: KeyModifiers::NONE,
+        };
+
+        app.on_mouse(wheel(MouseEventKind::ScrollDown));
+        assert_eq!(app.scroll, 3);
+        app.on_mouse(wheel(MouseEventKind::ScrollUp));
+        assert_eq!(app.scroll, 0);
+    }
+
+    /// A command-bar pill carries the key printed on its cap, so clicking it
+    /// and pressing that key cannot diverge.
+    #[test]
+    fn a_bar_pill_click_runs_the_key_on_its_cap() {
+        let mut app = pager(100, 20);
+        app.bar_row = 23;
+        app.bar_zones = vec![(0, 6, KeyCode::Esc), (8, 14, KeyCode::End)];
+        let click = |column, row| crossterm::event::MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        };
+
+        assert!(matches!(app.on_mouse(click(10, 23)), Transition::Redraw));
+        assert_eq!(app.scroll, 80, "the End pill jumped to the end");
+        assert!(matches!(app.on_mouse(click(2, 23)), Transition::Exit(())));
+        // A click on no pill changes nothing.
+        let mut app = pager(100, 20);
+        app.bar_row = 23;
+        app.bar_zones = vec![(0, 6, KeyCode::Esc)];
+        assert!(matches!(app.on_mouse(click(40, 23)), Transition::Redraw));
+        assert_eq!(app.scroll, 0);
+    }
+
+    /// An event the popup does not handle costs nothing.
+    #[test]
+    fn an_unhandled_event_is_a_wait() {
+        let mut app = pager(100, 20);
+        assert!(matches!(
+            app.on_event(Event::Resize(80, 24)).unwrap(),
+            Transition::Wait
+        ));
+    }
     use crate::config::Transparency;
 
     fn render(transparency: Transparency) -> ratatui::buffer::Buffer {

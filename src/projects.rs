@@ -1692,6 +1692,390 @@ mod tests {
         }
     }
 
+    fn agent_target(pane: &str, cwd: &str) -> AgentTarget {
+        AgentTarget {
+            pane_id: pane.into(),
+            agent: "claude".into(),
+            status: "idle".into(),
+            cwd: cwd.into(),
+        }
+    }
+
+    fn item_context() -> ItemContext {
+        ItemContext {
+            kind: "Repo",
+            label: "api".into(),
+            absolute_path: "/work/api".into(),
+        }
+    }
+
+    /// Every flow the reducer can return has one landing in the host, and the
+    /// three that leave carry what the caller needs with them.
+    #[test]
+    fn every_flow_lands_where_the_host_expects() {
+        let mut app = ready_app();
+        let selected = app.picker.selected_entry().unwrap().clone();
+        let mut surface = surface(&mut app);
+
+        assert!(matches!(
+            surface.apply_flow(Flow::Continue),
+            SurfaceTransition::Redraw
+        ));
+        assert!(matches!(
+            surface.apply_flow(Flow::Quit),
+            SurfaceTransition::Exit(None)
+        ));
+
+        // Accept resolves the selection at the moment it leaves, not later.
+        match surface.apply_flow(Flow::Accept(Accept::Workspace)) {
+            SurfaceTransition::Exit(Some(ProjectOutcome::Accept(entry, accept))) => {
+                assert_eq!(entry.unwrap().id, selected.id);
+                assert_eq!(accept, Accept::Workspace);
+            }
+            _ => panic!("accept must leave with the selection"),
+        }
+
+        match surface.apply_flow(Flow::CopyPath(selected.clone())) {
+            SurfaceTransition::Exit(Some(ProjectOutcome::CopyPath(entry))) => {
+                assert_eq!(entry.id, selected.id)
+            }
+            _ => panic!("copy must leave with its entry"),
+        }
+    }
+
+    /// The three flows that need a thread all start one and report the work as
+    /// outstanding, so the host ticks fast until it lands.
+    #[test]
+    fn the_background_flows_leave_an_effect_outstanding() {
+        let entry = Entry {
+            dir: Some("/definitely/not/a/real/path".into()),
+            ..entry(Kind::Repo, "gh/api", "api")
+        };
+        let mut app = ready_app();
+        let mut surface = surface(&mut app);
+
+        for flow in [
+            Flow::DiscoverTargets(entry.clone()),
+            Flow::SetStar(entry.clone(), true),
+            Flow::Deliver(HandoffRequest {
+                item: item_context(),
+                target: agent_target("w1:p9", "/work/api"),
+            }),
+        ] {
+            surface.effect = None;
+            assert!(matches!(
+                surface.apply_flow(flow),
+                SurfaceTransition::Redraw
+            ));
+            assert!(surface.effect.is_some(), "no background work was started");
+            assert_eq!(surface.tick_rate(), PREVIEW_TICK);
+        }
+    }
+
+    /// A reload asks the worker for a fresh catalogue under a new generation.
+    #[test]
+    fn a_reload_flow_starts_a_new_catalogue_generation() {
+        let mut app = ready_app();
+        let mut surface = surface(&mut app);
+        let before = surface.catalog_generation;
+
+        let transition = surface.apply_flow(Flow::ReloadCatalog(CatalogIntent::Refresh {
+            requested_group: GroupFilter::All,
+            preserve_selection: true,
+        }));
+
+        assert!(matches!(transition, SurfaceTransition::Redraw));
+        assert_eq!(surface.catalog_generation, before + 1);
+        assert!(surface.catalog_pending);
+        assert_eq!(surface.app.catalog, CatalogState::Refreshing);
+    }
+
+    /// A resolution that already knows the origin agent delivers straight away
+    /// rather than asking the user to pick the only candidate.
+    #[test]
+    fn a_resolved_origin_agent_delivers_without_asking() {
+        let mut app = app_with_layout();
+        let request = app.handoff.show_targets(
+            item_context(),
+            TargetResolution {
+                origin: Some(agent_target("w1:p9", "/work/api")),
+                choices: vec![agent_target("w1:p9", "/work/api")],
+                scope: TargetScope::SameWorktree,
+            },
+        );
+
+        let request = request.expect("an origin in the same worktree is delivered to");
+        assert_eq!(request.target.pane_id, "w1:p9");
+        assert_eq!(request.item.absolute_path, "/work/api");
+    }
+
+    /// With several candidates and no origin, the overlay asks — and the click
+    /// rule is the picker's own: select, then act on the row already selected.
+    #[test]
+    fn the_handoff_list_selects_on_the_first_click_and_delivers_on_the_second() {
+        let mut app = app_with_layout();
+        app.overlay = Overlay::Handoff;
+        let chosen = app.handoff.show_targets(
+            item_context(),
+            TargetResolution {
+                origin: None,
+                choices: vec![
+                    agent_target("w1:p1", "/work/api"),
+                    agent_target("w1:p2", "/work/api"),
+                ],
+                scope: TargetScope::AllAgents,
+            },
+        );
+        assert!(chosen.is_none(), "with no origin the user is asked");
+        app.handoff.list_area = Rect::new(0, 0, 60, 10);
+
+        // The second row: select only.
+        let flow = app.on_handoff_click(Position::new(5, 2));
+        assert!(matches!(flow, Flow::Continue));
+        assert_eq!(app.handoff.selected, 1);
+
+        // The same row again: deliver.
+        match app.on_handoff_click(Position::new(5, 2)) {
+            Flow::Deliver(request) => assert_eq!(request.target.pane_id, "w1:p2"),
+            _ => panic!("a click on the selected row must deliver"),
+        }
+    }
+
+    /// A click below the last agent, or outside the list, is not a row.
+    #[test]
+    fn a_handoff_click_outside_the_rows_does_nothing() {
+        let mut app = app_with_layout();
+        app.overlay = Overlay::Handoff;
+        app.handoff.show_targets(
+            item_context(),
+            TargetResolution {
+                origin: None,
+                choices: vec![agent_target("w1:p1", "/work/api")],
+                scope: TargetScope::AllAgents,
+            },
+        );
+        app.handoff.list_area = Rect::new(0, 0, 60, 10);
+        let before = app.handoff.selected;
+
+        assert!(matches!(
+            app.on_handoff_click(Position::new(5, 8)),
+            Flow::Continue
+        ));
+        assert_eq!(
+            app.handoff.selected, before,
+            "a click past the rows selected one"
+        );
+    }
+
+    /// The update badge is a fact, not a prompt: it sits at the far end and
+    /// yields when the keys already fill the row, so it can never overdraw the
+    /// command bar.
+    #[test]
+    fn the_update_badge_is_shown_at_the_end_and_yields_to_the_keys() {
+        let mut app = app_with_layout();
+        app.update = Some("9.9.9".into());
+
+        let wide = rendered(&mut app, 160, 24);
+        assert!(wide.contains("↑ v9.9.9"), "a wide bar has room:\n{wide}");
+
+        // A pane too narrow for both keeps the keys and drops the badge.
+        let narrow = rendered(&mut app, 60, 24);
+        assert!(
+            !narrow.contains("↑ v9.9.9"),
+            "the badge overdrew the keys:\n{narrow}"
+        );
+
+        // With no newer version there is nothing to say.
+        app.update = None;
+        let none = rendered(&mut app, 160, 24);
+        assert!(!none.contains("↑ v"), "{none}");
+    }
+
+    /// The preview can sit on any side, and the command bar stays a full-width
+    /// row underneath whichever side it takes.
+    #[test]
+    fn the_preview_can_sit_on_any_side_of_the_navigator() {
+        for position in ["right", "left", "up", "down"] {
+            let mut app = app_with_layout();
+            app.preview.position = position.into();
+            app.preview.enabled = true;
+            let screen = rendered(&mut app, 140, 24);
+
+            assert!(
+                screen.contains("Navigator"),
+                "{position}: the list is gone\n{screen}"
+            );
+            assert!(
+                screen.contains("Preview"),
+                "{position}: the card is gone\n{screen}"
+            );
+        }
+    }
+
+    /// Below 80 columns the preview is dropped entirely, and its geometry is
+    /// cleared with it — hidden content that kept its rect would still capture
+    /// the pointer.
+    #[test]
+    fn a_narrow_pane_drops_the_preview_and_forgets_where_it_was() {
+        let mut app = app_with_layout();
+        app.preview.enabled = true;
+        let _ = rendered(&mut app, 140, 24);
+        assert!(app.preview.area.is_some(), "a wide pane has a preview");
+
+        let screen = rendered(&mut app, 79, 24);
+        assert!(!screen.contains("Preview"), "{screen}");
+        assert!(
+            app.preview.area.is_none(),
+            "hidden geometry would still catch clicks"
+        );
+    }
+
+    /// The handoff overlay says what it is doing while it looks, and names the
+    /// scope it searched — an empty list with no explanation reads as a bug.
+    #[test]
+    fn the_handoff_overlay_explains_itself_while_it_is_still_looking() {
+        let mut app = app_with_layout();
+        app.handoff.finding();
+        app.overlay = Overlay::Handoff;
+
+        let screen = rendered(&mut app, 120, 30);
+        assert!(screen.contains("Send path to agent"), "{screen}");
+        assert!(screen.contains("finding promptable agents"), "{screen}");
+        assert!(
+            screen.contains("resolving"),
+            "the scope is stated:\n{screen}"
+        );
+    }
+
+    /// A resolution that found nothing says why rather than showing a blank
+    /// list.
+    #[test]
+    fn the_handoff_overlay_says_when_no_agent_can_receive() {
+        let mut app = app_with_layout();
+        app.overlay = Overlay::Handoff;
+        app.handoff.error = Some("no promptable agents".into());
+
+        let screen = rendered(&mut app, 120, 30);
+        assert!(
+            screen.contains("no promptable agents") || screen.contains("blocked agents"),
+            "{screen}"
+        );
+    }
+
+    /// The changelog scrolls rather than dismissing on any key, so every
+    /// movement key has to reach it — and the scroll must stay inside the
+    /// content at both ends.
+    #[test]
+    fn the_changelog_overlay_scrolls_and_stops_at_both_ends() {
+        let mut app = app_with_layout();
+        app.overlay = Overlay::Changelog;
+        app.changelog.len = 100;
+        app.changelog.rows = 20;
+        let max = 80;
+
+        for (code, expected) in [
+            (KeyCode::Down, 1),
+            (KeyCode::Char('j'), 2),
+            (KeyCode::Up, 1),
+            (KeyCode::Char('k'), 0),
+        ] {
+            handle_key(&mut app, key(code, KeyModifiers::NONE));
+            assert_eq!(app.changelog.scroll, expected, "{code:?}");
+        }
+
+        handle_key(&mut app, key(KeyCode::PageDown, KeyModifiers::NONE));
+        assert_eq!(
+            app.changelog.scroll, 18,
+            "a page is the visible rows less two"
+        );
+        handle_key(&mut app, key(KeyCode::PageUp, KeyModifiers::NONE));
+        assert_eq!(app.changelog.scroll, 0);
+
+        handle_key(&mut app, key(KeyCode::End, KeyModifiers::NONE));
+        assert_eq!(app.changelog.scroll, max, "End stops at the last screenful");
+        handle_key(&mut app, key(KeyCode::Char('G'), KeyModifiers::NONE));
+        assert_eq!(app.changelog.scroll, max, "and cannot go past it");
+        handle_key(&mut app, key(KeyCode::Home, KeyModifiers::NONE));
+        assert_eq!(app.changelog.scroll, 0);
+
+        // Space pages down the way a pager does.
+        handle_key(&mut app, key(KeyCode::Char(' '), KeyModifiers::NONE));
+        assert_eq!(app.changelog.scroll, 18);
+    }
+
+    /// Three keys close the changelog, and `^c` leaves the picker entirely from
+    /// inside it.
+    #[test]
+    fn the_changelog_closes_on_esc_q_and_c_and_ctrl_c_quits() {
+        for code in [KeyCode::Esc, KeyCode::Char('q'), KeyCode::Char('c')] {
+            let mut app = app_with_layout();
+            app.overlay = Overlay::Changelog;
+            handle_key(&mut app, key(code, KeyModifiers::NONE));
+            assert_eq!(app.overlay, Overlay::None, "{code:?} did not close it");
+        }
+
+        let mut app = app_with_layout();
+        app.overlay = Overlay::Changelog;
+        assert!(matches!(
+            handle_key(&mut app, key(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+            Flow::Quit
+        ));
+    }
+
+    /// An unhandled key inside the changelog leaves it exactly as it was — it
+    /// must not fall through to the list behind it.
+    #[test]
+    fn a_stray_key_in_the_changelog_reaches_nothing_behind_it() {
+        let mut app = app_with_layout();
+        app.overlay = Overlay::Changelog;
+        app.changelog.len = 100;
+        app.changelog.rows = 20;
+        let selected = app.picker.selected;
+
+        handle_key(&mut app, key(KeyCode::Char('z'), KeyModifiers::NONE));
+
+        assert_eq!(app.overlay, Overlay::Changelog);
+        assert_eq!(app.changelog.scroll, 0);
+        assert_eq!(
+            app.picker.selected, selected,
+            "the list behind is untouched"
+        );
+    }
+
+    /// `^c` leaves from the help cheatsheet and the handoff overlay too — it is
+    /// the one key that works from anywhere.
+    #[test]
+    fn ctrl_c_quits_from_every_overlay() {
+        for overlay in [Overlay::Help, Overlay::Handoff, Overlay::None] {
+            let mut app = app_with_layout();
+            app.overlay = overlay;
+            assert!(
+                matches!(
+                    handle_key(&mut app, key(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+                    Flow::Quit
+                ),
+                "{overlay:?} swallowed ^c"
+            );
+        }
+    }
+
+    /// Applying settings re-reads the config and asks for a fresh catalogue,
+    /// because a source the user just enabled has to appear now rather than on
+    /// the next launch.
+    #[test]
+    fn a_settings_apply_reloads_the_catalogue() {
+        let mut app = app_with_layout();
+        app.settings
+            .redirect(std::env::temp_dir().join("switchboard-never-written.toml"));
+        app.settings.open();
+        app.overlay = Overlay::Settings;
+
+        // Esc closes the form without applying, and that alone does not reload.
+        let flow = handle_key(&mut app, key(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(matches!(flow, Flow::Continue));
+        assert_eq!(app.overlay, Overlay::None);
+    }
+
     /// Every navigation and editing action, driven through the same reducer the
     /// keymap dispatches into.
     ///
