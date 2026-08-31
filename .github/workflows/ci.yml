@@ -26,3 +26,32 @@ jobs:
 
       - name: Full repository gate
         run: bash bin/check.sh
+
+  # Separate from `check` on purpose: coverage needs its own instrumented build,
+  # so folding it into the fast gate would slow every local run for a number
+  # only CI has to enforce. The two jobs run in parallel.
+  coverage:
+    name: Line coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: coverage
+
+      - uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: Line coverage gate
+        run: bash bin/coverage.sh --json coverage.json
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-summary
+          path: coverage.json
+          if-no-files-found: warn

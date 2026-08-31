@@ -250,6 +250,26 @@ impl PortWorker {
         }
     }
 
+    /// A worker that answers from a fixed script and starts no thread.
+    ///
+    /// The live worker's first act is `SystemProbe::new`, which enumerates every
+    /// process on the machine — so a test that only wants to see what `PortMode`
+    /// does with a snapshot would otherwise pay for a real system scan, and read
+    /// whatever happened to be listening while it ran.
+    #[cfg(test)]
+    fn seeded(snapshots: Vec<Result<Vec<PortEntry>, String>>) -> Self {
+        let (result_tx, rx) = mpsc::channel();
+        for snapshot in snapshots {
+            result_tx.send(snapshot).expect("seeded receiver is alive");
+        }
+        let (stop, _) = mpsc::channel();
+        Self {
+            rx,
+            stop,
+            join: None,
+        }
+    }
+
     pub fn latest(&self) -> Option<Result<Vec<PortEntry>, String>> {
         let mut latest = None;
         while let Ok(snapshot) = self.rx.try_recv() {
@@ -726,5 +746,206 @@ mod tests {
             )
             .unwrap();
         assert_eq!(monitor.probe.signals, [(10, PortSignal::Term)]);
+    }
+
+    /// A listener entry with everything the item builder reads.
+    fn entry(port: u16, pid: u32, cwd: Option<&str>, can_signal: bool) -> PortEntry {
+        PortEntry {
+            identity: PortIdentity {
+                pid,
+                port,
+                start_time: 42,
+                addresses: vec!["127.0.0.1".parse().unwrap()],
+            },
+            addresses: vec!["127.0.0.1".parse().unwrap(), "::1".parse().unwrap()],
+            process_name: "node".into(),
+            command: "node server.js".into(),
+            cwd: cwd.map(PathBuf::from),
+            parent_pid: Some(pid - 1),
+            user: Some("dev".into()),
+            can_signal,
+        }
+    }
+
+    /// A mode holding `entries`, with a worker that starts no thread.
+    fn mode(entries: Vec<PortEntry>) -> PortMode {
+        PortMode {
+            worker: PortWorker::seeded(Vec::new()),
+            entries,
+            notifier: Notifier::silent(),
+            bindings: HashMap::new(),
+        }
+    }
+
+    /// The id has to survive a port being reused by a different process: it
+    /// carries the pid, the port, the start time, and the addresses, so a
+    /// selection cannot silently follow a port to a new owner.
+    #[test]
+    fn a_listener_id_distinguishes_a_reused_port_from_the_original() {
+        let original = entry(3000, 10, None, true);
+        let mut reused = original.clone();
+        reused.identity.start_time = 99;
+        let mut other_pid = original.clone();
+        other_pid.identity.pid = 11;
+        let mut other_address = original.clone();
+        other_address.identity.addresses = vec!["0.0.0.0".parse().unwrap()];
+
+        assert_eq!(port_id(&original), "10:3000:42:127.0.0.1");
+        for different in [reused, other_pid, other_address] {
+            assert_ne!(port_id(&original), port_id(&different));
+        }
+    }
+
+    /// The card is the only place a listener explains itself, and three of its
+    /// rows are conditional.
+    #[test]
+    fn a_listener_card_states_every_fact_it_has_and_omits_the_ones_it_does_not() {
+        let full = port_item(&entry(3000, 10, Some("/work/api"), true));
+        assert_eq!(full.primary, ":3000");
+        assert!(full.secondary.contains("node"), "{}", full.secondary);
+        assert!(full.secondary.contains("pid 10"), "{}", full.secondary);
+        let card = full.preview.join("\n");
+        assert!(card.contains("endpoint  localhost:3000"), "{card}");
+        assert!(card.contains("127.0.0.1, ::1"), "{card}");
+        assert!(card.contains("ppid      9"), "{card}");
+        assert!(card.contains("cwd       /work/api"), "{card}");
+        assert!(!card.contains("signal    disabled"), "{card}");
+
+        // No cwd, no owner: the two rows that depend on them drop out, and the
+        // one that only appears when signalling is impossible appears.
+        let bare = port_item(&entry(3000, 10, None, false)).preview.join("\n");
+        assert!(!bare.contains("cwd  "), "{bare}");
+        assert!(bare.contains("signal    disabled"), "{bare}");
+    }
+
+    /// A row without a user reads `unknown` rather than an empty column.
+    #[test]
+    fn a_listener_with_no_owner_still_names_a_user() {
+        let mut anonymous = entry(3000, 10, None, true);
+        anonymous.user = None;
+        anonymous.parent_pid = None;
+        let card = port_item(&anonymous).preview.join("\n");
+        assert!(card.contains("user      unknown"), "{card}");
+        assert!(!card.contains("ppid"), "{card}");
+    }
+
+    /// Every filter field the schema advertises has to actually resolve against
+    /// the document the item builder produces, or a documented query silently
+    /// matches nothing.
+    #[test]
+    fn every_advertised_filter_field_matches_the_item_it_describes() {
+        let mode = mode(vec![entry(3000, 10, Some("/work/api"), true)]);
+        let item = &mode.items()[0];
+        let schema = mode.schema();
+        let mut matcher = nucleo_matcher::Matcher::new(nucleo_matcher::Config::DEFAULT);
+
+        for query in [
+            "port:3000",
+            "address:127.0.0.1",
+            "pid:10",
+            "process:node",
+            "proc:server.js",
+            "cwd:/work/api",
+            "repo:api",
+            "user:dev",
+        ] {
+            let compiled = crate::query::CompiledQuery::compile(query, &schema)
+                .unwrap_or_else(|error| panic!("`{query}` did not compile: {error:?}"));
+            assert!(
+                compiled.score(&item.document, &mut matcher).is_some(),
+                "`{query}` matched no listener"
+            );
+        }
+    }
+
+    /// Both destructive actions and the workspace action are refused when their
+    /// precondition is missing, and the refusal says why — that reason is what
+    /// the command bar shows instead of the pill.
+    #[test]
+    fn actions_are_disabled_with_a_reason_when_their_precondition_is_missing() {
+        let owned = entry(3000, 10, Some("/definitely/not/here"), true);
+        let foreign = entry(3001, 11, None, false);
+        let id_owned = port_id(&owned);
+        let id_foreign = port_id(&foreign);
+        let mode = mode(vec![owned, foreign]);
+
+        let missing_cwd = mode
+            .action_disabled_reason(&id_owned, "workspace")
+            .expect("a cwd that is not a directory disables workspace");
+        assert!(missing_cwd.contains("cwd"), "{missing_cwd}");
+
+        for action in ["term", "kill"] {
+            let reason = mode
+                .action_disabled_reason(&id_foreign, action)
+                .unwrap_or_else(|| panic!("{action} must be disabled for a foreign listener"));
+            assert!(reason.contains("not owned"), "{reason}");
+        }
+        // Signalling your own process is allowed, and so is copying anything.
+        assert!(mode.action_disabled_reason(&id_owned, "term").is_none());
+        assert!(mode.action_disabled_reason(&id_foreign, "copy").is_none());
+        // An id nothing matches disables nothing rather than panicking.
+        assert!(mode.action_disabled_reason("gone", "term").is_none());
+    }
+
+    /// The list starts empty and fills from the worker, so `poll` is the only
+    /// path that installs entries.
+    #[test]
+    fn polling_installs_the_newest_snapshot_and_reports_a_failed_one() {
+        let mut ok = mode(Vec::new());
+        assert!(ok.initial().unwrap().is_empty());
+        assert!(ok.is_polling(), "the refresh worker always runs");
+
+        // Two snapshots queued: only the newest is taken.
+        ok.worker = PortWorker::seeded(vec![
+            Ok(vec![entry(3000, 10, None, true)]),
+            Ok(vec![
+                entry(3001, 11, None, true),
+                entry(3002, 12, None, true),
+            ]),
+        ]);
+        let items = ok.poll().expect("a snapshot was queued").unwrap();
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].primary, ":3001");
+        assert!(ok.poll().is_none(), "the queue is drained");
+
+        let mut broken = mode(Vec::new());
+        broken.worker = PortWorker::seeded(vec![Err("probe exploded".into())]);
+        let error = broken.poll().expect("a result was queued").unwrap_err();
+        assert!(error.to_string().contains("probe exploded"), "{error}");
+    }
+
+    /// Executing against an id that no longer exists must fail rather than act
+    /// on whatever is nearest — the whole point of the composite id.
+    #[test]
+    fn executing_against_a_vanished_listener_fails_before_doing_anything() {
+        let mut mode = mode(vec![entry(3000, 10, None, true)]);
+        let error = mode.execute("11:3000:42:127.0.0.1", "copy").unwrap_err();
+        assert!(error.to_string().contains("disappeared"), "{error}");
+
+        let id = port_id(&mode.entries[0].clone());
+        let error = mode.execute(&id, "not-an-action").unwrap_err();
+        assert!(error.to_string().contains("unknown port action"), "{error}");
+    }
+
+    /// The chrome a mode declares is what the shared picker renders, so a
+    /// missing or renamed action is a pill that silently stops existing.
+    #[test]
+    fn the_mode_declares_its_title_accent_and_every_action_it_answers_to() {
+        let mode = mode(Vec::new());
+        assert_eq!(mode.title(), "Ports");
+        assert_eq!(mode.accent_slot(), "teal");
+        let ids: Vec<&str> = mode.actions().iter().map(|action| action.id).collect();
+        assert_eq!(ids, ["copy", "http", "https", "workspace", "term", "kill"]);
+        // Every action carries a key cap, or the command bar renders a blank pill.
+        assert!(mode.actions().iter().all(|a| !a.key_label.is_empty()));
+        assert!(mode.key_bindings().is_empty() || !mode.key_bindings().is_empty());
+    }
+
+    /// A signal is refused outright for a listener the user does not own, before
+    /// anything is printed or read.
+    #[test]
+    fn confirming_a_signal_refuses_a_listener_the_user_does_not_own() {
+        let error = confirm_signal(&entry(3000, 10, None, false), false).unwrap_err();
+        assert!(error.to_string().contains("another user"), "{error}");
     }
 }

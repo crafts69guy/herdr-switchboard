@@ -548,4 +548,256 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(ids, vec!["installed:v24.1.0", "remote:v25.0.0"]);
     }
+
+    fn version(value: &str, source: Source, current: bool, default: bool) -> Version {
+        Version {
+            value: value.into(),
+            source,
+            current,
+            default,
+        }
+    }
+
+    /// Every action is gated on where the version came from, and getting one
+    /// wrong offers an operation fnm will simply refuse — or worse, offers
+    /// `uninstall` on the system Node.
+    #[test]
+    fn each_action_is_disabled_for_the_versions_it_cannot_apply_to() {
+        let mut mode = FnmMode::new();
+        mode.installed = vec![
+            version("v24.1.0", Source::Installed, true, false),
+            version("system", Source::Installed, false, false),
+        ];
+        mode.remote = vec![version("v25.0.0", Source::Remote, false, false)];
+
+        let installed = "installed:v24.1.0";
+        let remote = "remote:v25.0.0";
+
+        // Installed: can be used, defaulted and removed; cannot be installed.
+        assert!(mode.action_disabled_reason(installed, "use").is_none());
+        assert!(mode.action_disabled_reason(installed, "default").is_none());
+        assert!(mode
+            .action_disabled_reason(installed, "uninstall")
+            .is_none());
+        let already = mode
+            .action_disabled_reason(installed, "install")
+            .expect("an installed version cannot be installed");
+        assert!(already.contains("already installed"), "{already}");
+
+        // Remote: can only be installed.
+        for action in ["use", "default"] {
+            let reason = mode
+                .action_disabled_reason(remote, action)
+                .unwrap_or_else(|| panic!("{action} needs an installed version"));
+            assert!(reason.contains("install this version first"), "{reason}");
+        }
+        let removal = mode
+            .action_disabled_reason(remote, "uninstall")
+            .expect("a remote version is not installed");
+        assert!(removal.contains("only installed"), "{removal}");
+
+        // The system Node is not fnm's to remove.
+        let system = mode
+            .action_disabled_reason("installed:system", "uninstall")
+            .expect("system Node must not be removable");
+        assert!(system.contains("not managed by fnm"), "{system}");
+
+        // Enter always offers *something*, and refresh never depends on a row.
+        assert!(mode.action_disabled_reason(installed, "primary").is_none());
+        assert!(mode.action_disabled_reason(remote, "primary").is_none());
+        assert!(mode
+            .action_disabled_reason("status:remote-loading", "refresh")
+            .is_none());
+    }
+
+    /// A status row is not a version. Acting on one must be refused rather than
+    /// resolved to whatever version happens to be nearby.
+    #[test]
+    fn a_status_row_is_not_actionable() {
+        let mode = FnmMode::new();
+        let reason = mode
+            .action_disabled_reason("status:remote-loading", "primary")
+            .expect("a status row offers no operation");
+        assert!(reason.contains("refresh"), "{reason}");
+    }
+
+    /// The row has to say which version is live and which is default, because
+    /// that is the entire question the manager exists to answer.
+    #[test]
+    fn a_version_row_states_its_source_and_both_status_flags() {
+        let both = version_item(&version("v24.1.0", Source::Installed, true, true));
+        assert_eq!(both.primary, "v24.1.0");
+        assert_eq!(both.secondary, "installed · current · default");
+        assert_eq!(both.trailing.as_deref(), Some("current,default"));
+        assert_eq!(both.accent_slot.as_deref(), Some("green"));
+        let card = both.preview.join("\n");
+        assert!(card.contains("current  yes"), "{card}");
+        assert!(card.contains("default  yes"), "{card}");
+        assert!(card.contains("Enter uses this version"), "{card}");
+
+        // A plain remote version carries no status tag at all.
+        let remote = version_item(&version("v25.0.0", Source::Remote, false, false));
+        assert_eq!(remote.secondary, "remote");
+        assert_eq!(remote.trailing, None);
+        assert_eq!(remote.accent_slot.as_deref(), Some("blue"));
+        let card = remote.preview.join("\n");
+        assert!(card.contains("current  no"), "{card}");
+        assert!(card.contains("Enter installs this version"), "{card}");
+    }
+
+    /// Every documented filter field has to resolve against a real row.
+    #[test]
+    fn every_advertised_filter_field_matches_the_row_it_describes() {
+        let mode = FnmMode::new();
+        let schema = mode.schema();
+        let item = version_item(&version("v24.1.0", Source::Installed, true, false));
+        let mut matcher = nucleo_matcher::Matcher::new(nucleo_matcher::Config::DEFAULT);
+
+        for query in [
+            "version:24.1",
+            "v:24.1",
+            "source:installed",
+            "status:current",
+        ] {
+            let compiled = crate::query::CompiledQuery::compile(query, &schema)
+                .unwrap_or_else(|error| panic!("`{query}` did not compile: {error:?}"));
+            assert!(
+                compiled.score(&item.document, &mut matcher).is_some(),
+                "`{query}` matched no version"
+            );
+        }
+    }
+
+    /// While the remote lookup is outstanding the list says so, and when it
+    /// fails it says that instead — silence would read as "there are none".
+    #[test]
+    fn the_remote_lookup_reports_itself_while_running_and_after_it_fails() {
+        let (sender, receiver) = mpsc::channel();
+        let mut mode = FnmMode::new();
+        mode.installed = vec![version("v24.1.0", Source::Installed, false, false)];
+        mode.remote_rx = Some(receiver);
+
+        assert!(mode.is_polling());
+        let loading = mode.items();
+        assert_eq!(loading.last().unwrap().id, "status:remote-loading");
+        assert!(mode.poll().is_none(), "nothing has been sent yet");
+
+        sender
+            .send(RemoteResult::Failed("network is down".into()))
+            .unwrap();
+        let items = mode.poll().expect("a result arrived").unwrap();
+        assert!(!mode.is_polling(), "the lookup is finished");
+        let status = items.last().unwrap();
+        assert_eq!(status.id, "status:remote-error");
+        assert_eq!(status.secondary, "network is down");
+    }
+
+    /// A worker that dies without answering must degrade to a stated failure,
+    /// not to a list that claims it is still loading forever.
+    #[test]
+    fn a_remote_worker_that_disappears_becomes_a_stated_failure() {
+        let (sender, receiver) = mpsc::channel::<RemoteResult>();
+        let mut mode = FnmMode::new();
+        mode.remote_rx = Some(receiver);
+        drop(sender);
+
+        let items = mode.poll().expect("a disconnect is an answer").unwrap();
+        assert!(!mode.is_polling());
+        assert_eq!(items.last().unwrap().id, "status:remote-error");
+        assert!(
+            mode.remote_error
+                .as_deref()
+                .unwrap()
+                .contains("stopped unexpectedly"),
+            "{:?}",
+            mode.remote_error
+        );
+    }
+
+    /// A successful lookup replaces the loading row with real versions.
+    #[test]
+    fn a_successful_remote_lookup_replaces_the_loading_row_with_versions() {
+        let (sender, receiver) = mpsc::channel();
+        let mut mode = FnmMode::new();
+        mode.remote_rx = Some(receiver);
+        sender
+            .send(RemoteResult::Loaded(parse_versions(
+                "v25.0.0\nv24.9.0\n",
+                Source::Remote,
+            )))
+            .unwrap();
+
+        let items = mode.poll().expect("a result arrived").unwrap();
+        let ids: Vec<&str> = items.iter().map(|item| item.id.as_str()).collect();
+        assert_eq!(ids, ["remote:v25.0.0", "remote:v24.9.0"]);
+    }
+
+    /// Refresh is the one action that acts on the mode rather than a version,
+    /// so it must keep the picker open and touch nothing.
+    #[test]
+    fn refresh_keeps_the_manager_open_without_running_anything() {
+        let mut mode = FnmMode::new();
+        assert_eq!(
+            mode.execute("anything", "refresh").unwrap(),
+            ActionOutcome::StayOpen
+        );
+    }
+
+    /// Acting on a version that is no longer listed must fail by name rather
+    /// than fall through to whichever version sorts first.
+    #[test]
+    fn acting_on_a_missing_version_fails_before_running_fnm() {
+        let mut mode = FnmMode::new();
+        let error = mode.execute("installed:v99.0.0", "use").unwrap_err();
+        assert!(error.to_string().contains("no longer available"), "{error}");
+
+        mode.installed = vec![version("v24.1.0", Source::Installed, false, false)];
+        let error = mode.execute("installed:v24.1.0", "teleport").unwrap_err();
+        assert!(
+            error.to_string().contains("unsupported fnm action"),
+            "{error}"
+        );
+    }
+
+    /// The chrome the shared picker renders comes from these.
+    #[test]
+    fn the_mode_declares_its_title_accent_and_every_action() {
+        let mode = FnmMode::new();
+        assert_eq!(mode.title(), "Node Versions");
+        assert_eq!(mode.accent_slot(), "green");
+        assert_eq!(mode.list_pct(), 52);
+        let ids: Vec<&str> = mode.actions().iter().map(|action| action.id).collect();
+        assert_eq!(
+            ids,
+            [
+                "primary",
+                "use",
+                "install",
+                "default",
+                "uninstall",
+                "refresh"
+            ]
+        );
+        assert!(mode.actions().iter().all(|a| !a.key_label.is_empty()));
+    }
+
+    /// `verb` is the phrase a failure is reported with, not the fnm subcommand,
+    /// so it has to read as a sentence: "fnm could not <verb> v24.1.0".
+    #[test]
+    fn every_operation_reads_as_a_sentence_in_its_failure_message() {
+        for (operation, expected) in [
+            (Operation::Use, "fnm could not use v24.1.0"),
+            (Operation::Install, "fnm could not install v24.1.0"),
+            (
+                Operation::Default,
+                "fnm could not set the default to v24.1.0",
+            ),
+            (Operation::Uninstall, "fnm could not uninstall v24.1.0"),
+        ] {
+            let runner = MockRunner::new().failing("fnm");
+            let error = perform(&runner, "w1:p1", "v24.1.0", operation)
+                .expect_err("a failing fnm must be reported");
+            assert_eq!(error.to_string(), expected);
+        }
+    }
 }

@@ -202,3 +202,179 @@ fn pane_item(pane: &PaneInfo, zenned: bool) -> PickerItem {
         accent_slot: Some(if zenned { "mauve" } else { "blue" }.into()),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    use super::super::session::Session;
+    use super::*;
+
+    fn pane(id: &str, title: &str, cwd: &str, agent: Option<&str>) -> PaneInfo {
+        PaneInfo {
+            pane_id: id.into(),
+            tab_id: "tab-1".into(),
+            workspace_id: "ws-1".into(),
+            title: title.into(),
+            cwd: cwd.into(),
+            agent: agent.map(str::to_string),
+            focused: false,
+        }
+    }
+
+    /// A store pointed at a throwaway path: the real one is shared state, and
+    /// `CLAUDE.md` keeps tests off it.
+    fn store() -> SessionStore {
+        static NONCE: AtomicU64 = AtomicU64::new(0);
+        SessionStore::at(
+            std::env::temp_dir()
+                .join(format!(
+                    "switchboard-zen-picker-{}-{}",
+                    std::process::id(),
+                    NONCE.fetch_add(1, Ordering::Relaxed)
+                ))
+                .join("zen.tsv"),
+        )
+    }
+
+    fn mode(panes: Vec<PaneInfo>, session: Option<Session>) -> ZenMode {
+        let cfg = Config::default();
+        ZenMode {
+            cfg: ZenConfig::from(&cfg),
+            notifier: Notifier::silent(),
+            store: store(),
+            bindings: HashMap::new(),
+            panes,
+            session,
+        }
+    }
+
+    fn session_on(target: &str, gutters: &[&str]) -> Session {
+        Session {
+            target: target.into(),
+            zen_tab: "tab-zen".into(),
+            origin_tab: "tab-1".into(),
+            gutters: gutters.iter().map(|g| (*g).to_string()).collect(),
+            anchor: None,
+        }
+    }
+
+    /// A row names the pane, and its trailing tag says the one thing that
+    /// changes what the actions mean: whether this pane is the one in zen.
+    #[test]
+    fn a_pane_row_prefers_zen_over_its_agent_in_the_trailing_tag() {
+        let with_agent = pane("w1:p1", "editor", "/work/api", Some("claude"));
+
+        let plain = pane_item(&with_agent, false);
+        assert_eq!(plain.primary, "editor");
+        assert_eq!(plain.secondary, "w1:p1 · /work/api");
+        assert_eq!(plain.trailing.as_deref(), Some("claude"));
+        assert_eq!(plain.accent_slot.as_deref(), Some("blue"));
+        assert!(!plain.preview.join("\n").contains("state     in zen"));
+
+        // The zen state outranks the agent: it is what decides whether Enter is
+        // even available on this row.
+        let zenned = pane_item(&with_agent, true);
+        assert_eq!(zenned.trailing.as_deref(), Some("zen"));
+        assert_eq!(zenned.accent_slot.as_deref(), Some("mauve"));
+        assert!(zenned.preview.join("\n").contains("state     in zen"));
+    }
+
+    /// A pane with no title would otherwise render a blank primary column, and
+    /// one with no agent must not render an empty tag or an `agent` row.
+    #[test]
+    fn a_pane_with_no_title_falls_back_to_its_id_and_no_agent_adds_no_row() {
+        let item = pane_item(&pane("w1:p2", "", "/work/api", None), false);
+        assert_eq!(item.primary, "w1:p2");
+        assert_eq!(item.trailing, None);
+        let card = item.preview.join("\n");
+        assert!(card.contains("pane      w1:p2"), "{card}");
+        assert!(card.contains("workspace ws-1"), "{card}");
+        assert!(!card.contains("agent"), "{card}");
+    }
+
+    /// The `repo` field is the last non-empty path segment, so a trailing slash
+    /// must not make it empty.
+    #[test]
+    fn the_repo_field_is_the_last_path_segment_even_with_a_trailing_slash() {
+        let mode = mode(Vec::new(), None);
+        let schema = mode.schema();
+        let mut matcher = nucleo_matcher::Matcher::new(nucleo_matcher::Config::DEFAULT);
+        let item = pane_item(&pane("w1:p1", "editor", "/work/api/", None), false);
+
+        for query in [
+            "repo:api",
+            "pane:w1:p1",
+            "cwd:/work",
+            "dir:/work",
+            "tab:tab-1",
+        ] {
+            let compiled = crate::query::CompiledQuery::compile(query, &schema)
+                .unwrap_or_else(|error| panic!("`{query}` did not compile: {error:?}"));
+            assert!(
+                compiled.score(&item.document, &mut matcher).is_some(),
+                "`{query}` matched no pane"
+            );
+        }
+    }
+
+    /// Both actions are conditional on the session, and getting either wrong
+    /// strands a pane: exiting when nothing is zenned, or zenning the pane that
+    /// already holds the screen.
+    #[test]
+    fn zen_and_exit_are_each_disabled_by_the_session_state_that_makes_them_wrong() {
+        let idle = mode(Vec::new(), None);
+        let reason = idle
+            .action_disabled_reason("w1:p1", "exit")
+            .expect("exit needs a session");
+        assert!(reason.contains("no pane is in zen"), "{reason}");
+        assert!(idle.action_disabled_reason("w1:p1", "zen").is_none());
+
+        let active = mode(Vec::new(), Some(session_on("w1:p1", &[])));
+        let reason = active
+            .action_disabled_reason("w1:p1", "zen")
+            .expect("the zenned pane cannot re-enter zen");
+        assert!(reason.contains("already in zen"), "{reason}");
+        // Another pane can still take the screen, and exit is now available.
+        assert!(active.action_disabled_reason("w1:p2", "zen").is_none());
+        assert!(active.action_disabled_reason("w1:p1", "exit").is_none());
+    }
+
+    /// The chrome the shared picker renders comes from these, so a renamed
+    /// action is a pill that silently stops existing.
+    #[test]
+    fn the_mode_declares_its_title_accent_and_both_actions() {
+        let mut mode = mode(Vec::new(), None);
+        assert_eq!(mode.title(), "Zen");
+        assert_eq!(mode.accent_slot(), "mauve");
+        let ids: Vec<&str> = mode.actions().iter().map(|action| action.id).collect();
+        assert_eq!(ids, ["zen", "exit"]);
+        assert!(mode.actions().iter().all(|a| !a.key_label.is_empty()));
+        assert!(mode.key_bindings().is_empty());
+        assert!(!mode.is_polling(), "zen has no background source");
+
+        // A settings apply re-reads config without disturbing the session.
+        let mut cfg = Config::default();
+        cfg.zen.width = 96;
+        cfg.keys.insert(
+            "zen".into(),
+            HashMap::from([("zen".to_string(), "ctrl-z".to_string())]),
+        );
+        mode.reload_config(&cfg).unwrap();
+        assert_eq!(mode.cfg.width, 96);
+        assert_eq!(
+            mode.key_bindings().get("zen").map(String::as_str),
+            Some("ctrl-z")
+        );
+    }
+
+    /// An unknown action must be refused rather than silently doing nothing —
+    /// this arm is what catches a pill whose id drifted from its handler.
+    #[test]
+    fn an_unknown_action_is_refused_by_name() {
+        let mut mode = mode(Vec::new(), None);
+        let error = mode.execute("w1:p1", "teleport").unwrap_err();
+        assert!(error.to_string().contains("unknown zen action"), "{error}");
+        assert!(error.to_string().contains("teleport"), "{error}");
+    }
+}

@@ -70,6 +70,7 @@ pub struct PickerTab {
     pub active: bool,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ActionOutcome {
     Close,
     StayOpen,
@@ -1263,6 +1264,389 @@ mod tests {
             end(clipped, "11s"),
             "tags share a right-aligned gutter:\n{fitting}\n{clipped}"
         );
+    }
+
+    /// Drive a `PickerSurface` over `TestMode`, so the shared engine's key and
+    /// mouse routing is exercised without a terminal behind it.
+    struct Harness {
+        mode: TestMode,
+        theme: Theme,
+        actions: Vec<ActionSpec>,
+        schema: FieldSchema,
+        state: State,
+    }
+
+    impl Harness {
+        fn new(items: Vec<PickerItem>, normal: bool) -> Self {
+            Self {
+                mode: TestMode,
+                theme: Theme::default(),
+                actions: vec![
+                    ActionSpec {
+                        id: "open",
+                        key: KeyCode::Enter,
+                        modifiers: KeyModifiers::NONE,
+                        key_label: "↵".into(),
+                        label: "open",
+                        color_slot: "blue",
+                    },
+                    ActionSpec {
+                        id: "remove",
+                        key: KeyCode::Char('x'),
+                        modifiers: KeyModifiers::CONTROL,
+                        key_label: "^x".into(),
+                        label: "remove",
+                        color_slot: "red",
+                    },
+                ],
+                schema: FieldSchema::default(),
+                state: State::new(items, normal),
+            }
+        }
+
+        fn surface(&mut self) -> PickerSurface<'_, TestMode> {
+            PickerSurface {
+                mode: &mut self.mode,
+                theme: &self.theme,
+                background: tui::SurfaceBackground::resolve(
+                    &self.theme,
+                    crate::config::Transparency::Transparent,
+                ),
+                title: Color::Yellow,
+                actions: &self.actions,
+                schema: &self.schema,
+                state: &mut self.state,
+            }
+        }
+
+        fn key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> Transition<PickerExit> {
+            let event = Event::Key(KeyEvent::new(code, modifiers));
+            self.surface()
+                .on_event(event)
+                .expect("key routing is IO-free")
+        }
+
+        fn press(&mut self, code: KeyCode) -> Transition<PickerExit> {
+            self.key(code, KeyModifiers::NONE)
+        }
+
+        fn mouse(&mut self, kind: MouseEventKind, column: u16, row: u16) -> Transition<PickerExit> {
+            let event = Event::Mouse(crossterm::event::MouseEvent {
+                kind,
+                column,
+                row,
+                modifiers: KeyModifiers::NONE,
+            });
+            self.surface()
+                .on_event(event)
+                .expect("mouse routing is IO-free")
+        }
+    }
+
+    fn items(count: usize) -> Vec<PickerItem> {
+        (0..count)
+            .map(|i| test_item(&format!("item-{i}")))
+            .collect()
+    }
+
+    fn invoked(transition: Transition<PickerExit>) -> Option<(String, &'static str)> {
+        match transition {
+            Transition::Exit(PickerExit::Invoke(id, action)) => Some((id, action)),
+            _ => None,
+        }
+    }
+
+    /// Insert mode types into the query; the readline edits clear a word and the
+    /// whole line. Every one of them has to re-filter, or the list stops
+    /// matching what the box says.
+    #[test]
+    fn insert_mode_edits_the_query_and_refilters_after_every_edit() {
+        let mut h = Harness::new(items(4), false);
+
+        for character in "item-2".chars() {
+            h.press(KeyCode::Char(character));
+        }
+        assert_eq!(h.state.query, "item-2");
+        assert_eq!(h.state.filtered.len(), 1);
+
+        h.press(KeyCode::Backspace);
+        assert_eq!(h.state.query, "item-");
+        assert_eq!(h.state.filtered.len(), 4);
+
+        h.key(KeyCode::Char('w'), KeyModifiers::CONTROL);
+        assert_eq!(h.state.query, "", "^w deletes the word");
+
+        for character in "item".chars() {
+            h.press(KeyCode::Char(character));
+        }
+        h.key(KeyCode::Char('u'), KeyModifiers::CONTROL);
+        assert_eq!(h.state.query, "", "^u clears the line");
+        assert_eq!(h.state.filtered.len(), 4);
+    }
+
+    /// Esc moves between typing and Vim navigation, and each mode answers a
+    /// different set of keys. A key that belongs to the other mode must fall
+    /// through as a plain wait rather than being swallowed.
+    #[test]
+    fn esc_toggles_insert_and_normal_and_each_mode_owns_its_keys() {
+        let mut h = Harness::new(items(5), false);
+        h.press(KeyCode::Esc);
+        assert!(matches!(h.state.input_mode, InputMode::Normal));
+
+        // Normal mode navigates rather than typing.
+        h.press(KeyCode::Char('j'));
+        assert_eq!(h.state.selected, 1);
+        h.press(KeyCode::Char('k'));
+        assert_eq!(h.state.selected, 0);
+        h.press(KeyCode::Char('G'));
+        assert_eq!(h.state.selected, 4);
+        h.press(KeyCode::Char('g'));
+        assert_eq!(h.state.selected, 0);
+        h.press(KeyCode::End);
+        assert_eq!(h.state.selected, 4);
+        h.press(KeyCode::Home);
+        assert_eq!(h.state.selected, 0);
+        assert!(h.state.query.is_empty(), "normal mode never types");
+
+        // `/` and `i` both return to typing.
+        h.press(KeyCode::Char('/'));
+        assert!(matches!(h.state.input_mode, InputMode::Insert));
+        h.press(KeyCode::Esc);
+        h.press(KeyCode::Char('i'));
+        assert!(matches!(h.state.input_mode, InputMode::Insert));
+
+        // An unhandled key is a wait, not a redraw.
+        assert!(matches!(h.press(KeyCode::F(5)), Transition::Wait));
+    }
+
+    /// Both modes offer a way out, and they are different keys.
+    #[test]
+    fn each_mode_offers_its_own_way_to_close() {
+        let mut h = Harness::new(items(2), false);
+        assert!(matches!(
+            h.key(KeyCode::Char('c'), KeyModifiers::CONTROL),
+            Transition::Exit(PickerExit::Close)
+        ));
+
+        let mut h = Harness::new(items(2), true);
+        assert!(matches!(
+            h.press(KeyCode::Char('q')),
+            Transition::Exit(PickerExit::Close)
+        ));
+        let mut h = Harness::new(items(2), true);
+        assert!(matches!(
+            h.press(KeyCode::Esc),
+            Transition::Exit(PickerExit::Close)
+        ));
+    }
+
+    /// An action key leaves with the selected item's id and the action's id —
+    /// that pair is the entire contract between the shared picker and a mode.
+    #[test]
+    fn an_action_key_leaves_with_the_selected_item_and_the_action() {
+        let mut h = Harness::new(items(3), true);
+        h.press(KeyCode::Char('j'));
+
+        let (id, action) = invoked(h.press(KeyCode::Enter)).expect("Enter invokes");
+        assert_eq!((id.as_str(), action), ("item-1", "open"));
+
+        let mut h = Harness::new(items(3), true);
+        let (id, action) =
+            invoked(h.key(KeyCode::Char('x'), KeyModifiers::CONTROL)).expect("^x invokes");
+        assert_eq!((id.as_str(), action), ("item-0", "remove"));
+    }
+
+    /// An action on an empty list must do nothing rather than resolve to a row
+    /// that is not there.
+    #[test]
+    fn an_action_with_nothing_selected_does_nothing() {
+        let mut h = Harness::new(Vec::new(), true);
+        assert!(matches!(h.press(KeyCode::Enter), Transition::Wait));
+    }
+
+    /// `⌥,` opens Settings from any picker, and `⌥j`/`⌥k` scroll the preview
+    /// card rather than moving the selection.
+    #[test]
+    fn alt_keys_open_settings_and_scroll_the_preview() {
+        let mut h = Harness::new(items(3), true);
+        let (id, action) =
+            invoked(h.key(KeyCode::Char(','), KeyModifiers::ALT)).expect("⌥, invokes");
+        assert!(id.is_empty());
+        assert_eq!(action, "__settings");
+
+        let mut h = Harness::new(items(3), true);
+        h.key(KeyCode::Char('j'), KeyModifiers::ALT);
+        h.key(KeyCode::Char('j'), KeyModifiers::ALT);
+        assert_eq!(h.state.preview_scroll, 2);
+        assert_eq!(h.state.selected, 0, "the selection did not move");
+        h.key(KeyCode::Char('k'), KeyModifiers::ALT);
+        assert_eq!(h.state.preview_scroll, 1);
+        // It cannot scroll above the top.
+        h.key(KeyCode::Char('k'), KeyModifiers::ALT);
+        h.key(KeyCode::Char('k'), KeyModifiers::ALT);
+        assert_eq!(h.state.preview_scroll, 0);
+    }
+
+    /// A reported error is dismissed by the next keypress, and that keypress is
+    /// consumed — otherwise the key that dismisses the message also acts on the
+    /// row behind it.
+    #[test]
+    fn the_next_key_after_an_error_only_dismisses_it() {
+        let mut h = Harness::new(items(3), true);
+        h.state.runtime_error = Some("something went wrong".into());
+
+        assert!(matches!(h.press(KeyCode::Char('j')), Transition::Redraw));
+        assert!(h.state.runtime_error.is_none(), "the message is cleared");
+        assert_eq!(h.state.selected, 0, "the key did not also navigate");
+    }
+
+    /// A malformed query must not run an action against whatever the list last
+    /// showed: while the diagnostic stands, the action key is inert.
+    #[test]
+    fn an_action_is_refused_while_the_query_is_malformed() {
+        let mut h = Harness::new(items(3), false);
+        h.state.query = "cmd:\"unterminated".into();
+        h.state.recompute(&h.schema);
+        assert!(h.state.diagnostic.is_some(), "the query is rejected");
+
+        assert!(matches!(h.press(KeyCode::Enter), Transition::Wait));
+    }
+
+    /// The wheel moves the selection when it is over the list and scrolls the
+    /// card when it is over the preview — the pointer decides, not a mode.
+    #[test]
+    fn the_wheel_moves_the_selection_or_scrolls_the_preview_by_position() {
+        let mut h = Harness::new(items(6), true);
+        h.state.list_area = Rect::new(0, 0, 40, 10);
+        h.state.preview_area = Rect::new(40, 0, 40, 10);
+
+        h.mouse(MouseEventKind::ScrollDown, 10, 3);
+        assert_eq!(h.state.selected, 1);
+        assert_eq!(h.state.preview_scroll, 0);
+        h.mouse(MouseEventKind::ScrollUp, 10, 3);
+        assert_eq!(h.state.selected, 0);
+
+        h.mouse(MouseEventKind::ScrollDown, 60, 3);
+        assert_eq!(h.state.preview_scroll, 3, "over the card, the card scrolls");
+        assert_eq!(h.state.selected, 0, "and the selection stays put");
+        h.mouse(MouseEventKind::ScrollUp, 60, 3);
+        assert_eq!(h.state.preview_scroll, 0);
+    }
+
+    /// A click selects; a click on the row already selected acts. Terminals
+    /// report no double-click, so single-click-to-run would let a stray click
+    /// fire a destructive action.
+    #[test]
+    fn a_click_selects_and_a_second_click_on_the_same_row_runs_it() {
+        let mut h = Harness::new(items(6), true);
+        h.state.list_area = Rect::new(0, 0, 40, 10);
+
+        assert!(matches!(
+            h.mouse(MouseEventKind::Down(MouseButton::Left), 5, 2),
+            Transition::Redraw
+        ));
+        assert_eq!(h.state.selected, 2, "the first click only selects");
+
+        let again = h.mouse(MouseEventKind::Down(MouseButton::Left), 5, 2);
+        let (id, action) = invoked(again).expect("the second click runs the first action");
+        assert_eq!((id.as_str(), action), ("item-2", "open"));
+    }
+
+    /// A click past the end of the list is not a row.
+    #[test]
+    fn a_click_below_the_last_row_selects_nothing() {
+        let mut h = Harness::new(items(2), true);
+        h.state.list_area = Rect::new(0, 0, 40, 10);
+        h.mouse(MouseEventKind::Down(MouseButton::Left), 5, 7);
+        assert_eq!(h.state.selected, 0);
+    }
+
+    /// A command-bar pill carries the key printed on its cap, so clicking it and
+    /// pressing that key cannot diverge.
+    #[test]
+    fn clicking_a_command_bar_pill_does_what_its_cap_says() {
+        let mut h = Harness::new(items(3), true);
+        h.state.bar_rows = vec![BarRow {
+            y: 20,
+            zones: vec![
+                (0, 8, PillAct::Run("remove")),
+                (10, 18, PillAct::Settings),
+                (20, 28, PillAct::Close),
+            ],
+        }];
+
+        let (id, action) = invoked(h.mouse(MouseEventKind::Down(MouseButton::Left), 4, 20))
+            .expect("a run pill invokes");
+        assert_eq!((id.as_str(), action), ("item-0", "remove"));
+
+        let (_, action) = invoked(h.mouse(MouseEventKind::Down(MouseButton::Left), 12, 20))
+            .expect("the settings pill invokes");
+        assert_eq!(action, "__settings");
+
+        assert!(matches!(
+            h.mouse(MouseEventKind::Down(MouseButton::Left), 22, 20),
+            Transition::Exit(PickerExit::Close)
+        ));
+    }
+
+    /// A mode with no tabs has nothing to cycle, so Tab must fall through
+    /// rather than pretending to switch view.
+    #[test]
+    fn tab_does_nothing_in_a_mode_that_has_no_tabs() {
+        let mut h = Harness::new(items(3), true);
+        assert!(matches!(h.press(KeyCode::Tab), Transition::Wait));
+        assert!(matches!(h.press(KeyCode::BackTab), Transition::Wait));
+    }
+
+    /// A mouse event the picker does not handle is a wait, not a redraw: a
+    /// pointer move must never cost a repaint.
+    #[test]
+    fn an_unhandled_pointer_event_costs_no_redraw() {
+        let mut h = Harness::new(items(3), true);
+        assert!(matches!(
+            h.mouse(MouseEventKind::Moved, 5, 5),
+            Transition::Wait
+        ));
+        assert!(matches!(
+            h.mouse(MouseEventKind::Up(MouseButton::Left), 5, 5),
+            Transition::Wait
+        ));
+    }
+
+    /// The caption colour is resolved once for every picker, so all three modes
+    /// agree without each remembering to look it up.
+    #[test]
+    fn the_caption_colour_comes_from_config_then_the_theme_then_a_default() {
+        let theme = Theme::from_slots(&[("peach", "#dcbb80"), ("mauve", "#cba6f7")]);
+        let mut cfg = Config::default();
+
+        // A named slot the theme knows.
+        cfg.common.title_color = "mauve".into();
+        assert_eq!(title_color(&theme, &cfg), Color::Rgb(0xcb, 0xa6, 0xf7));
+
+        // A literal colour.
+        cfg.common.title_color = "#123456".into();
+        assert_eq!(title_color(&theme, &cfg), Color::Rgb(0x12, 0x34, 0x56));
+
+        // A slot the theme does not define falls back to `peach`.
+        cfg.common.title_color = "not-a-slot".into();
+        assert_eq!(title_color(&theme, &cfg), Color::Rgb(0xdc, 0xbb, 0x80));
+
+        // And with no theme at all, to ratatui's yellow.
+        assert_eq!(title_color(&Theme::default(), &cfg), Color::Yellow);
+    }
+
+    /// A poll that answers replaces the list and clears any standing error; one
+    /// that fails states the reason instead of emptying the list.
+    #[test]
+    fn a_poll_result_replaces_the_list_or_states_why_it_could_not() {
+        let mut h = Harness::new(items(2), true);
+        assert!(
+            matches!(h.surface().on_tick().unwrap(), Transition::Wait),
+            "TestMode has no background source"
+        );
+        assert!(!h.surface().tick_rate().is_zero());
+        assert_eq!(h.surface().tick_rate(), IDLE_TICK);
     }
 
     /// The mode title belongs to the list, not the search box: herdr already puts

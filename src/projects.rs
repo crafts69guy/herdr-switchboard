@@ -1692,6 +1692,339 @@ mod tests {
         }
     }
 
+    /// A surface wrapping `app`, with no background work in flight.
+    fn surface(app: &mut App) -> ProjectsSurface<'_> {
+        ProjectsSurface {
+            app,
+            origin_pane: "w1:p1".into(),
+            // Never the real notifier: a delivery test would otherwise shell out
+            // to `herdr notification show` on the machine running the suite.
+            notifier: Notifier::silent(),
+            effect: None,
+            catalog_worker: CatalogWorker::spawn(),
+            catalog_generation: 0,
+            catalog_intent: CatalogIntent::Initial,
+            catalog_pending: false,
+            first_loading_drawn: false,
+            first_list_drawn: false,
+            key_at: None,
+            placeholder_frame: None,
+        }
+    }
+
+    fn ready_app() -> App {
+        let mut app = App::new(sample(), Theme::default(), Config::default(), ".".into());
+        app.catalog = CatalogState::Ready;
+        app
+    }
+
+    /// The host is only allowed to spin fast while something is actually in
+    /// flight; the rest of the time it must wait on input. A tick rate stuck at
+    /// the fast value wakes the process sixty times a second forever.
+    #[test]
+    fn the_tick_rate_is_fast_only_while_work_is_outstanding() {
+        let mut app = ready_app();
+        let mut surface = surface(&mut app);
+        assert_eq!(surface.tick_rate(), IDLE_TICK);
+
+        surface.catalog_pending = true;
+        assert_eq!(surface.tick_rate(), PREVIEW_TICK);
+        surface.catalog_pending = false;
+
+        let (_sender, receiver) = mpsc::channel();
+        surface.effect = Some(receiver);
+        assert_eq!(surface.tick_rate(), PREVIEW_TICK);
+        surface.effect = None;
+        assert_eq!(surface.tick_rate(), IDLE_TICK);
+    }
+
+    /// A completion tagged with an older generation is a result for a
+    /// configuration the user has already replaced. Applying it would put the
+    /// previous Settings snapshot back on screen.
+    #[test]
+    fn a_stale_catalogue_completion_is_ignored() {
+        let mut app = ready_app();
+        let mut surface = surface(&mut app);
+        surface.catalog_generation = 7;
+        surface.catalog_pending = true;
+
+        let transition = surface.accept_catalog_completion(effect::CatalogCompletion {
+            generation: 6,
+            entries: vec![entry(Kind::Repo, "gh/stale", "stale")],
+        });
+
+        assert!(
+            transition.is_none(),
+            "a stale generation must not be applied"
+        );
+        assert!(
+            surface.catalog_pending,
+            "the live request is still outstanding"
+        );
+        assert_eq!(surface.app.picker.entries.len(), sample().len());
+    }
+
+    /// An empty *first* catalogue means there is nothing to switch to, so the
+    /// picker hands off to the clone flow instead of showing an empty list. It
+    /// leaves through the typed outcome so the terminal is restored first.
+    #[test]
+    fn an_empty_initial_catalogue_hands_off_to_clone() {
+        let mut app = App::new(Vec::new(), Theme::default(), Config::default(), ".".into());
+        app.catalog = CatalogState::Loading;
+        let mut surface = surface(&mut app);
+        surface.catalog_pending = true;
+
+        let transition = surface
+            .accept_catalog_completion(effect::CatalogCompletion {
+                generation: 0,
+                entries: Vec::new(),
+            })
+            .expect("a live generation is applied");
+
+        assert!(matches!(
+            transition,
+            SurfaceTransition::Exit(Some(ProjectOutcome::Accept(None, Accept::Clone)))
+        ));
+        assert!(!surface.catalog_pending);
+    }
+
+    /// An empty *refresh* is an ordinary answer — the user narrowed the sources
+    /// until nothing matched — and must not hand the pane to the clone flow.
+    #[test]
+    fn an_empty_refresh_stays_in_the_picker() {
+        let mut app = ready_app();
+        let mut surface = surface(&mut app);
+        surface.catalog_pending = true;
+        surface.catalog_intent = CatalogIntent::Refresh {
+            requested_group: GroupFilter::All,
+            preserve_selection: false,
+        };
+
+        let transition = surface
+            .accept_catalog_completion(effect::CatalogCompletion {
+                generation: 0,
+                entries: Vec::new(),
+            })
+            .expect("a live generation is applied");
+
+        assert!(matches!(transition, SurfaceTransition::Redraw));
+        assert!(surface.app.picker.entries.is_empty());
+    }
+
+    /// Starting a load bumps the generation and states which kind of load it is,
+    /// because those two facts are what let a stale answer be recognised.
+    #[test]
+    fn starting_a_catalogue_load_bumps_the_generation_and_states_its_intent() {
+        let mut app = ready_app();
+        let mut surface = surface(&mut app);
+
+        surface.start_catalog(CatalogIntent::Initial);
+        assert_eq!(surface.catalog_generation, 1);
+        assert!(surface.catalog_pending);
+        assert_eq!(surface.app.catalog, CatalogState::Loading);
+
+        // A refresh keeps the old rows visible under `Refreshing…` instead of
+        // blanking the list the user is looking at.
+        surface.start_catalog(CatalogIntent::Refresh {
+            requested_group: GroupFilter::All,
+            preserve_selection: true,
+        });
+        assert_eq!(surface.catalog_generation, 2);
+        assert_eq!(surface.app.catalog, CatalogState::Refreshing);
+        assert!(!surface.app.picker.entries.is_empty());
+    }
+
+    /// A discovery worker that dies has to say so. Left pending, the picker
+    /// would sit on `Standing by…` forever accepting nothing but Close.
+    #[test]
+    fn a_dead_catalogue_worker_becomes_a_stated_failure() {
+        let mut app = App::new(Vec::new(), Theme::default(), Config::default(), ".".into());
+        app.catalog = CatalogState::Loading;
+        let mut surface = surface(&mut app);
+        surface.catalog_pending = true;
+        // Dropping the worker disconnects the completion channel.
+        surface.catalog_worker = CatalogWorker::disconnected();
+
+        let transition = surface.on_tick().unwrap();
+
+        assert!(matches!(transition, SurfaceTransition::Redraw));
+        assert!(!surface.catalog_pending);
+        match &surface.app.catalog {
+            CatalogState::Failed(message) => {
+                assert!(message.contains("stopped unexpectedly"), "{message}")
+            }
+            other => panic!("expected a stated failure, got {other:?}"),
+        }
+    }
+
+    /// Nothing outstanding is a plain wait: no redraw, no state change.
+    #[test]
+    fn an_idle_tick_changes_nothing() {
+        let mut app = ready_app();
+        let mut surface = surface(&mut app);
+        assert!(matches!(
+            surface.on_tick().unwrap(),
+            SurfaceTransition::Wait
+        ));
+    }
+
+    /// Each background effect has one landing. Getting any of them wrong leaves
+    /// the overlay claiming work is still in flight.
+    #[test]
+    fn every_background_effect_lands_somewhere_and_clears_the_receiver() {
+        // A failed target discovery shows the reason and drops the spinner.
+        let mut app = ready_app();
+        let mut surface = surface(&mut app);
+        let (sender, receiver) = mpsc::channel();
+        sender
+            .send(ProjectEffect::Targets(Err("no agents".into())))
+            .unwrap();
+        surface.effect = Some(receiver);
+        assert!(matches!(
+            surface.on_tick().unwrap(),
+            SurfaceTransition::Redraw
+        ));
+        assert!(surface.effect.is_none(), "the effect is consumed");
+        assert_eq!(surface.app.handoff.error.as_deref(), Some("no agents"));
+        assert!(surface.app.handoff.status.is_none());
+
+        // A failed delivery stays open so it can be retried.
+        let (sender, receiver) = mpsc::channel();
+        sender
+            .send(ProjectEffect::Delivered(Err("agent is busy".into())))
+            .unwrap();
+        surface.effect = Some(receiver);
+        assert!(matches!(
+            surface.on_tick().unwrap(),
+            SurfaceTransition::Redraw
+        ));
+
+        // A successful delivery closes the pane.
+        let (sender, receiver) = mpsc::channel();
+        sender.send(ProjectEffect::Delivered(Ok(()))).unwrap();
+        surface.effect = Some(receiver);
+        assert!(matches!(
+            surface.on_tick().unwrap(),
+            SurfaceTransition::Exit(None)
+        ));
+    }
+
+    /// A star write returns a whole snapshot, and the reducer only changes the
+    /// marker once that snapshot is back.
+    #[test]
+    fn a_star_effect_installs_the_snapshot_it_returns() {
+        let mut app = ready_app();
+        let starred = app.picker.entries[0].clone();
+        let mut surface = surface(&mut app);
+        assert!(!surface.app.picker.is_starred(&starred));
+
+        let (sender, receiver) = mpsc::channel();
+        sender
+            .send(ProjectEffect::Stars(Ok(stars::Stars::memory(
+                std::slice::from_ref(&starred),
+            ))))
+            .unwrap();
+        surface.effect = Some(receiver);
+
+        assert!(matches!(
+            surface.on_tick().unwrap(),
+            SurfaceTransition::Redraw
+        ));
+        assert!(surface.app.picker.is_starred(&starred));
+        assert_eq!(surface.app.picker.group_count(GroupFilter::Starred), 1);
+    }
+
+    /// A background thread that dies without answering must not leave the
+    /// handoff overlay spinning.
+    #[test]
+    fn a_dead_effect_thread_is_reported_rather_than_awaited_forever() {
+        let mut app = ready_app();
+        let mut surface = surface(&mut app);
+        let (sender, receiver) = mpsc::channel::<ProjectEffect>();
+        surface.effect = Some(receiver);
+        drop(sender);
+
+        assert!(matches!(
+            surface.on_tick().unwrap(),
+            SurfaceTransition::Redraw
+        ));
+        assert!(surface.effect.is_none());
+        assert!(surface
+            .app
+            .feedback
+            .as_deref()
+            .unwrap()
+            .contains("stopped unexpectedly"));
+    }
+
+    /// An effect channel with nothing in it yet is a plain wait.
+    #[test]
+    fn an_effect_that_has_not_answered_yet_is_a_wait() {
+        let mut app = ready_app();
+        let mut surface = surface(&mut app);
+        let (_sender, receiver) = mpsc::channel::<ProjectEffect>();
+        surface.effect = Some(receiver);
+        assert!(matches!(
+            surface.on_tick().unwrap(),
+            SurfaceTransition::Wait
+        ));
+        assert!(surface.effect.is_some(), "the effect is still outstanding");
+    }
+
+    /// The host draws, then asks the surface to follow up. A preview requested
+    /// before the frame would be built against last frame's width.
+    #[test]
+    fn the_surface_draws_and_only_then_requests_a_preview() {
+        let mut app = ready_app();
+        app.preview.enabled = false; // no worker thread or subprocess in a test
+        let mut surface = surface(&mut app);
+        surface.terminal_claimed();
+
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(140, 24)).unwrap();
+        terminal.draw(|frame| surface.draw(frame)).unwrap();
+        // The preview pane's geometry only exists after a frame has been laid
+        // out, which is the whole reason `after_draw` is a separate step.
+        assert!(
+            surface.app.preview.area.is_none(),
+            "preview is disabled here"
+        );
+        surface.after_draw().unwrap();
+
+        let screen: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(
+            screen.contains("Navigator"),
+            "the surface drew its own chrome"
+        );
+        assert!(
+            screen.contains("Context"),
+            "a wide frame draws the context rail"
+        );
+        // The list zones the click router reads are published by that draw.
+        assert!(surface.app.zones.list_area.width > 0);
+        assert!(!surface.app.zones.footer_zones.is_empty());
+    }
+
+    /// `selected_index` is what every selection-dependent action resolves
+    /// through, so an empty list must answer `None` rather than 0.
+    #[test]
+    fn the_selected_index_is_absent_when_nothing_is_listed() {
+        let mut picker = Picker::new(sample(), SortMode::Recent, HashMap::new());
+        assert_eq!(picker.selected_index(), Some(picker.filtered[0]));
+
+        picker.query = "nothing-matches-this".into();
+        picker.recompute();
+        assert!(picker.filtered.is_empty());
+        assert_eq!(picker.selected_index(), None);
+        assert!(picker.selected_entry().is_none());
+    }
+
     /// The same render as [`rendered`], handing back the cells themselves.
     fn rendered_buffer(app: &mut App, w: u16, h: u16) -> ratatui::buffer::Buffer {
         let mut terminal =

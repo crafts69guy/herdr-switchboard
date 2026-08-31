@@ -84,6 +84,18 @@ impl CatalogWorker {
         }
     }
 
+    /// A worker whose thread is already gone.
+    ///
+    /// The surface has to notice that and say so, because a discovery that
+    /// stopped without answering leaves the picker on `Standing by…` accepting
+    /// nothing but Close — the one failure a user cannot tell from slowness.
+    #[cfg(test)]
+    pub(super) fn disconnected() -> Self {
+        let (jobs, _) = mpsc::channel();
+        let (_, done) = mpsc::channel();
+        Self { jobs, done }
+    }
+
     pub fn request(&self, generation: u64, config: Config, theme: Theme) -> bool {
         self.jobs
             .send(CatalogRequest {
