@@ -28,10 +28,14 @@ pub(super) fn set(slug: &str, archived: bool) -> Result<()> {
 }
 
 fn load_from(path: &Path) -> BTreeSet<String> {
-    let Ok(text) = fs::read_to_string(path) else {
+    let Ok(bytes) = fs::read(path) else {
         return BTreeSet::new();
     };
-    serde_json::from_str::<Vec<String>>(&text)
+    parse(&bytes)
+}
+
+fn parse(bytes: &[u8]) -> BTreeSet<String> {
+    serde_json::from_slice::<Vec<String>>(bytes)
         .ok()
         .unwrap_or_default()
         .into_iter()
@@ -39,38 +43,45 @@ fn load_from(path: &Path) -> BTreeSet<String> {
         .collect()
 }
 
+/// Add or remove one slug as a single locked read-modify-write.
+///
+/// Archiving used to load the set, change it, and write the whole file back as
+/// two unsynchronized steps, on one fixed `.tmp` sibling. Two Git panes
+/// archiving different reviews at the same moment would each write their own
+/// idea of the whole set, and the later one erased the earlier one's change.
+/// [`crate::state::update_private`] holds the lock across the entire
+/// transaction, which is the same guarantee Projects stars already had.
 fn set_at(path: &Path, slug: &str, archived: bool) -> Result<()> {
-    let mut slugs = load_from(path);
-    if archived {
-        slugs.insert(slug.to_string());
-    } else {
-        slugs.remove(slug);
-    }
-
-    if let Some(dir) = path.parent() {
-        fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
-    }
-    let bytes = serde_json::to_vec_pretty(&slugs).context("serialize archived reviews")?;
-    let temporary = path.with_extension("tmp");
-    fs::write(&temporary, bytes).with_context(|| format!("write {}", temporary.display()))?;
-    fs::rename(&temporary, path).with_context(|| format!("replace {}", path.display()))?;
-    Ok(())
+    crate::state::update_private(path, |current| {
+        let mut slugs = current.map(parse).unwrap_or_default();
+        if archived {
+            slugs.insert(slug.to_string());
+        } else {
+            slugs.remove(slug);
+        }
+        let bytes = serde_json::to_vec_pretty(&slugs).context("serialize archived reviews")?;
+        Ok((bytes, ()))
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::sync::atomic::{AtomicU64, Ordering};
 
+    /// A path no other test can collide with.
+    ///
+    /// The nanosecond clock alone was not enough: tests run in parallel threads
+    /// and macOS does not hand out a distinct nanosecond per call, so two
+    /// fixtures could land on one directory — and one of these tests puts a
+    /// *directory* where another expects a file.
     fn test_path(name: &str) -> std::path::PathBuf {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("test clock is after epoch")
-            .as_nanos();
+        static NONCE: AtomicU64 = AtomicU64::new(0);
         std::env::temp_dir()
             .join(format!(
-                "switchboard-review-archive-{}-{nonce}",
-                std::process::id()
+                "switchboard-review-archive-{}-{}",
+                std::process::id(),
+                NONCE.fetch_add(1, Ordering::Relaxed)
             ))
             .join(name)
     }
@@ -83,6 +94,50 @@ mod tests {
         fs::create_dir_all(path.parent().expect("test path has a parent")).unwrap();
         fs::write(&path, "not json").unwrap();
         assert!(load_from(&path).is_empty());
+        fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    /// Archiving used to be a load and a later write with nothing holding the
+    /// two together, so two Git panes archiving different reviews at the same
+    /// moment each wrote their own idea of the whole set and the later one
+    /// erased the earlier one's change.
+    #[test]
+    fn concurrent_panes_keep_every_completed_archive() {
+        use std::sync::{Arc, Barrier};
+
+        let path = test_path("archive.json");
+        let slugs: Vec<String> = (0..8).map(|index| format!("session-{index}")).collect();
+        let ready = Arc::new(Barrier::new(slugs.len() + 1));
+
+        let workers: Vec<_> = slugs
+            .iter()
+            .cloned()
+            .map(|slug| {
+                let path = path.clone();
+                let ready = Arc::clone(&ready);
+                std::thread::spawn(move || {
+                    ready.wait();
+                    set_at(&path, &slug, true).unwrap();
+                })
+            })
+            .collect();
+
+        ready.wait();
+        for worker in workers {
+            worker.join().unwrap();
+        }
+
+        let archived = load_from(&path);
+        for slug in &slugs {
+            assert!(archived.contains(slug), "{slug} was lost: {archived:?}");
+        }
+        assert!(fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .all(|entry| !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .ends_with(".tmp")));
         fs::remove_dir_all(path.parent().unwrap()).ok();
     }
 

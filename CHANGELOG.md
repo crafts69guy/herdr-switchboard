@@ -7,6 +7,16 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Concurrent panes no longer lose recency or archive state.** Recording an open and archiving a
+  saved review each read their file, changed it, and wrote the whole thing back as separate steps,
+  so two panes acting at the same moment silently erased each other's change. Both are now a single
+  locked transaction, as starring already was. Every durable file also gets a unique temporary
+  sibling instead of one fixed name shared by every writer, which could leave a truncated file
+  behind. Settings and zen chrome gain the same atomic replace while keeping their existing
+  permissions.
+
 ### Changed
 
 - **Projects and the Commands, Ports, Agents and Menu pickers scroll and filter faster.** Every

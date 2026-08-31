@@ -37,13 +37,38 @@ pub fn state_file(name: &str) -> Option<PathBuf> {
     Some(state_dir()?.join(name))
 }
 
+/// Who may read the file this module leaves behind.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Access {
+    /// Owner-only from creation. Correct for everything under [`state_dir`],
+    /// which is this plugin's private bookkeeping.
+    Private,
+    /// Whatever the replaced file already carried, or the process default when
+    /// there is nothing to replace. Correct for a *configuration* file, which
+    /// belongs to the user rather than to this plugin: gaining atomicity and a
+    /// lock must not also silently re-permission a file they own.
+    Inherited,
+}
+
 /// Replace one state file atomically with bytes that are private from creation.
 ///
 /// A persistent sibling lock serializes writers across Switchboard processes;
 /// a unique sibling tempfile keeps each replacement isolated until rename.
 pub fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
     let _lock = acquire_private_lock(path)?;
-    replace_private(path, bytes)
+    replace(path, bytes, Access::Private)
+}
+
+/// Replace one file atomically, keeping the permissions it already had.
+///
+/// The same lock and unique tempfile as [`write_private`], for the files that
+/// are *not* this plugin's private state: its own `config.toml` and — for zen
+/// chrome — herdr's. They need the atomicity and the cross-process lock just as
+/// much, since two panes can apply settings or enter zen at the same moment, but
+/// they must keep the mode their owner gave them.
+pub fn replace_atomically(path: &Path, bytes: &[u8]) -> Result<()> {
+    let _lock = acquire_private_lock(path)?;
+    replace(path, bytes, Access::Inherited)
 }
 
 /// Serialize a private read-modify-write transaction across processes.
@@ -59,7 +84,7 @@ pub fn update_private<T>(
     let _lock = acquire_private_lock(path)?;
     let current = fs::read(path).ok();
     let (replacement, value) = update(current.as_deref())?;
-    replace_private(path, &replacement)?;
+    replace(path, &replacement, Access::Private)?;
     Ok(value)
 }
 
@@ -85,8 +110,10 @@ fn acquire_private_lock(path: &Path) -> Result<File> {
     Ok(file)
 }
 
-fn replace_private(path: &Path, bytes: &[u8]) -> Result<()> {
+fn replace(path: &Path, bytes: &[u8], access: Access) -> Result<()> {
     create_parent(path)?;
+    // Written owner-only whatever the eventual mode, so no window exists in
+    // which the half-written replacement is readable by anyone else.
     let (temporary, mut file) = create_private_temp(path)?;
     let write_result = (|| -> io::Result<()> {
         file.write_all(bytes)?;
@@ -97,11 +124,45 @@ fn replace_private(path: &Path, bytes: &[u8]) -> Result<()> {
         fs::remove_file(&temporary).ok();
         return Err(error).with_context(|| format!("write {}", temporary.display()));
     }
+    if access == Access::Inherited {
+        if let Err(error) = inherit_permissions(path, &temporary) {
+            fs::remove_file(&temporary).ok();
+            return Err(error);
+        }
+    }
     if let Err(error) = fs::rename(&temporary, path) {
         fs::remove_file(&temporary).ok();
         return Err(error).with_context(|| format!("replace {}", path.display()));
     }
     Ok(())
+}
+
+/// Give `temporary` the mode `path` already has, or the ordinary
+/// create-a-new-file mode when `path` does not exist yet.
+///
+/// A configuration file that was group- or world-readable stays that way; one
+/// the user had locked down stays locked down. Without this, gaining an atomic
+/// replace would quietly narrow the file to owner-only on its next write.
+///
+/// When there is nothing to inherit from, the target is created empty first and
+/// its mode read back. That is a deliberately roundabout way to ask "what would
+/// an ordinary create have produced here", but it is the only one that does not
+/// need the process umask — which libc will only reveal by setting it, a swap
+/// that is unsafe to perform in a threaded process. Holding the lock, and
+/// renaming over it immediately, keeps the empty file from ever being observed.
+fn inherit_permissions(path: &Path, temporary: &Path) -> Result<()> {
+    let existing = match fs::metadata(path) {
+        Ok(existing) => existing,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            File::create(path).with_context(|| format!("create {}", path.display()))?;
+            fs::metadata(path).with_context(|| format!("read mode of {}", path.display()))?
+        }
+        Err(error) => {
+            return Err(error).with_context(|| format!("read permissions of {}", path.display()));
+        }
+    };
+    fs::set_permissions(temporary, existing.permissions())
+        .with_context(|| format!("copy permissions onto {}", temporary.display()))
 }
 
 fn create_private_temp(path: &Path) -> Result<(PathBuf, File)> {
@@ -161,15 +222,19 @@ mod tests {
 
     use super::*;
 
+    /// A path no other test can collide with.
+    ///
+    /// The nanosecond clock alone was not enough: tests run in parallel threads
+    /// and macOS does not hand out a distinct nanosecond per call, so two
+    /// fixtures could land on one directory — and one of these tests puts a
+    /// *directory* where another expects a file.
     fn test_path(name: &str) -> PathBuf {
+        static NONCE: AtomicU64 = AtomicU64::new(0);
         std::env::temp_dir()
             .join(format!(
                 "switchboard-state-{}-{}",
                 std::process::id(),
-                SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .expect("test clock is after epoch")
-                    .as_nanos()
+                NONCE.fetch_add(1, Ordering::Relaxed)
             ))
             .join(name)
     }
@@ -225,5 +290,76 @@ mod tests {
             .to_string_lossy()
             .ends_with(".tmp")));
         fs::remove_dir_all(parent).ok();
+    }
+
+    /// A configuration file belongs to the user, not to this plugin. Routing it
+    /// through here buys atomicity and a lock; it must not also re-permission
+    /// the file, in either direction.
+    #[cfg(unix)]
+    #[test]
+    fn an_atomic_replace_keeps_the_permissions_the_file_already_had() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let path = test_path("config.toml");
+        create_parent(&path).unwrap();
+        for mode in [0o644, 0o600, 0o664] {
+            fs::write(&path, b"before").unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(mode)).unwrap();
+
+            replace_atomically(&path, b"after").unwrap();
+
+            assert_eq!(fs::read(&path).unwrap(), b"after");
+            assert_eq!(
+                fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                mode,
+                "an atomic replace changed the file's mode"
+            );
+        }
+        fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    /// With nothing to inherit from, a new configuration file must land the way
+    /// an ordinary create would — never left at the tempfile's owner-only mode,
+    /// which is what a state file gets and a config file must not.
+    #[cfg(unix)]
+    #[test]
+    fn a_new_configuration_file_lands_at_the_ordinary_create_mode() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let reference = test_path("reference.toml");
+        create_parent(&reference).unwrap();
+        fs::write(&reference, b"x").unwrap();
+        let expected = fs::metadata(&reference).unwrap().permissions().mode() & 0o777;
+
+        let path = reference.with_file_name("fresh.toml");
+        replace_atomically(&path, b"new").unwrap();
+
+        assert_eq!(fs::read(&path).unwrap(), b"new");
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            expected
+        );
+        fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    /// State files keep the opposite guarantee: owner-only, whatever mode the
+    /// file being replaced happened to carry.
+    #[cfg(unix)]
+    #[test]
+    fn a_private_write_narrows_a_permissive_state_file() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let path = test_path("cache.tsv");
+        create_parent(&path).unwrap();
+        fs::write(&path, b"before").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+
+        write_private(&path, b"after").unwrap();
+
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        fs::remove_dir_all(path.parent().unwrap()).ok();
     }
 }

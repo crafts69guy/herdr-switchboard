@@ -209,11 +209,14 @@ fn read_document(path: &Path) -> Result<DocumentMut> {
 
 /// Write through a temp file in the same directory, so a crash mid-write cannot
 /// leave herdr with half a config.
+///
+/// This is the one file outside the plugin anything here may write, which makes
+/// it the one that most deserves the shared machinery: `replace_atomically`
+/// serializes two zen enters against each other — they were racing on a single
+/// fixed sibling name — and preserves the mode herdr's config already has,
+/// which a state-directory writer would not.
 fn write_document(path: &Path, doc: &DocumentMut) -> Result<()> {
-    let tmp = path.with_extension("switchboard.tmp");
-    fs::write(&tmp, doc.to_string()).with_context(|| format!("write {}", tmp.display()))?;
-    fs::rename(&tmp, path).with_context(|| format!("replace {}", path.display()))?;
-    Ok(())
+    state::replace_atomically(path, doc.to_string().as_bytes())
 }
 
 /// Keep one copy of the config as it was before zen ever touched it. Best

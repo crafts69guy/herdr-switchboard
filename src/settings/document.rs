@@ -1,7 +1,7 @@
 //! Comment-preserving, namespaced settings persistence.
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 
@@ -49,13 +49,14 @@ pub(super) fn set_document_value(
     Ok(())
 }
 
-pub(super) fn write_document(path: &PathBuf, doc: toml_edit::DocumentMut) -> Result<()> {
+pub(super) fn write_document(path: &Path, doc: toml_edit::DocumentMut) -> Result<()> {
     let out = doc.to_string();
     Config::parse(&out)?;
-    let tmp = path.with_extension("tmp");
-    fs::write(&tmp, out)?;
-    fs::rename(&tmp, path)?;
-    Ok(())
+    // `replace_atomically`, not `write_private`: this is the user's own
+    // `config.toml`, so it gains the cross-process lock and the unique tempfile
+    // — two panes can apply settings at the same moment, and they were sharing
+    // one fixed `config.tmp` — without its permissions changing underneath them.
+    crate::state::replace_atomically(path, out.as_bytes())
 }
 
 pub(super) fn setting_path(key: &str) -> (&'static str, &str) {

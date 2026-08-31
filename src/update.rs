@@ -59,13 +59,10 @@ fn read_cache() -> Option<(u64, String)> {
 
 fn write_cache(latest: &str) -> Result<()> {
     let p = cache_path().ok_or_else(|| anyhow::anyhow!("no state dir"))?;
-    if let Some(dir) = p.parent() {
-        fs::create_dir_all(dir)?;
-    }
-    let tmp = p.with_extension("tmp");
-    fs::write(&tmp, format!("{}\t{}\n", now(), latest))?;
-    fs::rename(&tmp, &p)?;
-    Ok(())
+    // Through `state` rather than a hand-rolled temp-and-rename: the detached
+    // refresh child and any picker that starts one both write this path, and
+    // they were sharing a single fixed `update.tmp`.
+    crate::state::write_private(&p, format!("{}\t{}\n", now(), latest).as_bytes())
 }
 
 /// The newest version tagged on the remote.
