@@ -699,8 +699,13 @@ impl Git {
                 KeyCode::Home | KeyCode::Char('g') => self.sel = 0,
                 KeyCode::End | KeyCode::Char('G') => self.sel = self.items.len().saturating_sub(1),
                 KeyCode::Enter => return self.activate(),
-                // A mnemonic activates its row directly, wherever the cursor is.
-                KeyCode::Char(c) => {
+                // A mnemonic activates its row directly, wherever the cursor is —
+                // bare only, so a modified chord (`^a` in a sub-list) can never
+                // fall through into the row that happens to share its letter.
+                KeyCode::Char(c)
+                    if !k.modifiers.contains(KeyModifiers::CONTROL)
+                        && !k.modifiers.contains(KeyModifiers::ALT) =>
+                {
                     if let Some(i) = self.items.iter().position(|it| it.key == c) {
                         self.sel = i;
                         return self.activate();
@@ -730,7 +735,7 @@ impl Git {
                     KeyCode::Up => self.lstep(-1),
                     KeyCode::Char('n') if ctrl => self.lstep(1),
                     KeyCode::Char('p') if ctrl => self.lstep(-1),
-                    KeyCode::Char('s')
+                    KeyCode::Char('a')
                         if ctrl
                             && matches!(
                                 self.kind,
@@ -1941,6 +1946,22 @@ z|Y|pull|git pull
         assert!(g.chosen.is_none());
     }
 
+    /// `^a` sends a saved review to an agent in a sub-list, and the menu's
+    /// mnemonic for `a` opens an all-files review — a minutes-long read. The
+    /// mnemonic arm must therefore refuse a modified chord, or a stray `^a`
+    /// pressed one view too early would start that read instead of nothing.
+    #[test]
+    fn a_modified_chord_never_falls_through_to_a_menu_mnemonic() {
+        let mut g = Git::new();
+        open_default(&mut g);
+        assert_eq!(
+            g.on_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL)),
+            Step::Stay
+        );
+        assert!(g.show);
+        assert!(g.chosen.is_none());
+    }
+
     #[test]
     fn a_list_row_asks_the_caller_to_fetch_then_dispatches_a_pick() {
         let mut g = Git::new();
@@ -2004,13 +2025,13 @@ z|Y|pull|git pull
     }
 
     #[test]
-    fn ctrl_s_requests_targets_without_becoming_filter_text() {
+    fn ctrl_a_requests_targets_without_becoming_filter_text() {
         let mut g = Git::new();
         open_default(&mut g);
         saved_review(&mut g);
 
         assert_eq!(
-            g.on_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL)),
+            g.on_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL)),
             Step::LoadTargets("session-1".into())
         );
         assert!(g.query.is_empty());
@@ -2175,9 +2196,9 @@ z|Y|pull|git pull
             .bar_zones
             .iter()
             .find(|(_, _, event)| {
-                event.code == KeyCode::Char('s') && event.modifiers.contains(KeyModifiers::CONTROL)
+                event.code == KeyCode::Char('a') && event.modifiers.contains(KeyModifiers::CONTROL)
             })
-            .expect("the send pill publishes Ctrl-S");
+            .expect("the send pill publishes Ctrl-A");
         assert_eq!(
             g.on_click(Position::new(start + 1, g.zones.bar_row)),
             Step::LoadTargets("session-1".into())

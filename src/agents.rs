@@ -120,8 +120,8 @@ impl PickerMode for AgentsMode {
             ActionSpec {
                 id: "workspace",
                 key: KeyCode::Char('w'),
-                modifiers: KeyModifiers::ALT,
-                key_label: "⌥w".into(),
+                modifiers: KeyModifiers::CONTROL,
+                key_label: "^w".into(),
                 label: "workspace",
                 color_slot: "mauve",
             },
@@ -712,6 +712,7 @@ mod tests {
         assert_eq!(mode.title(), "AI Integrations");
         assert_eq!(mode.accent_slot(), "mauve");
         assert!(mode.actions().iter().all(|a| !a.key_label.is_empty()));
+        crate::picker::assert_follows_prefix_concept("agents", &mode.actions());
     }
 
     /// An unknown target, or an integration that is gone, must be refused by

@@ -24,8 +24,8 @@ input surface remains responsive while those commands answer.
 | `a` | Review all files | `tuicr -A`. Over `git.all_files_warn` tracked files (default 1,500) the menu names the count and waits for Enter. |
 | `x` | Conflicts | Pick an unmerged file, then run `tuicr --file <path>`. |
 | `p` | Review pull request | Pick from `gh pr list`, then run `tuicr pr <number>`. |
-| `r` | Saved review comments | Pick an unarchived session; `enter` reads it, `ctrl-s` sends it to an agent, and `ctrl-d` archives it. |
-| `R` | Archived reviews | Pick an archived session; `enter` and `ctrl-s` still work, while `ctrl-d` restores it. |
+| `r` | Saved review comments | Pick an unarchived session; `enter` reads it, `ctrl-a` sends it to an agent, and `ctrl-d` archives it. |
+| `R` | Archived reviews | Pick an archived session; `enter` and `ctrl-a` still work, while `ctrl-d` restores it. |
 | `l` | Stage and commit | `lazygit`. |
 
 The pull-request row appears only when `gh` is installed; the lazygit row appears only when
@@ -46,7 +46,7 @@ in its TUI. Press `ctrl-d` to move a review between the active and archived list
 reversible Switchboard visibility preference: it stores only the session slug and never edits or
 deletes tuicr's session or comments.
 
-Press `ctrl-s` in either review list to hand its session to an agent. Switchboard sends straight to
+Press `ctrl-a` in either review list to hand its session to an agent. Switchboard sends straight to
 the origin agent when that pane still belongs to the same Git worktree. Otherwise it opens an agent
 picker scoped to that worktree, falling back to all promptable running agents when there is no
 match. Blocked agents are omitted because Herdr rejects prompts to them.

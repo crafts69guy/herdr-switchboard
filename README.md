@@ -90,24 +90,30 @@ Pickers open in Vim-style Normal mode. Press `i` or `/` to filter and `esc` to r
 set `common.keymode = "insert"` for a type-first start. Projects shows its live keymap with `?`,
 and every picker derives its footer caps from the same chord parser used for input.
 
+A prefix says what kind of thing a key does, not which mode you are in: **`ctrl` acts on the
+selected row**, **`alt` changes the view or the app**, and `enter` runs the row's primary action.
+Every chord means the same thing in both modes and on every picker. Normal adds bare aliases on the
+same letters, and motion keeps the idiom of its mode.
+
 The Projects Picker adapts without changing state: wide panes show Context, Navigator, and
 Inspector; medium panes keep Navigator and Inspector; compact panes prioritize Navigator and clear
 hidden preview geometry so it cannot capture mouse input.
 
 Common Projects actions:
 
-| Insert | Normal | Action |
+| Key | Action | Bare, Normal only |
 | --- | --- | --- |
-| `enter` | `enter` | Open the selected item using its default action. |
-| `ctrl-t` | `t` | Open a repo or worktree in a new tab. |
-| `ctrl-v` | `v` | Open it in a split. |
-| `ctrl-o` | `o` | Open it in the current pane. |
-| `alt-w` | `w` | Open it in a workspace. |
-| `ctrl-y` | `ctrl-y` | Copy the selected Agent, Repo, or Worktree absolute path. |
-| `ctrl-s` | `ctrl-s` | Share that path as context with a running agent. |
-| `ctrl-b` | `space b` | Star or unstar the selected Repo or Worktree. |
-| `alt-p` | `p` | Toggle the preview. |
-| `?` | `?` | Show the live cheatsheet. |
+| `enter` | Open the selected item using its default action. | |
+| `ctrl-t` | Open a repo or worktree in a new tab. | `t` |
+| `ctrl-v` | Open it in a split. | `v` |
+| `ctrl-o` | Open it in the current pane. | `o` |
+| `ctrl-w` | Open it in a workspace. | `w` |
+| `ctrl-y` | Copy the selected Agent, Repo, or Worktree absolute path. | |
+| `ctrl-a` | Share that path as context with a running agent. | |
+| `ctrl-s` | Star or unstar the selected Repo or Worktree. | |
+| `alt-p` | Toggle the preview. | `p` |
+| `alt-l` / `alt-h` | Clone flow / changelog. | |
+| `?` | Show the live cheatsheet. | |
 
 Path actions use the full absolute path even when the Inspector abbreviates the home directory as
 `~`. Workspace rows disable them because a workspace may contain several unrelated repositories.
@@ -152,10 +158,10 @@ use `source:installed`, `source:remote`, `status:current`, and `status:default` 
 | Key | Action |
 | --- | --- |
 | `enter` | Use an installed version in the origin pane, or install a remote version. |
-| `alt-u` | Use the selected installed version. |
-| `alt-i` | Install the selected remote version. |
-| `alt-d` | Make an installed version the fnm default. |
-| `alt-x` | Uninstall after typing the exact version to confirm. |
+| `ctrl-enter` | Use the selected installed version. |
+| `alt-enter` | Install the selected remote version. |
+| `ctrl-d` | Make an installed version the fnm default. |
+| `ctrl-x` | Uninstall after typing the exact version to confirm. |
 | `alt-r` | Refresh local and remote versions. |
 
 ## Configuration

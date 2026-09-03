@@ -1,6 +1,7 @@
 //! Central Switchboard menu. It delegates to public plugin actions so direct
 //! bindings and menu navigation share one launch contract.
 
+use std::collections::HashMap;
 use std::env;
 use std::os::unix::process::CommandExt;
 use std::process::{self, Command, Stdio};
@@ -14,10 +15,21 @@ use crate::picker::{self, ActionOutcome, ActionSpec, PickerItem, PickerMode};
 use crate::query::{Document, FieldSchema};
 
 pub fn main(cfg: Config, theme: Theme) -> Result<()> {
-    picker::run(MenuMode, theme, cfg)
+    let mode = MenuMode::new(&cfg);
+    picker::run(mode, theme, cfg)
 }
 
-struct MenuMode;
+struct MenuMode {
+    bindings: HashMap<String, String>,
+}
+
+impl MenuMode {
+    fn new(cfg: &Config) -> Self {
+        Self {
+            bindings: cfg.keys.get("menu").cloned().unwrap_or_default(),
+        }
+    }
+}
 
 fn handoff_command(root: &str, route_id: &str, origin_pane: &str, parent_pid: u32) -> Command {
     let mut command = Command::new("bash");
@@ -168,6 +180,13 @@ impl PickerMode for MenuMode {
     fn schema(&self) -> FieldSchema {
         FieldSchema::default()
     }
+    fn key_bindings(&self) -> HashMap<String, String> {
+        self.bindings.clone()
+    }
+    fn reload_config(&mut self, cfg: &Config) -> Result<()> {
+        self.bindings = cfg.keys.get("menu").cloned().unwrap_or_default();
+        Ok(())
+    }
     fn actions(&self) -> Vec<ActionSpec> {
         std::iter::once(ActionSpec {
             id: "open",
@@ -263,9 +282,25 @@ mod tests {
         );
     }
 
+    /// The Menu was one of two pickers with no `[keys.*]` table at all, so its
+    /// routes were the only actions in the plugin nobody could rebind.
+    #[test]
+    fn a_menu_route_can_be_rebound_like_any_other_action() {
+        let mut cfg = Config::default();
+        cfg.keys
+            .entry("menu".into())
+            .or_default()
+            .insert("git".into(), "alt-b".into());
+        let mode = MenuMode::new(&cfg);
+        assert_eq!(
+            mode.key_bindings().get("git").map(String::as_str),
+            Some("alt-b")
+        );
+    }
+
     #[test]
     fn the_full_action_bar_fits_the_menu_popup() {
-        let actions = MenuMode.actions();
+        let actions = MenuMode::new(&Config::default()).actions();
         let mut pills = actions
             .iter()
             .map(|action| crate::tui::Pill::new(&action.key_label, action.label, Color::Reset))
@@ -284,7 +319,8 @@ mod tests {
             action_bar_width <= 2 * 110,
             "{action_bar_width}-column action bar exceeds two 110-column rows"
         );
-        assert_eq!(MenuMode.action_bar_rows(), 2);
+        assert_eq!(MenuMode::new(&Config::default()).action_bar_rows(), 2);
+        crate::picker::assert_follows_prefix_concept("menu", &actions);
     }
 
     #[test]

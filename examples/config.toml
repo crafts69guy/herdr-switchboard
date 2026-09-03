@@ -87,15 +87,19 @@ alert_percent = 85
 # open = "enter"
 # tab = "ctrl-t"
 # split = "ctrl-v"
+# workspace = "ctrl-w"
 # down = "ctrl-j,ctrl-n"
 # copy_path = "ctrl-y"
-# send_to_agent = "ctrl-s"
-# star = "ctrl-b"
+# send_to_agent = "ctrl-a"
+# star = "ctrl-s"
+# clone = "alt-l"
+# changelog = "alt-h"
+# delete_word = "alt-backspace"
 
 [keys.agents]
 # pane = "enter"
 # tab = "ctrl-t"
-# workspace = "alt-w"
+# workspace = "ctrl-w"
 
 [keys.commands]
 # copy = "ctrl-y"
@@ -107,3 +111,13 @@ alert_percent = 85
 [keys.zen]
 # zen = "enter"
 # exit = "ctrl-x"
+
+[keys.menu]
+# git = "alt-g"
+# settings = "alt-s"
+
+[keys.fnm]
+# use = "ctrl-enter"
+# install = "alt-enter"
+# default = "ctrl-d"
+# uninstall = "ctrl-x"

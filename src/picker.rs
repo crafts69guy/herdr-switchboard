@@ -76,10 +76,63 @@ pub enum ActionOutcome {
     StayOpen,
 }
 
+/// Does `event` mean the chord `(code, modifiers)` names? Modifier bits are
+/// weighed the way [`crate::keymap::chord_of`] weighs them — CTRL and ALT decide
+/// and everything else is noise — because SHIFT is already baked into the
+/// character a terminal reports, and terminals disagree about whether they set
+/// the bit as well.
+///
+/// This used to be `==` here and `contains` in the keymap, so one keypress had
+/// two answers depending on which half of the app read it: `shift-enter` ran the
+/// selected row in Projects and did nothing in every other picker, and a
+/// `ctrl-shift-` chord missed its `ctrl-` action outright.
+fn same_chord(code: KeyCode, modifiers: KeyModifiers, event: KeyEvent) -> bool {
+    match (
+        crate::keymap::chord_of(&KeyEvent::new(code, modifiers)),
+        crate::keymap::chord_of(&event),
+    ) {
+        (Some(declared), Some(pressed)) => declared == pressed,
+        // A key the chord model does not cover still matches exactly, so nothing
+        // that worked before stops working.
+        _ => code == event.code && modifiers == event.modifiers,
+    }
+}
+
 impl ActionSpec {
     fn matches(&self, key: KeyEvent) -> bool {
-        self.key == key.code && self.modifiers == key.modifiers
+        same_chord(self.key, self.modifiers, key)
     }
+}
+
+/// A chord the surface answers before any mode's [`ActionSpec`] is consulted.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Reserved {
+    Settings,
+    PreviewDown,
+    PreviewUp,
+    NextTab,
+    PrevTab,
+}
+
+/// The reserved chords, as data. Both [`PickerSurface::on_key`] and the test
+/// helper that forbids a mode from claiming one read *this* list — they used to
+/// be five hand-written `if`s that nothing checked against, so a mode declaring
+/// one of these chords had its action silently swallowed with no error, which is
+/// how Ports' `^w` quietly killed delete-word for that picker.
+const RESERVED: &[(KeyCode, KeyModifiers, Reserved)] = &[
+    (KeyCode::Char(','), KeyModifiers::ALT, Reserved::Settings),
+    (KeyCode::Char('j'), KeyModifiers::ALT, Reserved::PreviewDown),
+    (KeyCode::Char('k'), KeyModifiers::ALT, Reserved::PreviewUp),
+    (KeyCode::Tab, KeyModifiers::NONE, Reserved::NextTab),
+    (KeyCode::BackTab, KeyModifiers::NONE, Reserved::PrevTab),
+];
+
+fn reserved_for(code: KeyCode, modifiers: KeyModifiers) -> Option<Reserved> {
+    let event = KeyEvent::new(code, modifiers);
+    RESERVED
+        .iter()
+        .find(|(reserved_code, reserved_mods, _)| same_chord(*reserved_code, *reserved_mods, event))
+        .map(|(_, _, what)| *what)
 }
 
 pub trait PickerMode {
@@ -440,25 +493,24 @@ impl<M: PickerMode> PickerSurface<'_, M> {
         if self.state.runtime_error.take().is_some() {
             return Ok(Transition::Redraw);
         }
-        if key.modifiers == KeyModifiers::ALT && key.code == KeyCode::Char(',') {
-            return Ok(Transition::Exit(PickerExit::Invoke(
-                String::new(),
-                "__settings",
-            )));
-        }
-        if key.modifiers == KeyModifiers::ALT && key.code == KeyCode::Char('j') {
-            self.state.preview_scroll = self.state.preview_scroll.saturating_add(1);
-            return Ok(Transition::Redraw);
-        }
-        if key.modifiers == KeyModifiers::ALT && key.code == KeyCode::Char('k') {
-            self.state.preview_scroll = self.state.preview_scroll.saturating_sub(1);
-            return Ok(Transition::Redraw);
-        }
-        if key.code == KeyCode::Tab && key.modifiers.is_empty() {
-            return Ok(self.cycle_tab(1));
-        }
-        if key.code == KeyCode::BackTab {
-            return Ok(self.cycle_tab(-1));
+        match reserved_for(key.code, key.modifiers) {
+            Some(Reserved::Settings) => {
+                return Ok(Transition::Exit(PickerExit::Invoke(
+                    String::new(),
+                    "__settings",
+                )));
+            }
+            Some(Reserved::PreviewDown) => {
+                self.state.preview_scroll = self.state.preview_scroll.saturating_add(1);
+                return Ok(Transition::Redraw);
+            }
+            Some(Reserved::PreviewUp) => {
+                self.state.preview_scroll = self.state.preview_scroll.saturating_sub(1);
+                return Ok(Transition::Redraw);
+            }
+            Some(Reserved::NextTab) => return Ok(self.cycle_tab(1)),
+            Some(Reserved::PrevTab) => return Ok(self.cycle_tab(-1)),
+            None => {}
         }
         if let Some(action) = self.actions.iter().find(|action| action.matches(key)) {
             if self.state.diagnostic.is_none() {
@@ -477,7 +529,10 @@ impl<M: PickerMode> PickerSurface<'_, M> {
                     self.state.query.clear();
                     self.state.recompute(self.schema);
                 }
-                KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                // `⌥⌫`, not `^w`: `^w` opens the selected row in a workspace on
+                // every surface that has that verb, and the row wins over the
+                // readline habit.
+                KeyCode::Backspace if key.modifiers.contains(KeyModifiers::ALT) => {
                     delete_word(&mut self.state.query);
                     self.state.recompute(self.schema);
                 }
@@ -1053,6 +1108,84 @@ fn first_enabled<M: PickerMode>(
         .map(|action| action.id)
 }
 
+/// Assert that one picker's declared actions obey the prefix concept, so a new
+/// `ActionSpec` cannot quietly reintroduce a per-surface dialect. Every mode
+/// calls this from its own test module — the modes are private to their files,
+/// so the check travels to them rather than the other way round.
+///
+/// Each rule here corresponds to a bug that shipped: a bare letter would be
+/// matched ahead of the Insert typing arm and make that letter untypeable; a
+/// reserved chord is swallowed by the surface with no error (Ports' `^w`); a
+/// stale `key_label` prints a cap that no longer runs anything; and a shared
+/// action id on two different chords is the drift the concept exists to stop.
+#[cfg(test)]
+pub(crate) fn assert_follows_prefix_concept(surface: &str, actions: &[ActionSpec]) {
+    /// Action ids whose chord is fixed project-wide. A spec carrying no modifier
+    /// is exempt: that is the `↵` ladder, where the surface's *primary* action
+    /// may well be one of these verbs (Ports opens by copying an address).
+    const CANONICAL: &[(&str, KeyCode, KeyModifiers)] = &[
+        ("tab", KeyCode::Char('t'), KeyModifiers::CONTROL),
+        ("workspace", KeyCode::Char('w'), KeyModifiers::CONTROL),
+        ("copy", KeyCode::Char('y'), KeyModifiers::CONTROL),
+        ("star", KeyCode::Char('s'), KeyModifiers::CONTROL),
+        ("sort", KeyCode::Char('s'), KeyModifiers::ALT),
+    ];
+
+    for action in actions {
+        let id = action.id;
+        let modified = !action.modifiers.is_empty();
+
+        assert!(
+            modified || !matches!(action.key, KeyCode::Char(_)),
+            "{surface}.{id} is a bare letter: it would be matched before the query \
+             and make that character untypeable"
+        );
+
+        let ctrl = action.modifiers == KeyModifiers::CONTROL;
+        assert!(
+            !(ctrl && matches!(action.key, KeyCode::Char('c') | KeyCode::Char('u'))),
+            "{surface}.{id} takes ^c or ^u, which close the picker and clear the query \
+             on every surface"
+        );
+
+        assert!(
+            reserved_for(action.key, action.modifiers).is_none(),
+            "{surface}.{id} claims a chord the surface answers itself, so it would \
+             never run"
+        );
+
+        let event = KeyEvent::new(action.key, action.modifiers);
+        let chord = crate::keymap::chord_of(&event)
+            .unwrap_or_else(|| panic!("{surface}.{id} uses a key the chord parser cannot model"));
+        assert_eq!(
+            action.key_label,
+            chord.label(),
+            "{surface}.{id} prints a cap that is not the key it listens for"
+        );
+
+        if let Some((_, key, modifiers)) = CANONICAL.iter().find(|(name, _, _)| *name == id) {
+            if modified {
+                assert!(
+                    action.key == *key && action.modifiers == *modifiers,
+                    "{surface}.{id} disagrees with the chord that action carries elsewhere"
+                );
+            }
+        }
+
+        // Matching ignores SHIFT, so two specs that differ only by it are one
+        // chord wearing two names and only the first would ever run.
+        let twins: Vec<&str> = actions
+            .iter()
+            .filter(|other| other.id != id && same_chord(other.key, other.modifiers, event))
+            .map(|other| other.id)
+            .collect();
+        assert!(
+            twins.is_empty(),
+            "{surface}.{id} shares a chord with {twins:?}"
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1186,6 +1319,106 @@ mod tests {
             })
             .unwrap();
         terminal.backend().buffer().clone()
+    }
+
+    /// One keypress, one answer, on both halves of the app. Projects resolves a
+    /// chord through `keymap::chord_of`, which weighs only CTRL and ALT; the
+    /// shared picker compared modifier bits exactly, so the same press could act
+    /// in one and do nothing in the other.
+    #[test]
+    fn a_shift_bit_a_terminal_adds_does_not_lose_the_action() {
+        let items = vec![test_item("keep"), test_item("other")];
+
+        // A terminal that reports the shift bit alongside a ctrl chord still
+        // reaches the ctrl action.
+        let mut h = Harness::new(items.clone(), false);
+        let outcome = h.key(
+            KeyCode::Char('x'),
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        );
+        assert!(
+            matches!(&outcome, Transition::Exit(PickerExit::Invoke(_, "remove"))),
+            "^⇧x must still be ^x"
+        );
+
+        // And `shift-enter` runs the row, the way it already did in Projects.
+        let mut h = Harness::new(items, false);
+        let outcome = h.key(KeyCode::Enter, KeyModifiers::SHIFT);
+        assert!(
+            matches!(&outcome, Transition::Exit(PickerExit::Invoke(_, "open"))),
+            "⇧↵ must mean ↵, as it does in Projects"
+        );
+    }
+
+    /// A guard that never fires is worse than no guard, so this asserts the
+    /// concept check actually rejects each shape it claims to — the bare letter,
+    /// the reserved chord, `^u`, the lying cap, and the shared id that drifted.
+    #[test]
+    fn the_prefix_concept_check_rejects_every_shape_it_names() {
+        let spec = |key, modifiers, key_label: &str, id| ActionSpec {
+            id,
+            key,
+            modifiers,
+            key_label: key_label.into(),
+            label: "test",
+            color_slot: "peach",
+        };
+        let rejected = |actions: Vec<ActionSpec>| {
+            std::panic::catch_unwind(move || {
+                assert_follows_prefix_concept("test", &actions);
+            })
+            .is_err()
+        };
+
+        // A sanity anchor: the shape the concept describes must pass.
+        assert!(!rejected(vec![spec(
+            KeyCode::Char('w'),
+            KeyModifiers::CONTROL,
+            "^w",
+            "workspace"
+        )]));
+
+        // A bare letter would be matched before the query and go untypeable.
+        assert!(rejected(vec![spec(
+            KeyCode::Char('w'),
+            KeyModifiers::NONE,
+            "w",
+            "workspace"
+        )]));
+        // ^u clears the query on every surface.
+        assert!(rejected(vec![spec(
+            KeyCode::Char('u'),
+            KeyModifiers::CONTROL,
+            "^u",
+            "use"
+        )]));
+        // ⌥j is answered by the surface itself, so this action would never run.
+        assert!(rejected(vec![spec(
+            KeyCode::Char('j'),
+            KeyModifiers::ALT,
+            "⌥j",
+            "down"
+        )]));
+        // A cap that is not the key it listens for.
+        assert!(rejected(vec![spec(
+            KeyCode::Char('y'),
+            KeyModifiers::CONTROL,
+            "^c",
+            "copy"
+        )]));
+        // The drift itself: a shared id on a chord it does not carry elsewhere.
+        assert!(rejected(vec![spec(
+            KeyCode::Char('w'),
+            KeyModifiers::ALT,
+            "⌥w",
+            "workspace"
+        )]));
+        // Two names for one chord: matching ignores SHIFT, so only the first
+        // of these would ever run.
+        assert!(rejected(vec![
+            spec(KeyCode::Enter, KeyModifiers::NONE, "↵", "open"),
+            spec(KeyCode::Enter, KeyModifiers::SHIFT, "↵", "open_other"),
+        ]));
     }
 
     fn test_item(id: &str) -> PickerItem {
@@ -1501,8 +1734,8 @@ mod tests {
         assert_eq!(h.state.query, "item-");
         assert_eq!(h.state.filtered.len(), 4);
 
-        h.key(KeyCode::Char('w'), KeyModifiers::CONTROL);
-        assert_eq!(h.state.query, "", "^w deletes the word");
+        h.key(KeyCode::Backspace, KeyModifiers::ALT);
+        assert_eq!(h.state.query, "", "⌥⌫ deletes the word");
 
         for character in "item".chars() {
             h.press(KeyCode::Char(character));

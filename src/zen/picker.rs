@@ -392,6 +392,7 @@ mod tests {
         let ids: Vec<&str> = mode.actions().iter().map(|action| action.id).collect();
         assert_eq!(ids, ["zen", "exit"]);
         assert!(mode.actions().iter().all(|a| !a.key_label.is_empty()));
+        crate::picker::assert_follows_prefix_concept("zen", &mode.actions());
         assert!(mode.key_bindings().is_empty());
         assert!(!mode.is_polling(), "zen has no background source");
 

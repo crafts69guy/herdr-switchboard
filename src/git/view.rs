@@ -527,7 +527,7 @@ fn bar_pills(g: &Git, theme: &Theme) -> Vec<crate::tui::Pill<'static>> {
             };
             vec![
                 crate::tui::Pill::new("↵", "read comments", theme.or("accent", Color::Cyan)),
-                crate::tui::Pill::new("^s", "send to agent", theme.or("green", Color::Green)),
+                crate::tui::Pill::new("^a", "send to agent", theme.or("green", Color::Green)),
                 crate::tui::Pill::new("^d", archive_verb, theme.or("yellow", Color::Yellow)),
                 crate::tui::Pill::new("esc", "back", theme.or("red", Color::Red)),
             ]
@@ -583,7 +583,7 @@ fn bar_keys(g: &Git) -> Vec<Option<KeyEvent>> {
         View::List if matches!(g.kind, Some(ListKind::Reviews | ListKind::ArchivedReviews)) => {
             vec![
                 plain(KeyCode::Enter),
-                Some(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL)),
+                Some(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL)),
                 Some(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL)),
                 plain(KeyCode::Esc),
             ]

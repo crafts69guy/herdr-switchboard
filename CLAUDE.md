@@ -178,7 +178,10 @@ order so the list stays stable.
   `deny_unknown_fields`; Rust code reads those fields directly. `Config::value_for_cli` is the
   deliberately narrow compatibility seam for Bash's `config get` calls, not an internal
   lookup interface. `settings.rs` writes namespaced values through `toml_edit`, preserving comments
-  and hand-added keys before validating the complete result.
+  and hand-added keys before validating the complete result. **Every picker has a `[keys.*]` table**
+  — `projects`, `agents`, `commands`, `ports`, `zen`, `menu`, `fnm` — reached through
+  `PickerMode::key_bindings` plus a `reload_config` that re-reads it; a mode that implements neither
+  is one whose keys nobody can move, which is what Menu and the fnm manager silently were.
 - **A click zone is measured by the loop that draws the thing.** `tab_zones` and
   `footer_zones` (`src/projects/view.rs`) are built inside the same loops that lay out the tab strip
   and the command bar, because a zone computed separately drifts the moment a label
@@ -190,15 +193,54 @@ order so the list stays stable.
   ships looking like a shorter phrase; `wheel  Scroll whatever is under it` reached a
   README screenshot as `Scroll whatever is`. `row` asserts, and a `TestBackend` render
   test in `projects.rs` fires it.
+- **A prefix names the kind of work, never the mode.** `^<key>` acts on the selected row; `⌥<key>`
+  changes the view or the app (or is the heavier form of the `^` verb on the same letter, as
+  Ports' `^x` TERM / `⌥x` KILL); `↵` runs the row's primary action with `^↵`/`⌥↵` as its variants.
+  So **every modified chord appears in both `default_insert` and `default_normal` with the same
+  action**, and Normal's bare letters are *aliases carrying the same letter*, never a respelling.
+  Three tests in `keymap.rs` enforce exactly this and are the reason the layout stops drifting:
+  `every_modified_chord_means_the_same_thing_in_both_modes`,
+  `no_action_straddles_the_ctrl_and_alt_families`, and
+  `a_bare_alias_carries_the_same_letter_as_its_chord`. Two vocabularies are carved out by name in
+  `mode_idiomatic`: motion (readline in Insert, Vim in Normal) and query editing (`^u` clear,
+  `⌥⌫` delete-word, Insert-only). `^u` and `^c` are reserved on every surface — no `ActionSpec`
+  may take them, which is why the fnm manager's `use`/`install` sit on the `↵` ladder.
+  **There is no `␣` leader, and adding one back is the bug.** Space can only be a leader in Normal
+  — in Insert it is a character the user is typing — so any group living there was forced to change
+  prefix with the mode, which is the whole inconsistency this layout removes. The Git menu, the
+  Central Menu, the settings form, and the Usage/changelog viewers sit outside the rule on purpose:
+  their keys name a row, a destination, or a form field rather than a verb on a selection.
+- **The shared picker answers five chords itself, and they live in one table.** `RESERVED`
+  (`src/picker.rs`) holds `⌥,`, `⌥j`, `⌥k`, `⇥`, `⇧⇥`; `PickerSurface::on_key` dispatches from it
+  through `reserved_for`, *ahead* of any `ActionSpec`. They used to be five hand-written `if`s that
+  nothing checked against, so a mode declaring one of those chords had its action swallowed with no
+  error — the same silent shape as Ports' `^w`, which shadowed delete-word for that picker alone.
+  A new `ActionSpec` is therefore checked by `picker::assert_follows_prefix_concept`, which every
+  mode calls from its **own** test module (the modes are private to their files, so the check
+  travels to them). It refuses a bare `Char` (it would be matched ahead of the typing arm and make
+  that letter untypeable), `^c`/`^u`, anything in `RESERVED`, a `key_label` that is not the chord it
+  listens for, and a shared action id bound to a chord it does not carry elsewhere.
+  `the_prefix_concept_check_rejects_every_shape_it_names` asserts the guard actually bites, because
+  a guard that silently passes is the failure it exists to prevent.
+- **One keypress gets one answer, and `same_chord` is where that is decided.** Matching weighs only
+  CTRL and ALT, exactly as `keymap::chord_of` does: SHIFT is already baked into the character a
+  terminal reports and terminals disagree about whether they set the bit too. `ActionSpec::matches`
+  compared modifier bits with `==` while the keymap used `contains`, so the same press acted in
+  Projects and did nothing in every other picker — `⇧↵` ran the row in one and was inert in the
+  other, and a `^⇧` chord missed its `^` action outright. Because SHIFT no longer separates two
+  chords, `assert_follows_prefix_concept` also refuses two specs that normalise to the same chord;
+  without that rule the second one would simply never run.
 - **Keys are a config-driven keymap, not hardcoded `match` arms.** `handle_key` resolves a
   `Chord` through `App::keymap` (`src/keymap.rs`) and runs `apply_action`. Two ordered tables
-  (Insert + Normal) plus a `␣` leader table; typed `common.keymode` defaults to Normal and `esc`
-  toggles Insert↔Normal. `[keys.projects]` entries rebind actions (first chord wins as the shown one).
+  (Insert + Normal); typed `common.keymode` defaults to Normal and `esc` toggles Insert↔Normal.
+  `[keys.projects]` entries rebind actions (first chord wins as the shown one) into **both** tables,
+  so an override cannot reintroduce a per-mode split.
   **The footer (`draw_footer`) and the cheatsheet (`draw_help`) render from the keymap via
-  `Keymap::label_for(mode, action)`**, so both re-label per mode and per remap — never hardcode a
+  `Keymap::label_for(mode, action)`**, so both re-label per remap — never hardcode a
   key cap in either; add the action to the curated list and it picks up its live chord. A row
-  whose action is unbound in the current mode drops out. `label_for` renders leader verbs as
-  `␣g`. Adding an action is one row in `keymap::NAMES`, its default chord in a table, and an
+  whose action is unbound in the current mode drops out. `label_for` returns the *first* matching
+  chord, which is why a bare alias is listed after the chord it shadows.
+  Adding an action is one row in `keymap::NAMES`, its default chord in **both** tables, and an
   `apply_action` arm; a new `Accept` also needs the footer curated list and `dispatch`. Cheatsheet
   descriptions must still fit `HELP_DESC`.
 - **One frame absorbs every event already queued, and a list row borrows rather than copies.**

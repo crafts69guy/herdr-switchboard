@@ -7,7 +7,7 @@ start the selected integration in:
 
 - The pane that opened Switchboard with `enter`.
 - A focused new tab with `ctrl-t`.
-- A focused new workspace with `alt-w`.
+- A focused new workspace with `ctrl-w`.
 
 New targets inherit the origin pane's cwd. If startup fails, Switchboard closes a tab or workspace
 it created instead of leaving an empty target behind. Remap these actions under `[keys.agents]` as
@@ -111,8 +111,8 @@ Choose which providers appear, and in what order, with `usage.providers`.
 
 ## Projects
 
-Projects can star durable Repo and Worktree entries without changing how they open or sort. Press
-`ctrl-b` in Insert mode or `space b` in Normal mode to toggle the selected item. Starred rows keep
+Projects can star durable Repo and Worktree entries without changing how they open or sort. Press `ctrl-s`
+in either mode to toggle the selected item. Starred rows keep
 a peach `★` in a fixed gutter, and the always-present `★ Starred` group remains searchable and
 uses the active Projects sort. Agent and Workspace entries are deliberately excluded because their
 live IDs do not remain stable across sessions.

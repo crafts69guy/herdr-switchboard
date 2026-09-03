@@ -203,14 +203,11 @@ const NAMES: &[(&str, Action)] = &[
     ("remove", Action::Accept(AcceptKind::Remove)),
 ];
 
-/// The ordered chord tables for both modes plus the Normal-mode `␣` leader group.
+/// The ordered chord tables for both modes. Every modified chord appears in
+/// *both*, with the same action — see [`default_insert`] for why.
 pub struct Keymap {
     insert: Vec<(Chord, Action)>,
     normal: Vec<(Chord, Action)>,
-    /// Reached in Normal after the leader key; holds the manage/meta verbs.
-    leader: Vec<(Chord, Action)>,
-    /// The Normal-mode leader (default `␣`).
-    pub leader_chord: Chord,
     start: Mode,
 }
 
@@ -224,8 +221,6 @@ impl Keymap {
         let mut km = Keymap {
             insert: default_insert(),
             normal: default_normal(),
-            leader: default_leader(),
-            leader_chord: chord(Key::Char(' ')),
             start,
         };
         km.apply_overrides(cfg);
@@ -241,11 +236,6 @@ impl Keymap {
         list.iter().find(|(c, _)| *c == ch).map(|(_, a)| *a)
     }
 
-    /// The action a chord triggers after the Normal-mode leader, if any.
-    pub fn leader_action(&self, ch: Chord) -> Option<Action> {
-        self.leader.iter().find(|(c, _)| *c == ch).map(|(_, a)| *a)
-    }
-
     /// The mode the picker starts in.
     pub fn start_mode(&self) -> Mode {
         self.start
@@ -258,17 +248,9 @@ impl Keymap {
             Mode::Insert => &self.insert,
             Mode::Normal => &self.normal,
         };
-        if let Some((c, _)) = list.iter().find(|(_, a)| *a == action) {
-            return Some(c.label());
-        }
-        if mode == Mode::Normal {
-            if let Some((c, _)) = self.leader.iter().find(|(_, a)| *a == action) {
-                // A space between the leader glyph and the key: `␣ g`, not `␣g`,
-                // which reads as one smudged symbol at terminal cell spacing.
-                return Some(format!("{} {}", self.leader_chord.label(), c.label()));
-            }
-        }
-        None
+        list.iter()
+            .find(|(_, a)| *a == action)
+            .map(|(c, _)| c.label())
     }
 
     /// Rebind actions the config names. `keys.<action> = "chord[,chord…]"` clears
@@ -286,7 +268,6 @@ impl Keymap {
             }
             self.insert.retain(|(_, a)| a != act);
             self.normal.retain(|(_, a)| a != act);
-            self.leader.retain(|(_, a)| a != act);
             // A configured chord owns its slot. This also lets an existing
             // remap such as `tab = "ctrl-y"` override a newly introduced default
             // without leaving two footer pills that advertise the same key.
@@ -327,13 +308,35 @@ fn alt(key: Key) -> Chord {
     }
 }
 
-/// Insert (type-to-filter): lean `^`-chords for the opens, `⌥` for view/meta,
-/// and `^u`/`^w` left to readline. `Esc` drops to Normal; `^c` closes.
+/// The prefix says what *kind* of thing a key does. It never says which mode you
+/// are in, which is why [`default_normal`] repeats every modified chord below
+/// verbatim rather than respelling it:
+///
+/// - `↵` runs the selected row's primary action; `^↵`/`⌥↵` are its variants on
+///   the surfaces that have them (Commands, Ports, the fnm manager).
+/// - **`^<letter>` acts on the selected row** — open it, update it, remove it,
+///   copy it, send it, star it.
+/// - **`⌥<letter>` changes the view or the app** — preview, sort, clone,
+///   changelog, settings, plugin update. It touches no row. The one named
+///   exception is that `⌥<letter>` is also the *heavier* form of the `^<letter>`
+///   verb on the same letter (Ports `^x` TERM → `⌥x` KILL), the same way `⌥↵`
+///   is a variant of `↵`.
+///
+/// A `␣` leader used to hold the manage verbs, and it is gone: space can only be
+/// a leader in Normal — in Insert it is a character the user is typing — so any
+/// group living there was forced to change prefix with the mode, which is the
+/// exact inconsistency this layout exists to remove. Normal instead adds *bare*
+/// aliases on the same letter as the `^` chord (`t`/`v`/`o`/`w`, `p`).
+///
+/// Two carve-outs, both deliberate: motion follows the idiom of its mode
+/// (readline `^j`/`^n`/`^k`/`^p` here, Vim `j`/`k`/`g`/`G`/`^d`/`^u` there), and
+/// query editing exists only where there is a query — `^u` clears it and `⌥⌫`
+/// deletes a word. `^u` and `^c` are reserved everywhere; no picker action may
+/// take them.
 fn default_insert() -> Vec<(Chord, Action)> {
     use Action::*;
     vec![
-        (chord(Key::Enter), Accept(AcceptKind::Default)),
-        (alt(Key::Enter), Accept(AcceptKind::Clone)),
+        // Motion, in this mode's idiom.
         (ctrl(Key::Char('j')), Down),
         (ctrl(Key::Char('n')), Down),
         (ctrl(Key::Char('k')), Up),
@@ -344,24 +347,29 @@ fn default_insert() -> Vec<(Chord, Action)> {
         (chord(Key::PageUp), PageUp),
         (chord(Key::Tab), NextGroup),
         (chord(Key::BackTab), PrevGroup),
+        // Act on the selected row.
+        (chord(Key::Enter), Accept(AcceptKind::Default)),
         (ctrl(Key::Char('t')), Accept(AcceptKind::Tab)),
         (ctrl(Key::Char('v')), Accept(AcceptKind::Split)),
         (ctrl(Key::Char('o')), Accept(AcceptKind::Pane)),
-        (alt(Key::Char('w')), Accept(AcceptKind::Workspace)),
+        (ctrl(Key::Char('w')), Accept(AcceptKind::Workspace)),
         (ctrl(Key::Char('r')), Accept(AcceptKind::Update)),
         (ctrl(Key::Char('x')), Accept(AcceptKind::Remove)),
+        (ctrl(Key::Char('y')), CopyPath),
+        (ctrl(Key::Char('a')), SendToAgent),
+        (ctrl(Key::Char('s')), ToggleStar),
+        // Change the view or the app.
         (alt(Key::Char('p')), TogglePreview),
         (alt(Key::Char('j')), PreviewDown),
         (alt(Key::Char('k')), PreviewUp),
         (alt(Key::Char('s')), CycleSort),
-        (ctrl(Key::Char('y')), CopyPath),
-        (ctrl(Key::Char('s')), SendToAgent),
-        (ctrl(Key::Char('b')), ToggleStar),
-        (alt(Key::Char('c')), Changelog),
+        (alt(Key::Char('l')), Accept(AcceptKind::Clone)),
+        (alt(Key::Char('h')), Changelog),
         (alt(Key::Char('u')), Accept(AcceptKind::UpdatePlugin)),
         (alt(Key::Char(',')), Settings),
+        // Query editing, which only this mode has.
         (ctrl(Key::Char('u')), ClearQuery),
-        (ctrl(Key::Char('w')), DeleteWord),
+        (alt(Key::Backspace), DeleteWord),
         (chord(Key::Backspace), Backspace),
         (chord(Key::Char('?')), Help),
         (ctrl(Key::Char('c')), Quit),
@@ -369,11 +377,16 @@ fn default_insert() -> Vec<(Chord, Action)> {
     ]
 }
 
-/// Normal (Vim): bare motion, unshifted opens, `i`/`/` to filter, `␣` for the
-/// rest. `q`/`Esc` close.
+/// Normal (Vim). Every modified chord here is the one [`default_insert`] binds,
+/// spelled identically — the bare letters are *additions*, not replacements, and
+/// each one carries the same letter as the `^` chord it shadows. `q`/`Esc` close
+/// alongside the `^c` that closes in both modes. The one thing Normal does not
+/// repeat is query editing, because there is nothing to edit until you are
+/// typing: `^u` is Vim's half-page up here and clears the query there.
 fn default_normal() -> Vec<(Chord, Action)> {
     use Action::*;
     vec![
+        // Motion, in this mode's idiom.
         (chord(Key::Char('j')), Down),
         (chord(Key::Char('k')), Up),
         (chord(Key::Down), Down),
@@ -390,35 +403,36 @@ fn default_normal() -> Vec<(Chord, Action)> {
         (chord(Key::BackTab), PrevGroup),
         (chord(Key::Char('i')), EnterInsert),
         (chord(Key::Char('/')), EnterInsert),
+        // Act on the selected row.
         (chord(Key::Enter), Accept(AcceptKind::Default)),
+        (ctrl(Key::Char('t')), Accept(AcceptKind::Tab)),
+        (ctrl(Key::Char('v')), Accept(AcceptKind::Split)),
+        (ctrl(Key::Char('o')), Accept(AcceptKind::Pane)),
+        (ctrl(Key::Char('w')), Accept(AcceptKind::Workspace)),
+        (ctrl(Key::Char('r')), Accept(AcceptKind::Update)),
+        (ctrl(Key::Char('x')), Accept(AcceptKind::Remove)),
+        (ctrl(Key::Char('y')), CopyPath),
+        (ctrl(Key::Char('a')), SendToAgent),
+        (ctrl(Key::Char('s')), ToggleStar),
+        // Change the view or the app.
+        (alt(Key::Char('p')), TogglePreview),
+        (alt(Key::Char('j')), PreviewDown),
+        (alt(Key::Char('k')), PreviewUp),
+        (alt(Key::Char('s')), CycleSort),
+        (alt(Key::Char('l')), Accept(AcceptKind::Clone)),
+        (alt(Key::Char('h')), Changelog),
+        (alt(Key::Char('u')), Accept(AcceptKind::UpdatePlugin)),
+        (alt(Key::Char(',')), Settings),
+        // Bare aliases: the same letters, one keystroke shorter.
         (chord(Key::Char('t')), Accept(AcceptKind::Tab)),
         (chord(Key::Char('v')), Accept(AcceptKind::Split)),
         (chord(Key::Char('o')), Accept(AcceptKind::Pane)),
         (chord(Key::Char('w')), Accept(AcceptKind::Workspace)),
         (chord(Key::Char('p')), TogglePreview),
-        (ctrl(Key::Char('y')), CopyPath),
-        (ctrl(Key::Char('s')), SendToAgent),
-        (alt(Key::Char('j')), PreviewDown),
-        (alt(Key::Char('k')), PreviewUp),
         (chord(Key::Char('?')), Help),
+        (ctrl(Key::Char('c')), Quit),
         (chord(Key::Char('q')), Quit),
         (chord(Key::Esc), Quit),
-    ]
-}
-
-/// The Normal-mode `␣` leader group: the manage + meta verbs, so Normal keeps
-/// its bare letters for motion and the frequent opens.
-fn default_leader() -> Vec<(Chord, Action)> {
-    use Action::*;
-    vec![
-        (chord(Key::Char('u')), Accept(AcceptKind::Update)),
-        (chord(Key::Char('x')), Accept(AcceptKind::Remove)),
-        (chord(Key::Char('c')), Accept(AcceptKind::Clone)),
-        (chord(Key::Char('s')), CycleSort),
-        (chord(Key::Char('b')), ToggleStar),
-        (chord(Key::Char('l')), Changelog),
-        (chord(Key::Char(',')), Settings),
-        (chord(Key::Char('U')), Accept(AcceptKind::UpdatePlugin)),
     ]
 }
 
@@ -539,17 +553,26 @@ mod tests {
             Some(Action::Accept(AcceptKind::Split))
         );
         assert_eq!(
-            km.action(Mode::Insert, ctrl(Key::Char('b'))),
+            km.action(Mode::Insert, ctrl(Key::Char('s'))),
             Some(Action::ToggleStar)
         );
-        // ^u/^w are readline editing, not actions.
+        assert_eq!(
+            km.action(Mode::Insert, ctrl(Key::Char('a'))),
+            Some(Action::SendToAgent)
+        );
+        // Query editing is Insert-only, and `^w` is not part of it: that chord
+        // opens the row in a workspace, so deleting a word is `⌥⌫`.
         assert_eq!(
             km.action(Mode::Insert, ctrl(Key::Char('u'))),
             Some(Action::ClearQuery)
         );
         assert_eq!(
-            km.action(Mode::Insert, ctrl(Key::Char('w'))),
+            km.action(Mode::Insert, alt(Key::Backspace)),
             Some(Action::DeleteWord)
+        );
+        assert_eq!(
+            km.action(Mode::Insert, ctrl(Key::Char('w'))),
+            Some(Action::Accept(AcceptKind::Workspace))
         );
         // Esc drops to Normal rather than quitting; ^c quits.
         assert_eq!(
@@ -565,7 +588,7 @@ mod tests {
     }
 
     #[test]
-    fn normal_has_bare_motion_and_a_leader_for_manage_verbs() {
+    fn normal_adds_bare_aliases_without_respelling_a_single_chord() {
         let km = Keymap::load(&Config::default());
         assert_eq!(
             km.action(Mode::Normal, chord(Key::Char('j'))),
@@ -583,28 +606,47 @@ mod tests {
             km.action(Mode::Normal, chord(Key::Char('t'))),
             Some(Action::Accept(AcceptKind::Tab))
         );
-        // the manage verbs live behind the leader, not on bare Normal keys…
+        // The manage verbs used to hide behind a `␣` leader. They are now the
+        // same chords Insert uses, and space is an ordinary unbound key.
+        assert_eq!(km.action(Mode::Normal, chord(Key::Char(' '))), None);
         assert_eq!(
-            km.leader_action(chord(Key::Char('u'))),
+            km.action(Mode::Normal, ctrl(Key::Char('r'))),
             Some(Action::Accept(AcceptKind::Update))
         );
         assert_eq!(
-            km.leader_action(chord(Key::Char('b'))),
-            Some(Action::ToggleStar)
+            km.action(Mode::Normal, ctrl(Key::Char('x'))),
+            Some(Action::Accept(AcceptKind::Remove))
         );
-        // …and their labels read as the two-key sequence.
         assert_eq!(
-            km.label_for(Mode::Normal, Action::Accept(AcceptKind::Update))
+            km.action(Mode::Normal, alt(Key::Char('s'))),
+            Some(Action::CycleSort)
+        );
+        assert_eq!(
+            km.label_for(Mode::Normal, Action::CycleSort).as_deref(),
+            Some("⌥s")
+        );
+        // A bare alias never displaces the chord: `t` and `^t` both open a tab,
+        // and the footer shows the one Insert would show.
+        assert_eq!(
+            km.action(Mode::Normal, ctrl(Key::Char('t'))),
+            Some(Action::Accept(AcceptKind::Tab))
+        );
+        assert_eq!(
+            km.label_for(Mode::Normal, Action::Accept(AcceptKind::Tab))
                 .as_deref(),
-            Some("␣ u")
+            Some("^t")
         );
         assert_eq!(
             km.action(Mode::Normal, ctrl(Key::Char('y'))),
             Some(Action::CopyPath)
         );
         assert_eq!(
-            km.action(Mode::Normal, ctrl(Key::Char('s'))),
+            km.action(Mode::Normal, ctrl(Key::Char('a'))),
             Some(Action::SendToAgent)
+        );
+        assert_eq!(
+            km.action(Mode::Normal, ctrl(Key::Char('s'))),
+            Some(Action::ToggleStar)
         );
         assert_eq!(
             km.label_for(Mode::Normal, Action::CopyPath).as_deref(),
@@ -612,7 +654,7 @@ mod tests {
         );
         assert_eq!(
             km.label_for(Mode::Normal, Action::ToggleStar).as_deref(),
-            Some("␣ b")
+            Some("^s")
         );
     }
 
@@ -624,15 +666,124 @@ mod tests {
             km.action(Mode::Insert, alt(Key::Char(','))),
             Some(Action::Settings)
         );
-        // Normal: behind the leader, shown as `␣ ,`.
+        // Normal: the same chord, not a respelling of it.
         assert_eq!(
-            km.leader_action(chord(Key::Char(','))),
+            km.action(Mode::Normal, alt(Key::Char(','))),
             Some(Action::Settings)
         );
         assert_eq!(
             km.label_for(Mode::Normal, Action::Settings).as_deref(),
-            Some("␣ ,")
+            Some("⌥,")
         );
+    }
+
+    /// The two vocabularies the prefix rule deliberately does not govern:
+    /// motion follows the idiom of its mode, query editing exists only where
+    /// there is a query, and the session keys (`esc`, `i`, `/`, `q`, `^c`) name
+    /// a way in or out rather than a thing to do to a row.
+    fn mode_idiomatic(action: Action) -> bool {
+        matches!(
+            action,
+            Action::Down
+                | Action::Up
+                | Action::PageDown
+                | Action::PageUp
+                | Action::Top
+                | Action::Bottom
+                | Action::NextGroup
+                | Action::PrevGroup
+                | Action::ClearQuery
+                | Action::DeleteWord
+                | Action::Backspace
+                | Action::EnterInsert
+                | Action::EnterNormal
+                | Action::Quit
+        )
+    }
+
+    /// The concept, asserted rather than described: a chord that carries a
+    /// modifier means the same thing in both modes. Insert is the reference —
+    /// Normal may *add* (bare aliases, Vim motion) but may never respell.
+    ///
+    /// Motion and query editing are the two carve-outs, and they are named here
+    /// rather than inferred: navigation follows the idiom of its mode, and there
+    /// is nothing to edit until you are typing.
+    #[test]
+    fn every_modified_chord_means_the_same_thing_in_both_modes() {
+        let km = Keymap::load(&Config::default());
+        for (ch, action) in km.insert.iter().filter(|(c, _)| c.ctrl || c.alt) {
+            if mode_idiomatic(*action) {
+                continue;
+            }
+            assert_eq!(
+                km.action(Mode::Normal, *ch),
+                Some(*action),
+                "{} is {action:?} in Insert but not in Normal",
+                ch.label()
+            );
+        }
+        for (ch, action) in km.normal.iter().filter(|(c, _)| c.ctrl || c.alt) {
+            if mode_idiomatic(*action) {
+                continue;
+            }
+            assert_eq!(
+                km.action(Mode::Insert, *ch),
+                Some(*action),
+                "{} is {action:?} in Normal but not in Insert",
+                ch.label()
+            );
+        }
+    }
+
+    /// `^` acts on the selected row and `⌥` changes the view or the app. An
+    /// action that appears in both families has no single answer to "which kind
+    /// of thing is this", which is how a keymap starts drifting again.
+    #[test]
+    fn no_action_straddles_the_ctrl_and_alt_families() {
+        let km = Keymap::load(&Config::default());
+        for table in [&km.insert, &km.normal] {
+            for (chord, action) in table {
+                if !chord.ctrl {
+                    continue;
+                }
+                assert!(
+                    !table
+                        .iter()
+                        .any(|(other, a)| other.alt && !other.ctrl && a == action),
+                    "{action:?} is bound with both ^ and ⌥ in one mode"
+                );
+            }
+        }
+    }
+
+    /// A Normal-mode bare letter is a shorthand for a chord, never a rename of
+    /// one: `t` opens a tab because `^t` does. A bare letter carrying a
+    /// different letter than its chord is the drift this layout removed.
+    #[test]
+    fn a_bare_alias_carries_the_same_letter_as_its_chord() {
+        let km = Keymap::load(&Config::default());
+        for (bare, action) in km.normal.iter().filter(|(c, _)| !c.ctrl && !c.alt) {
+            let Key::Char(letter) = bare.key else {
+                continue;
+            };
+            if mode_idiomatic(*action) {
+                continue;
+            }
+            let Some(chord) = km
+                .normal
+                .iter()
+                .find(|(c, a)| (c.ctrl || c.alt) && a == action)
+                .map(|(c, _)| *c)
+            else {
+                continue; // motion and the mode keys have no chord form
+            };
+            assert_eq!(
+                chord.key,
+                Key::Char(letter),
+                "bare {letter} and {} are the same action on different letters",
+                chord.label()
+            );
+        }
     }
 
     #[test]
@@ -682,7 +833,8 @@ mod tests {
                 Some("⌥f")
             );
         }
-        assert_eq!(km.action(Mode::Insert, ctrl(Key::Char('b'))), None);
-        assert_eq!(km.leader_action(chord(Key::Char('b'))), None);
+        for mode in [Mode::Insert, Mode::Normal] {
+            assert_eq!(km.action(mode, ctrl(Key::Char('s'))), None);
+        }
     }
 }

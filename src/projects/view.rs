@@ -360,17 +360,10 @@ fn draw_input(
         ),
     };
     // Which mode owns the keys — a vimmer's `-- INSERT --`. Normal is always one
-    // Esc away, so the tag is always shown; a pending `␣` leader appends a dot.
+    // Esc away, so the tag is always shown.
     let ink = app.theme.or("panel_bg", Color::Rgb(16, 18, 20));
     let (tag, bg) = match app.mode {
-        Mode::Normal => (
-            if app.leader_pending {
-                " NORMAL ␣ "
-            } else {
-                " NORMAL "
-            },
-            accent,
-        ),
+        Mode::Normal => (" NORMAL ", accent),
         Mode::Insert => (" INSERT ", app.theme.or("green", Color::Green)),
     };
     let (caption, caption_color) = app

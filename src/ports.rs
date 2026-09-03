@@ -938,7 +938,7 @@ mod tests {
         assert_eq!(ids, ["copy", "http", "https", "workspace", "term", "kill"]);
         // Every action carries a key cap, or the command bar renders a blank pill.
         assert!(mode.actions().iter().all(|a| !a.key_label.is_empty()));
-        assert!(mode.key_bindings().is_empty() || !mode.key_bindings().is_empty());
+        crate::picker::assert_follows_prefix_concept("ports", &mode.actions());
     }
 
     /// A signal is refused outright for a listener the user does not own, before

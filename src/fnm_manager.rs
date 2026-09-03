@@ -4,7 +4,7 @@
 //! background effect seam because `fnm list-remote` performs network work.
 //! Mutations run only after the picker has restored the terminal.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io::{self, Write};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 
@@ -52,20 +52,23 @@ struct FnmMode {
     remote_error: Option<String>,
     remote_rx: Option<Receiver<RemoteResult>>,
     origin_pane: String,
+    bindings: HashMap<String, String>,
 }
 
 pub fn main(cfg: Config, theme: Theme) -> Result<()> {
-    picker::run(FnmMode::new(), theme, cfg)
+    let mode = FnmMode::new(&cfg);
+    picker::run(mode, theme, cfg)
 }
 
 impl FnmMode {
-    fn new() -> Self {
+    fn new(cfg: &Config) -> Self {
         Self {
             installed: Vec::new(),
             remote: Vec::new(),
             remote_error: None,
             remote_rx: None,
             origin_pane: std::env::var("SWITCHBOARD_ORIGIN_PANE_ID").unwrap_or_default(),
+            bindings: cfg.keys.get("fnm").cloned().unwrap_or_default(),
         }
     }
 
@@ -142,6 +145,13 @@ impl PickerMode for FnmMode {
         )
     }
 
+    fn key_bindings(&self) -> HashMap<String, String> {
+        self.bindings.clone()
+    }
+    fn reload_config(&mut self, cfg: &Config) -> Result<()> {
+        self.bindings = cfg.keys.get("fnm").cloned().unwrap_or_default();
+        Ok(())
+    }
     fn actions(&self) -> Vec<ActionSpec> {
         vec![
             ActionSpec {
@@ -154,33 +164,33 @@ impl PickerMode for FnmMode {
             },
             ActionSpec {
                 id: "use",
-                key: KeyCode::Char('u'),
-                modifiers: KeyModifiers::ALT,
-                key_label: "⌥u".into(),
+                key: KeyCode::Enter,
+                modifiers: KeyModifiers::CONTROL,
+                key_label: "^↵".into(),
                 label: "use",
                 color_slot: "blue",
             },
             ActionSpec {
                 id: "install",
-                key: KeyCode::Char('i'),
+                key: KeyCode::Enter,
                 modifiers: KeyModifiers::ALT,
-                key_label: "⌥i".into(),
+                key_label: "⌥↵".into(),
                 label: "install",
                 color_slot: "green",
             },
             ActionSpec {
                 id: "default",
                 key: KeyCode::Char('d'),
-                modifiers: KeyModifiers::ALT,
-                key_label: "⌥d".into(),
+                modifiers: KeyModifiers::CONTROL,
+                key_label: "^d".into(),
                 label: "default",
                 color_slot: "peach",
             },
             ActionSpec {
                 id: "uninstall",
                 key: KeyCode::Char('x'),
-                modifiers: KeyModifiers::ALT,
-                key_label: "⌥x".into(),
+                modifiers: KeyModifiers::CONTROL,
+                key_label: "^x".into(),
                 label: "uninstall",
                 color_slot: "red",
             },
@@ -538,7 +548,7 @@ mod tests {
 
     #[test]
     fn installed_versions_are_not_duplicated_in_the_remote_rows() {
-        let mut mode = FnmMode::new();
+        let mut mode = FnmMode::new(&Config::default());
         mode.installed = parse_versions("v24.1.0\n", Source::Installed);
         mode.remote = parse_versions("v25.0.0\nv24.1.0\n", Source::Remote);
         let ids = mode
@@ -563,7 +573,7 @@ mod tests {
     /// `uninstall` on the system Node.
     #[test]
     fn each_action_is_disabled_for_the_versions_it_cannot_apply_to() {
-        let mut mode = FnmMode::new();
+        let mut mode = FnmMode::new(&Config::default());
         mode.installed = vec![
             version("v24.1.0", Source::Installed, true, false),
             version("system", Source::Installed, false, false),
@@ -614,7 +624,7 @@ mod tests {
     /// resolved to whatever version happens to be nearby.
     #[test]
     fn a_status_row_is_not_actionable() {
-        let mode = FnmMode::new();
+        let mode = FnmMode::new(&Config::default());
         let reason = mode
             .action_disabled_reason("status:remote-loading", "primary")
             .expect("a status row offers no operation");
@@ -648,7 +658,7 @@ mod tests {
     /// Every documented filter field has to resolve against a real row.
     #[test]
     fn every_advertised_filter_field_matches_the_row_it_describes() {
-        let mode = FnmMode::new();
+        let mode = FnmMode::new(&Config::default());
         let schema = mode.schema();
         let item = version_item(&version("v24.1.0", Source::Installed, true, false));
         let mut matcher = nucleo_matcher::Matcher::new(nucleo_matcher::Config::DEFAULT);
@@ -673,7 +683,7 @@ mod tests {
     #[test]
     fn the_remote_lookup_reports_itself_while_running_and_after_it_fails() {
         let (sender, receiver) = mpsc::channel();
-        let mut mode = FnmMode::new();
+        let mut mode = FnmMode::new(&Config::default());
         mode.installed = vec![version("v24.1.0", Source::Installed, false, false)];
         mode.remote_rx = Some(receiver);
 
@@ -697,7 +707,7 @@ mod tests {
     #[test]
     fn a_remote_worker_that_disappears_becomes_a_stated_failure() {
         let (sender, receiver) = mpsc::channel::<RemoteResult>();
-        let mut mode = FnmMode::new();
+        let mut mode = FnmMode::new(&Config::default());
         mode.remote_rx = Some(receiver);
         drop(sender);
 
@@ -718,7 +728,7 @@ mod tests {
     #[test]
     fn a_successful_remote_lookup_replaces_the_loading_row_with_versions() {
         let (sender, receiver) = mpsc::channel();
-        let mut mode = FnmMode::new();
+        let mut mode = FnmMode::new(&Config::default());
         mode.remote_rx = Some(receiver);
         sender
             .send(RemoteResult::Loaded(parse_versions(
@@ -736,7 +746,7 @@ mod tests {
     /// so it must keep the picker open and touch nothing.
     #[test]
     fn refresh_keeps_the_manager_open_without_running_anything() {
-        let mut mode = FnmMode::new();
+        let mut mode = FnmMode::new(&Config::default());
         assert_eq!(
             mode.execute("anything", "refresh").unwrap(),
             ActionOutcome::StayOpen
@@ -747,7 +757,7 @@ mod tests {
     /// than fall through to whichever version sorts first.
     #[test]
     fn acting_on_a_missing_version_fails_before_running_fnm() {
-        let mut mode = FnmMode::new();
+        let mut mode = FnmMode::new(&Config::default());
         let error = mode.execute("installed:v99.0.0", "use").unwrap_err();
         assert!(error.to_string().contains("no longer available"), "{error}");
 
@@ -762,7 +772,7 @@ mod tests {
     /// The chrome the shared picker renders comes from these.
     #[test]
     fn the_mode_declares_its_title_accent_and_every_action() {
-        let mode = FnmMode::new();
+        let mode = FnmMode::new(&Config::default());
         assert_eq!(mode.title(), "Node Versions");
         assert_eq!(mode.accent_slot(), "green");
         assert_eq!(mode.list_pct(), 52);
@@ -779,6 +789,23 @@ mod tests {
             ]
         );
         assert!(mode.actions().iter().all(|a| !a.key_label.is_empty()));
+        crate::picker::assert_follows_prefix_concept("fnm", &mode.actions());
+    }
+
+    /// The fnm manager was the other picker with no `[keys.*]` table, so none of
+    /// its mutating verbs could be moved off the keys they shipped with.
+    #[test]
+    fn an_fnm_verb_can_be_rebound_like_any_other_action() {
+        let mut cfg = Config::default();
+        cfg.keys
+            .entry("fnm".into())
+            .or_default()
+            .insert("uninstall".into(), "alt-x".into());
+        let mode = FnmMode::new(&cfg);
+        assert_eq!(
+            mode.key_bindings().get("uninstall").map(String::as_str),
+            Some("alt-x")
+        );
     }
 
     /// `verb` is the phrase a failure is reported with, not the fnm subcommand,

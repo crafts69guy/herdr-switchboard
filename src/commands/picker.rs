@@ -12,6 +12,7 @@ use super::catalog::{ago, fingerprint, stamp, CommandCatalog, CommandRecord, Sel
 use crate::clipboard::copy_text;
 use crate::config::Config;
 use crate::data::Theme;
+use crate::keymap::parse_chord;
 use crate::notify::{Event as NotifyEvent, Notifier};
 use crate::picker::{
     self, ActionOutcome, ActionSpec, PickerItem, PickerMarker, PickerMode, PickerTab,
@@ -23,6 +24,10 @@ pub(super) fn run(cfg: Config, theme: Theme) -> Result<()> {
     picker::run(mode, theme, cfg)
 }
 
+/// The star chord's cap, spelled once. The action bar prints it and the empty
+/// Starred tab names it; a second literal is how the two drift apart.
+const STAR_CAP: &str = "^s";
+
 struct CommandMode {
     catalog: CommandCatalog,
     tab: CommandTab,
@@ -30,6 +35,9 @@ struct CommandMode {
     origin_cwd: Option<String>,
     notifier: Notifier,
     bindings: HashMap<String, String>,
+    /// The empty-Starred sentence, rebuilt whenever the bindings are, because it
+    /// names a key and every other cap on this surface follows a remap.
+    starred_empty: String,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -40,6 +48,8 @@ enum CommandTab {
 
 impl CommandMode {
     fn new(cfg: &Config) -> Result<Self> {
+        let bindings = cfg.keys.get("commands").cloned().unwrap_or_default();
+        let starred_empty = starred_empty(&bindings);
         Ok(Self {
             catalog: CommandCatalog::load(cfg)?,
             tab: CommandTab::History,
@@ -48,7 +58,8 @@ impl CommandMode {
                 .ok()
                 .filter(|cwd| !cwd.is_empty()),
             notifier: Notifier::new(cfg),
-            bindings: cfg.keys.get("commands").cloned().unwrap_or_default(),
+            bindings,
+            starred_empty,
         })
     }
 
@@ -129,7 +140,7 @@ impl PickerMode for CommandMode {
     fn empty_message(&self) -> &str {
         match self.tab {
             CommandTab::History => "No safe commands",
-            CommandTab::Starred => "No stars — ctrl-s in History",
+            CommandTab::Starred => &self.starred_empty,
         }
     }
     fn schema(&self) -> FieldSchema {
@@ -189,7 +200,7 @@ impl PickerMode for CommandMode {
                 id: "star",
                 key: KeyCode::Char('s'),
                 modifiers: KeyModifiers::CONTROL,
-                key_label: "^s".into(),
+                key_label: STAR_CAP.into(),
                 label: "star/unstar",
                 color_slot: "yellow",
             },
@@ -216,6 +227,7 @@ impl PickerMode for CommandMode {
         self.catalog = CommandCatalog::load(config)?;
         self.notifier = Notifier::new(config);
         self.bindings = config.keys.get("commands").cloned().unwrap_or_default();
+        self.starred_empty = starred_empty(&self.bindings);
         Ok(())
     }
     fn initial(&mut self) -> Result<Vec<PickerItem>> {
@@ -285,6 +297,17 @@ impl PickerMode for CommandMode {
         }
         Ok(ActionOutcome::Close)
     }
+}
+
+/// The empty-Starred sentence, naming the star chord as it is actually bound.
+fn starred_empty(bindings: &HashMap<String, String>) -> String {
+    let cap = bindings
+        .get("star")
+        .and_then(|spec| spec.split(',').next())
+        .and_then(parse_chord)
+        .map(|chord| chord.label())
+        .unwrap_or_else(|| STAR_CAP.to_string());
+    format!("No stars — {cap} in History")
 }
 
 pub(super) fn command_item(record: &CommandRecord) -> PickerItem {
@@ -378,6 +401,7 @@ mod tests {
             origin_cwd: None,
             notifier: Notifier::silent(),
             bindings: HashMap::new(),
+            starred_empty: starred_empty(&HashMap::new()),
         }
     }
 
@@ -407,6 +431,7 @@ mod tests {
             origin_cwd: None,
             notifier: Notifier::silent(),
             bindings: HashMap::new(),
+            starred_empty: starred_empty(&HashMap::new()),
         };
 
         let items = empty.items();
@@ -450,6 +475,7 @@ mod tests {
             origin_cwd: None,
             notifier: Notifier::silent(),
             bindings: HashMap::new(),
+            starred_empty: starred_empty(&HashMap::new()),
         };
 
         let items = mode.items();
@@ -534,7 +560,27 @@ mod tests {
         assert_eq!(mode.empty_message(), "No safe commands");
         mode.activate_tab("starred").unwrap();
         assert!(
-            mode.empty_message().contains("ctrl-s"),
+            mode.empty_message().contains(STAR_CAP),
+            "{}",
+            mode.empty_message()
+        );
+    }
+
+    /// The empty tab names a key, so it has to follow a remap the way the pill
+    /// caps do — a frozen literal would send the user to a key that no longer
+    /// stars anything.
+    #[test]
+    fn the_empty_starred_tab_names_the_remapped_star_key() {
+        let mut cfg = Config::default();
+        cfg.keys
+            .entry("commands".into())
+            .or_default()
+            .insert("star".into(), "alt-f".into());
+        let mut mode = command_mode();
+        mode.reload_config(&cfg).unwrap();
+        mode.activate_tab("starred").unwrap();
+        assert!(
+            mode.empty_message().contains("⌥f"),
             "{}",
             mode.empty_message()
         );
@@ -661,6 +707,7 @@ mod tests {
         assert_eq!(mode.list_pct(), 58);
         assert!(!mode.is_polling(), "the catalogue is loaded up front");
         assert!(mode.actions().iter().all(|a| !a.key_label.is_empty()));
+        crate::picker::assert_follows_prefix_concept("commands", &mode.actions());
     }
 
     #[test]

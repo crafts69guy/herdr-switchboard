@@ -26,6 +26,69 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **One prefix concept, everywhere.** Which prefix a key wore used to depend on where it grew up:
+  `ctrl-s` starred a command but sent a repo to an agent, `alt-s` sorted in Projects but opened
+  Settings in the Central Menu, `alt-u` updated the plugin in Projects and *used a Node version* in
+  the fnm manager, opening a workspace was `alt-w` here / `ctrl-w` there / bare `w` in Normal, and
+  the changelog answered to three different letters. Now the prefix names the **kind of work**, and
+  never the mode you are in:
+
+  - **`ctrl-<key>` acts on the selected row** — open it, update it, remove it, copy it, send it,
+    star it.
+  - **`alt-<key>` changes the view or the app** — preview, sort, clone, changelog, settings, plugin
+    update. It is also the heavier form of a `ctrl` verb on the same letter, such as Ports'
+    `ctrl-x` TERM and `alt-x` KILL.
+  - **`enter` runs the row's primary action**, with `ctrl-enter` / `alt-enter` as its variants.
+
+  Every one of those chords now means the same thing in **both** Projects modes and on every
+  picker. Normal mode adds bare aliases — `t` `v` `o` `w` `p` — always on the same letter as the
+  chord they shorten, and motion keeps the idiom of its mode (readline while typing, Vim while
+  navigating).
+
+  **The `space` leader is gone.** Space can only be a leader in Normal — while typing it is a
+  character you meant — so every verb living there was forced to change prefix with the mode, which
+  was the inconsistency itself. `space u` / `space x` / `space c` / `space l` / `space ,` /
+  `space U` are now simply `ctrl-r` / `ctrl-x` / `alt-l` / `alt-h` / `alt-,` / `alt-u`, in both
+  modes.
+
+  What moved, in full: **star** `ctrl-b` → `ctrl-s`; **send to an agent** `ctrl-s` → `ctrl-a`
+  (Projects and the Git saved-review lists); **open in a workspace** `alt-w` → `ctrl-w` (Projects
+  and AI Agents; Ports already used it); **clone** `alt-enter` → `alt-l`; **changelog** `alt-c` →
+  `alt-h`; **delete word** `ctrl-w` → `alt-backspace`, which also revives it in the Ports picker
+  where `ctrl-w` had silently killed it; and in **Node Versions**, `alt-u` use → `ctrl-enter`,
+  `alt-i` install → `alt-enter`, `alt-d` default → `ctrl-d`, `alt-x` uninstall → `ctrl-x`.
+  Commands, Zen, the Git menu and the Central Menu are unchanged.
+
+  Old habits are a config block away — see *Remapping* in `docs/keybindings.md`. A Projects
+  override now binds into both modes at once, so it cannot reintroduce the split, and the footer
+  and `?` cheatsheet render whatever you bind.
+
+- **The Central Menu and Node Versions can be rebound.** They were the only two pickers with no
+  `[keys.*]` table, so their keys were the ones nobody could move. `[keys.menu]` and `[keys.fnm]`
+  now work like every other picker's.
+
+- **The empty Starred tab in Commands names the key you actually have.** It printed a fixed
+  `ctrl-s` even after `[keys.commands] star` was remapped, sending you to a key that no longer
+  starred anything.
+
+- **A shift bit your terminal adds no longer loses the action.** Projects weighed only ctrl and alt
+  when resolving a key; every other picker compared the modifier bits exactly. So one press had two
+  answers depending on which surface read it — `shift-enter` ran the selected row in Projects and
+  did nothing in Commands, Ports, Agents, Zen, the Menu or Node Versions, and a chord arriving with
+  a stray shift bit missed its `ctrl-` action outright. Both halves now decide the same way.
+
+- **A picker action that collides with a reserved chord is now caught at build time.** The shared
+  picker answers `alt-,`, `alt-j`, `alt-k`, `tab` and `shift-tab` before consulting a picker's own
+  actions, so an action declared on one of those was silently swallowed — the way Ports' `ctrl-w`
+  had quietly killed delete-word for that picker alone. Those chords are one table now, and a test
+  every picker runs refuses an action that claims one, takes `ctrl-c`/`ctrl-u`, uses a bare letter
+  (which would make that character untypeable), prints a cap that is not the key it listens for, or
+  binds a shared action to a chord it does not carry elsewhere.
+
+- **A modified chord can no longer trigger a Git menu mnemonic.** The menu matched `a` whether or
+  not ctrl was held, so `ctrl-a` pressed one view too early would have started an all-files review
+  — a minutes-long read — rather than doing nothing.
+
 - **Projects and the Commands, Ports, Agents and Menu pickers scroll and filter faster.** Every
   visible and off-screen row was rebuilt from scratch on each frame; rows now reuse the text they
   already have. Star lookups, tab counts, the name ordering, and field filters no longer redo work

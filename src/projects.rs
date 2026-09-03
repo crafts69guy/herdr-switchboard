@@ -139,9 +139,6 @@ pub struct App {
     pub keymap: keymap::Keymap,
     /// Insert (type-to-filter) or Normal (Vim). Esc toggles between them.
     pub mode: keymap::Mode,
-    /// True after the Normal-mode leader (`␣`) is pressed, waiting for the next
-    /// key to select a leader action.
-    pub leader_pending: bool,
     pub picker: Picker,
     pub preview: PreviewState,
     pub changelog: ChangelogState,
@@ -544,7 +541,6 @@ impl App {
             update,
             keymap,
             mode,
-            leader_pending: false,
             picker,
             preview,
             changelog: ChangelogState::new(),
@@ -926,10 +922,7 @@ fn apply_action(app: &mut App, action: keymap::Action) -> Flow {
             delete_word(&mut app.picker.query);
             app.picker.recompute();
         }
-        Action::EnterInsert => {
-            app.mode = keymap::Mode::Insert;
-            app.leader_pending = false;
-        }
+        Action::EnterInsert => app.mode = keymap::Mode::Insert,
         Action::EnterNormal => app.mode = keymap::Mode::Normal,
         Action::Accept(a) => return Flow::Accept(a),
     }
@@ -1033,22 +1026,6 @@ fn handle_key(app: &mut App, k: crossterm::event::KeyEvent) -> Flow {
     let Some(ch) = keymap::chord_of(&k) else {
         return Flow::Continue;
     };
-
-    // Normal-mode leader: `␣` arms it, the next key picks a leader action. An
-    // unbound follow-up just disarms — the leader never traps you.
-    if app.mode == keymap::Mode::Normal {
-        if app.leader_pending {
-            app.leader_pending = false;
-            if let Some(action) = app.keymap.leader_action(ch) {
-                return apply_action(app, action);
-            }
-            return Flow::Continue;
-        }
-        if ch == app.keymap.leader_chord {
-            app.leader_pending = true;
-            return Flow::Continue;
-        }
-    }
 
     if let Some(action) = app.keymap.action(app.mode, ch) {
         return apply_action(app, action);
@@ -1751,26 +1728,23 @@ mod tests {
         assert_eq!(app.picker.query, "", "Normal mode typed into the query");
     }
 
-    /// The leader arms on `␣` and fires on the next key — and an unbound
-    /// follow-up simply disarms, so the leader can never trap you.
+    /// Space is an ordinary key again now that the leader is gone: in Normal it
+    /// is simply unbound, and nothing is left half-pressed waiting for it.
     #[test]
-    fn the_leader_arms_fires_and_never_traps() {
+    fn space_arms_nothing_in_normal_mode() {
         let mut app = ready_app();
         app.mode = keymap::Mode::Normal;
 
         handle_key(&mut app, key(KeyCode::Char(' '), KeyModifiers::NONE));
-        assert!(app.leader_pending, "space armed the leader");
-
-        // An unbound follow-up disarms without acting.
-        handle_key(&mut app, key(KeyCode::Char('§'), KeyModifiers::NONE));
-        assert!(!app.leader_pending, "the leader stayed armed");
         assert_eq!(app.overlay, Overlay::None);
+        assert!(
+            app.picker.query.is_empty(),
+            "space must not reach the query"
+        );
 
-        // A bound follow-up runs its action.
-        handle_key(&mut app, key(KeyCode::Char(' '), KeyModifiers::NONE));
-        let flow = handle_key(&mut app, key(KeyCode::Char('?'), KeyModifiers::NONE));
-        assert!(matches!(flow, Flow::Continue));
-        assert!(!app.leader_pending);
+        // The key that used to be a leader verb now does its own thing directly.
+        handle_key(&mut app, key(KeyCode::Char('?'), KeyModifiers::NONE));
+        assert_eq!(app.overlay, Overlay::Help);
     }
 
     /// The wheel moves the selection over the list and scrolls the card over
@@ -2393,20 +2367,16 @@ mod tests {
         }
     }
 
-    /// Insert and Normal are the two input modes, and entering Insert also
-    /// cancels a half-pressed leader — otherwise the next character typed would
-    /// be read as a leader verb.
+    /// Insert and Normal are the two input modes, and `esc` toggles between them.
     #[test]
-    fn entering_insert_mode_cancels_a_pending_leader() {
+    fn entering_insert_mode_switches_the_mode() {
         use keymap::Action;
         let mut app = App::new(sample(), Theme::default(), Config::default(), ".".into());
         app.catalog = CatalogState::Ready;
         app.mode = keymap::Mode::Normal;
-        app.leader_pending = true;
 
         apply_action(&mut app, Action::EnterInsert);
         assert_eq!(app.mode, keymap::Mode::Insert);
-        assert!(!app.leader_pending, "the leader was cancelled");
 
         apply_action(&mut app, Action::EnterNormal);
         assert_eq!(app.mode, keymap::Mode::Normal);
@@ -3188,9 +3158,13 @@ mod tests {
         );
         let screen = rendered(&mut app, 180, 40);
         let footer = screen.lines().last().unwrap();
+        // Rendered in Normal mode, and every cap is the chord Insert shows too.
         assert!(footer.contains("^y copy"), "{footer}");
-        assert!(footer.contains("^s send"), "{footer}");
-        assert!(footer.contains("␣ b star"), "{footer}");
+        assert!(footer.contains("^a send"), "{footer}");
+        assert!(footer.contains("^s star"), "{footer}");
+        assert!(footer.contains("^r update"), "{footer}");
+        assert!(footer.contains("^w workspace"), "{footer}");
+        assert!(footer.contains("⌥l clone"), "{footer}");
 
         app.overlay = Overlay::Help;
         let help = rendered(&mut app, 120, 40);
@@ -3671,7 +3645,7 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_y_returns_a_typed_copy_outcome_and_ctrl_s_opens_handoff() {
+    fn ctrl_y_returns_a_typed_copy_outcome_and_ctrl_a_opens_handoff() {
         let mut cfg = Config::default();
         cfg.common.keymode = crate::config::KeyMode::Insert;
         let mut app = App::new(
@@ -3683,14 +3657,14 @@ mod tests {
         let copy = handle_key(&mut app, key(KeyCode::Char('y'), KeyModifiers::CONTROL));
         assert!(matches!(copy, Flow::CopyPath(entry) if entry.dir.as_deref() == Some("/repo")));
 
-        let send = handle_key(&mut app, key(KeyCode::Char('s'), KeyModifiers::CONTROL));
+        let send = handle_key(&mut app, key(KeyCode::Char('a'), KeyModifiers::CONTROL));
         assert!(matches!(send, Flow::DiscoverTargets(_)));
         assert_eq!(app.overlay, Overlay::Handoff);
         assert_eq!(app.handoff.status.as_deref(), Some("Finding agents…"));
     }
 
     #[test]
-    fn ctrl_b_requests_a_repo_star_without_changing_ctrl_s() {
+    fn ctrl_s_requests_a_repo_star_without_changing_ctrl_a() {
         let mut cfg = Config::default();
         cfg.common.keymode = crate::config::KeyMode::Insert;
         let mut app = App::new(
@@ -3700,11 +3674,11 @@ mod tests {
             ".".into(),
         );
 
-        let star = handle_key(&mut app, key(KeyCode::Char('b'), KeyModifiers::CONTROL));
+        let star = handle_key(&mut app, key(KeyCode::Char('s'), KeyModifiers::CONTROL));
         assert!(matches!(star, Flow::SetStar(entry, true) if entry.id == "id"));
         assert!(app.picker.query.is_empty());
 
-        let send = handle_key(&mut app, key(KeyCode::Char('s'), KeyModifiers::CONTROL));
+        let send = handle_key(&mut app, key(KeyCode::Char('a'), KeyModifiers::CONTROL));
         assert!(matches!(send, Flow::DiscoverTargets(_)));
     }
 
