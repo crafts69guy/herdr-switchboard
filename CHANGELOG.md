@@ -7,6 +7,8 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [3.0.0] - 2026-09-03
+
 ### Added
 
 - **A line-coverage gate.** `bash bin/coverage.sh` reports per-file coverage and fails under 90%,
@@ -883,7 +885,8 @@ tuicr's own colours.
   open it in a new workspace, tab, split, or the current pane, plus clone (`ghq get`),
   update, remove, and a handoff to the git-hub menu.
 
-[Unreleased]: https://github.com/crafts69guy/herdr-switchboard/compare/v2.1.0...HEAD
+[Unreleased]: https://github.com/crafts69guy/herdr-switchboard/compare/v3.0.0...HEAD
+[3.0.0]: https://github.com/crafts69guy/herdr-switchboard/compare/v2.1.0...v3.0.0
 [2.1.0]: https://github.com/crafts69guy/herdr-switchboard/compare/v2.0.0...v2.1.0
 [2.0.0]: https://github.com/crafts69guy/herdr-switchboard/compare/v1.3.0...v2.0.0
 [1.3.0]: https://github.com/crafts69guy/herdr-switchboard/compare/v1.2.0...v1.3.0
