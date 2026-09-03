@@ -205,6 +205,11 @@ order so the list stays stable.
   `mode_idiomatic`: motion (readline in Insert, Vim in Normal) and query editing (`^u` clear,
   `⌥⌫` delete-word, Insert-only). `^u` and `^c` are reserved on every surface — no `ActionSpec`
   may take them, which is why the fnm manager's `use`/`install` sit on the `↵` ladder.
+  **A chord that is somebody's multiplexer prefix never reaches the pane at all**, so opening in a
+  tab is the mnemonic-free `^e`: herdr's default prefix is `^b` and `^t` is the usual tmux-refugee
+  alternative, so the open group avoids both. `^b` is refused by
+  `no_default_chord_takes_herdrs_prefix` and by the shared picker's check; do not "fix" `^e` into
+  `^t`, and do not reclaim `^b` for anything.
   **There is no `␣` leader, and adding one back is the bug.** Space can only be a leader in Normal
   — in Insert it is a character the user is typing — so any group living there was forced to change
   prefix with the mode, which is the whole inconsistency this layout removes. The Git menu, the

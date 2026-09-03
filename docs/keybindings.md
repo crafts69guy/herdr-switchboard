@@ -24,6 +24,17 @@ Six chords belong to the picker itself and cannot be rebound or claimed by a mod
 `ctrl-u` clears the query, `alt-,` opens settings, `alt-j` / `alt-k` scroll the preview, and `tab` /
 `shift-tab` move between groups.
 
+### Your multiplexer's prefix wins
+
+Herdr consumes its prefix before anything inside a pane can see the key, so a binding here that
+happens to be your prefix never arrives — no error, just a command-bar cap that does nothing. That
+is why opening in a tab is `ctrl-e` rather than the obvious `ctrl-t`: herdr's own default prefix is
+`ctrl-b`, and `ctrl-t` is the usual alternative for anyone carrying tmux muscle memory, so the open
+group avoids both. Nothing here may bind `ctrl-b`, and a test refuses it.
+
+If your prefix collides with some other binding, remap that action — and check whether more than one
+picker declares it. `tab`, for instance, lives in both `[keys.projects]` and `[keys.agents]`.
+
 There is no `space` leader. Space can only be a leader in Normal mode — while typing it is a
 character you meant — so anything living there was forced to change prefix with the mode, which is
 exactly the inconsistency this layout removes.
@@ -39,7 +50,7 @@ the same letter as the chord, one keystroke shorter.
 | Key | Action | Bare, Normal only |
 | --- | --- | --- |
 | `enter` | Open the selection with its default action. | |
-| `ctrl-t` / `ctrl-v` / `ctrl-o` / `ctrl-w` | Open in a tab / split / current pane / workspace. | `t` `v` `o` `w` |
+| `ctrl-e` / `ctrl-v` / `ctrl-o` / `ctrl-w` | Open in a tab / split / current pane / workspace. | `e` `v` `o` `w` |
 | `ctrl-r` / `ctrl-x` | Update / remove the selected repo. | |
 | `ctrl-y` / `ctrl-a` / `ctrl-s` | Copy the absolute path / send it to an agent / star the row. | |
 | `alt-p` / `alt-j`, `alt-k` | Toggle / scroll the preview. | `p` |
@@ -86,7 +97,7 @@ Their surface-specific defaults are:
 
 | Picker | Keys |
 | --- | --- |
-| AI Agents | `enter` current pane, `ctrl-t` new tab, `ctrl-w` new workspace. |
+| AI Agents | `enter` current pane, `ctrl-e` new tab, `ctrl-w` new workspace. |
 | Node Versions | `enter` use or install, `ctrl-enter` use, `alt-enter` install, `ctrl-d` default, `ctrl-x` uninstall, `alt-r` refresh. |
 | Usage | `r` re-read every provider, `esc` close. |
 | Commands | `tab` / `shift-tab` History/Starred, `ctrl-s` star, `enter` fill, `ctrl-enter` run, `alt-enter` historical cwd, `ctrl-y` copy, `ctrl-x` forget, `alt-s` sort. |

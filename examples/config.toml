@@ -85,7 +85,7 @@ alert_percent = 85
 # Commands and Ports use the action ids printed in their footer.
 [keys.projects]
 # open = "enter"
-# tab = "ctrl-t"
+# tab = "ctrl-e"
 # split = "ctrl-v"
 # workspace = "ctrl-w"
 # down = "ctrl-j,ctrl-n"
@@ -98,7 +98,7 @@ alert_percent = 85
 
 [keys.agents]
 # pane = "enter"
-# tab = "ctrl-t"
+# tab = "ctrl-e"
 # workspace = "ctrl-w"
 
 [keys.commands]

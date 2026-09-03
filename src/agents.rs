@@ -111,9 +111,9 @@ impl PickerMode for AgentsMode {
             },
             ActionSpec {
                 id: "tab",
-                key: KeyCode::Char('t'),
+                key: KeyCode::Char('e'),
                 modifiers: KeyModifiers::CONTROL,
-                key_label: "^t".into(),
+                key_label: "^e".into(),
                 label: "tab",
                 color_slot: "blue",
             },

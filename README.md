@@ -104,7 +104,7 @@ Common Projects actions:
 | Key | Action | Bare, Normal only |
 | --- | --- | --- |
 | `enter` | Open the selected item using its default action. | |
-| `ctrl-t` | Open a repo or worktree in a new tab. | `t` |
+| `ctrl-e` | Open a repo or worktree in a new tab. | `e` |
 | `ctrl-v` | Open it in a split. | `v` |
 | `ctrl-o` | Open it in the current pane. | `o` |
 | `ctrl-w` | Open it in a workspace. | `w` |

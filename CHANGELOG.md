@@ -51,7 +51,11 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `space U` are now simply `ctrl-r` / `ctrl-x` / `alt-l` / `alt-h` / `alt-,` / `alt-u`, in both
   modes.
 
-  What moved, in full: **star** `ctrl-b` → `ctrl-s`; **send to an agent** `ctrl-s` → `ctrl-a`
+  What moved, in full: **open in a tab** `ctrl-t` → **`ctrl-e`** (Projects and AI Agents), because
+  herdr consumes its prefix before a pane sees the key: a binding that is somebody's prefix never
+  arrives at all, and `ctrl-t` is the usual prefix for anyone carrying tmux muscle memory while
+  `ctrl-b` is herdr's own default. The open group avoids both, and nothing here may bind `ctrl-b`
+  any more. Normal's bare alias follows the letter, so it is `e`. Then: **star** `ctrl-b` → `ctrl-s`; **send to an agent** `ctrl-s` → `ctrl-a`
   (Projects and the Git saved-review lists); **open in a workspace** `alt-w` → `ctrl-w` (Projects
   and AI Agents; Ports already used it); **clone** `alt-enter` → `alt-l`; **changelog** `alt-c` →
   `alt-h`; **delete word** `ctrl-w` → `alt-backspace`, which also revives it in the Ports picker

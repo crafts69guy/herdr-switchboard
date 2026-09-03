@@ -333,6 +333,15 @@ fn alt(key: Key) -> Chord {
 /// query editing exists only where there is a query — `^u` clears it and `⌥⌫`
 /// deletes a word. `^u` and `^c` are reserved everywhere; no picker action may
 /// take them.
+///
+/// One letter choice is not a mnemonic and must not be "fixed" into one: opening
+/// in a tab is **`^e`**, not the obvious `^t`. herdr consumes its prefix before
+/// anything in the pane can see it, so a chord that is somebody's prefix is not
+/// merely inconvenient — it never arrives, and the footer advertises a key that
+/// does nothing. herdr's own default prefix is `^b`, and `^t` is the usual
+/// alternative for anyone carrying tmux muscle memory, so the open group avoids
+/// both. `^b` is refused outright by `no_default_chord_takes_herdrs_prefix`;
+/// `^t` is simply left free.
 fn default_insert() -> Vec<(Chord, Action)> {
     use Action::*;
     vec![
@@ -349,7 +358,7 @@ fn default_insert() -> Vec<(Chord, Action)> {
         (chord(Key::BackTab), PrevGroup),
         // Act on the selected row.
         (chord(Key::Enter), Accept(AcceptKind::Default)),
-        (ctrl(Key::Char('t')), Accept(AcceptKind::Tab)),
+        (ctrl(Key::Char('e')), Accept(AcceptKind::Tab)),
         (ctrl(Key::Char('v')), Accept(AcceptKind::Split)),
         (ctrl(Key::Char('o')), Accept(AcceptKind::Pane)),
         (ctrl(Key::Char('w')), Accept(AcceptKind::Workspace)),
@@ -405,7 +414,7 @@ fn default_normal() -> Vec<(Chord, Action)> {
         (chord(Key::Char('/')), EnterInsert),
         // Act on the selected row.
         (chord(Key::Enter), Accept(AcceptKind::Default)),
-        (ctrl(Key::Char('t')), Accept(AcceptKind::Tab)),
+        (ctrl(Key::Char('e')), Accept(AcceptKind::Tab)),
         (ctrl(Key::Char('v')), Accept(AcceptKind::Split)),
         (ctrl(Key::Char('o')), Accept(AcceptKind::Pane)),
         (ctrl(Key::Char('w')), Accept(AcceptKind::Workspace)),
@@ -424,7 +433,7 @@ fn default_normal() -> Vec<(Chord, Action)> {
         (alt(Key::Char('u')), Accept(AcceptKind::UpdatePlugin)),
         (alt(Key::Char(',')), Settings),
         // Bare aliases: the same letters, one keystroke shorter.
-        (chord(Key::Char('t')), Accept(AcceptKind::Tab)),
+        (chord(Key::Char('e')), Accept(AcceptKind::Tab)),
         (chord(Key::Char('v')), Accept(AcceptKind::Split)),
         (chord(Key::Char('o')), Accept(AcceptKind::Pane)),
         (chord(Key::Char('w')), Accept(AcceptKind::Workspace)),
@@ -603,7 +612,7 @@ mod tests {
             Some(Action::EnterInsert)
         );
         assert_eq!(
-            km.action(Mode::Normal, chord(Key::Char('t'))),
+            km.action(Mode::Normal, chord(Key::Char('e'))),
             Some(Action::Accept(AcceptKind::Tab))
         );
         // The manage verbs used to hide behind a `␣` leader. They are now the
@@ -625,16 +634,16 @@ mod tests {
             km.label_for(Mode::Normal, Action::CycleSort).as_deref(),
             Some("⌥s")
         );
-        // A bare alias never displaces the chord: `t` and `^t` both open a tab,
+        // A bare alias never displaces the chord: `e` and `^e` both open a tab,
         // and the footer shows the one Insert would show.
         assert_eq!(
-            km.action(Mode::Normal, ctrl(Key::Char('t'))),
+            km.action(Mode::Normal, ctrl(Key::Char('e'))),
             Some(Action::Accept(AcceptKind::Tab))
         );
         assert_eq!(
             km.label_for(Mode::Normal, Action::Accept(AcceptKind::Tab))
                 .as_deref(),
-            Some("^t")
+            Some("^e")
         );
         assert_eq!(
             km.action(Mode::Normal, ctrl(Key::Char('y'))),
@@ -699,6 +708,24 @@ mod tests {
                 | Action::EnterNormal
                 | Action::Quit
         )
+    }
+
+    /// herdr consumes its prefix before the pane sees the key, so a default on
+    /// that chord is a key that never arrives — no error, just a footer cap that
+    /// does nothing. `^b` is herdr's default prefix, so nothing here may claim
+    /// it; `^t`, the common tmux-muscle-memory alternative, is why opening in a
+    /// tab sits on the mnemonic-free `^e`.
+    #[test]
+    fn no_default_chord_takes_herdrs_prefix() {
+        let km = Keymap::load(&Config::default());
+        for (table, mode) in [(&km.insert, "insert"), (&km.normal, "normal")] {
+            for (chord, action) in table {
+                assert!(
+                    !(chord.ctrl && !chord.alt && chord.key == Key::Char('b')),
+                    "{mode} binds {action:?} to ^b, which herdr takes as its default prefix"
+                );
+            }
+        }
     }
 
     /// The concept, asserted rather than described: a chord that carries a
@@ -804,8 +831,8 @@ mod tests {
             km.action(Mode::Insert, ctrl(Key::Char('y'))),
             Some(Action::Accept(AcceptKind::Tab))
         );
-        // The default ^t is gone, and the footer would now show ^y.
-        assert_eq!(km.action(Mode::Insert, ctrl(Key::Char('t'))), None);
+        // The default ^e is gone, and the footer would now show ^y.
+        assert_eq!(km.action(Mode::Insert, ctrl(Key::Char('e'))), None);
         assert_eq!(km.label_for(Mode::Insert, Action::CopyPath), None);
         assert_eq!(
             km.label_for(Mode::Insert, Action::Accept(AcceptKind::Tab))

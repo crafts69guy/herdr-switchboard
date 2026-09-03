@@ -3638,9 +3638,9 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_t_accepts_into_a_tab_through_the_keymap() {
+    fn ctrl_e_accepts_into_a_tab_through_the_keymap() {
         let mut app = app_with_preview(0, 0);
-        let flow = handle_key(&mut app, key(KeyCode::Char('t'), KeyModifiers::CONTROL));
+        let flow = handle_key(&mut app, key(KeyCode::Char('e'), KeyModifiers::CONTROL));
         assert!(matches!(flow, Flow::Accept(Accept::Tab)));
     }
 

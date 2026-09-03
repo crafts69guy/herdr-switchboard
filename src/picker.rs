@@ -1124,7 +1124,7 @@ pub(crate) fn assert_follows_prefix_concept(surface: &str, actions: &[ActionSpec
     /// is exempt: that is the `↵` ladder, where the surface's *primary* action
     /// may well be one of these verbs (Ports opens by copying an address).
     const CANONICAL: &[(&str, KeyCode, KeyModifiers)] = &[
-        ("tab", KeyCode::Char('t'), KeyModifiers::CONTROL),
+        ("tab", KeyCode::Char('e'), KeyModifiers::CONTROL),
         ("workspace", KeyCode::Char('w'), KeyModifiers::CONTROL),
         ("copy", KeyCode::Char('y'), KeyModifiers::CONTROL),
         ("star", KeyCode::Char('s'), KeyModifiers::CONTROL),
@@ -1146,6 +1146,12 @@ pub(crate) fn assert_follows_prefix_concept(surface: &str, actions: &[ActionSpec
             !(ctrl && matches!(action.key, KeyCode::Char('c') | KeyCode::Char('u'))),
             "{surface}.{id} takes ^c or ^u, which close the picker and clear the query \
              on every surface"
+        );
+        // herdr eats its prefix before the pane sees the key, so an action here
+        // would never run and the pill would advertise a dead cap.
+        assert!(
+            !(ctrl && action.key == KeyCode::Char('b')),
+            "{surface}.{id} takes ^b, which herdr claims as its default prefix"
         );
 
         assert!(
@@ -1398,6 +1404,13 @@ mod tests {
             KeyModifiers::ALT,
             "⌥j",
             "down"
+        )]));
+        // ^b never reaches the pane: it is herdr's default prefix.
+        assert!(rejected(vec![spec(
+            KeyCode::Char('b'),
+            KeyModifiers::CONTROL,
+            "^b",
+            "tab"
         )]));
         // A cap that is not the key it listens for.
         assert!(rejected(vec![spec(

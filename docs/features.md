@@ -6,7 +6,7 @@ The AI Agents picker reads `herdr integration status` and lists installed integr
 start the selected integration in:
 
 - The pane that opened Switchboard with `enter`.
-- A focused new tab with `ctrl-t`.
+- A focused new tab with `ctrl-e`.
 - A focused new workspace with `ctrl-w`.
 
 New targets inherit the origin pane's cwd. If startup fails, Switchboard closes a tab or workspace
