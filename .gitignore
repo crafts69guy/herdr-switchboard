@@ -3,6 +3,9 @@
 /target
 /.scratch
 
+# Coverage runs drop raw profiles in the repo root
+*.profraw
+
 # Agent skill installs — machine-local, not part of the plugin
 /.agents
 /.claude
