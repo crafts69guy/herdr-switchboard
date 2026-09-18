@@ -123,7 +123,9 @@ pub fn run<S: Surface>(surface: &mut S) -> Result<S::Output> {
             |blocking| {
                 let wait = if blocking { tick } else { Duration::ZERO };
                 if event::poll(wait)? {
-                    surface.on_event(event::read()?)
+                    let event = event::read()?;
+                    let resized = matches!(event, Event::Resize(..));
+                    Ok(repaint_after(resized, surface.on_event(event)?))
                 } else {
                     surface.on_tick()
                 }
@@ -136,6 +138,20 @@ pub fn run<S: Surface>(surface: &mut S) -> Result<S::Output> {
         if let Some(output) = outcome {
             return Ok(output);
         }
+    }
+}
+
+/// Force a repaint after a resize, whatever the surface made of the event.
+///
+/// `Terminal::draw` autoresizes, but it only runs when a frame was asked for,
+/// and every surface answers `Event::Resize` from its catch-all `Wait` arm — so
+/// shrinking the window left the taller previous frame on screen with its last
+/// row, the command bar, outside the pane until the next keypress. Redraw
+/// policy is the host's, so no surface has to remember this one.
+fn repaint_after<O>(resized: bool, transition: Transition<O>) -> Transition<O> {
+    match transition {
+        Transition::Wait if resized => Transition::Redraw,
+        other => other,
     }
 }
 
@@ -190,6 +206,32 @@ mod tests {
     use std::cell::RefCell;
 
     use super::*;
+
+    /// The host, not the surface, notices a resize. Every surface routes
+    /// `Event::Resize` through a catch-all `Wait`, so without this the previous
+    /// frame stays on a screen that is no longer its size.
+    #[test]
+    fn a_resize_repaints_even_when_the_surface_ignores_it() {
+        assert!(matches!(
+            repaint_after(true, Transition::<()>::Wait),
+            Transition::Redraw
+        ));
+        // Anything the surface already decided stands: a resize never turns an
+        // exit into another frame, and a redraw is already a redraw.
+        assert!(matches!(
+            repaint_after(true, Transition::Exit("chosen")),
+            Transition::Exit("chosen")
+        ));
+        assert!(matches!(
+            repaint_after(true, Transition::<()>::Redraw),
+            Transition::Redraw
+        ));
+        // Without a resize, a quiet event still costs nothing.
+        assert!(matches!(
+            repaint_after(false, Transition::<()>::Wait),
+            Transition::Wait
+        ));
+    }
 
     #[test]
     fn transition_output_is_typed() {

@@ -1558,6 +1558,36 @@ mod tests {
     /// key cap and on the command bar's pills — never as a fill, which is what
     /// the three hand-rolled `Block`s here used to do to the menu card, the
     /// sub-list card, and that list's search box.
+    /// Every git card takes its bar off the bottom before the body, and no card
+    /// is ever drawn taller than the pane holding it. The `.max(6)` floors used
+    /// to build a rect that overhung the frame, and what hung over was the bar.
+    #[test]
+    fn every_git_card_keeps_its_bar_inside_a_short_pane() {
+        let mut g = Git::new();
+        open_default(&mut g);
+
+        for (view, expected) in [("menu", "esc close"), ("list", "esc back")] {
+            if view == "list" {
+                g.show_list(ListKind::PullRequests, rows());
+            }
+            for (w, h) in [(60u16, 3u16), (60, 5), (60, 8), (60, 20)] {
+                let screen = screen(&mut g, w, h);
+                let card = g.zones.card;
+                assert!(
+                    card.bottom() <= h && card.right() <= w,
+                    "the {view} card outgrew a {w}x{h} pane: {card:?}"
+                );
+                let bar = g.zones.bar_row;
+                assert!(bar < h, "the {view} bar landed at row {bar} of {h}");
+                let row = screen.lines().nth(bar as usize).unwrap();
+                assert!(
+                    row.contains(expected),
+                    "the {view} bar is missing at {w}x{h}: {row}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn no_git_card_paints_an_opaque_background() {
         let fill = Color::Rgb(0x10, 0x12, 0x14);

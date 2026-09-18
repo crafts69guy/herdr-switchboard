@@ -50,12 +50,7 @@ pub(super) fn draw(
     let w = want_w.min(area.width.saturating_sub(2));
     let want_h = lines.len() as u16 + 2 /* border */ + 1 /* bar */;
     let h = want_h.min(area.height.saturating_sub(1)).max(6);
-    let popup = Rect::new(
-        area.x + (area.width.saturating_sub(w)) / 2,
-        area.y + (area.height.saturating_sub(h)) / 2,
-        w,
-        h,
-    );
+    let popup = crate::tui::centered(area, w, h);
     background.paint(f, popup);
 
     let cap = format!("󰊢 Git · {}", g.label);
@@ -64,16 +59,12 @@ pub(super) fn draw(
     let inner = block.inner(popup);
     f.render_widget(block, popup);
 
-    let rows = ratatui::layout::Layout::vertical([
-        ratatui::layout::Constraint::Min(1),
-        ratatui::layout::Constraint::Length(1),
-    ])
-    .split(inner);
-    f.render_widget(Paragraph::new(lines), rows[0]);
+    let (body, bar) = crate::tui::reserve_bar(inner, 1);
+    f.render_widget(Paragraph::new(lines), body);
     g.zones.card = popup;
-    g.zones.menu = rows[0];
+    g.zones.menu = body;
     g.zones.body = Rect::default();
-    draw_bar(f, g, rows[1], theme);
+    draw_bar(f, g, bar, theme);
 }
 
 /// The size warning for an all-files review, drawn to the menu card's shape:
@@ -127,12 +118,7 @@ fn draw_confirm(
     let w = want_w.min(area.width.saturating_sub(2));
     let want_h = lines.len() as u16 + 2 /* border */ + 1 /* bar */;
     let h = want_h.min(area.height.saturating_sub(1)).max(6);
-    let popup = Rect::new(
-        area.x + (area.width.saturating_sub(w)) / 2,
-        area.y + (area.height.saturating_sub(h)) / 2,
-        w,
-        h,
-    );
+    let popup = crate::tui::centered(area, w, h);
     background.paint(f, popup);
 
     let cap = format!("󰊢 Git · {}", g.label);
@@ -142,17 +128,13 @@ fn draw_confirm(
     let inner = block.inner(popup);
     f.render_widget(block, popup);
 
-    let rows = ratatui::layout::Layout::vertical([
-        ratatui::layout::Constraint::Min(1),
-        ratatui::layout::Constraint::Length(1),
-    ])
-    .split(inner);
-    f.render_widget(Paragraph::new(lines), rows[0]);
+    let (body, bar) = crate::tui::reserve_bar(inner, 1);
+    f.render_widget(Paragraph::new(lines), body);
     // Nothing here is a row: only the bar can be clicked.
     g.zones.card = popup;
     g.zones.menu = Rect::default();
     g.zones.body = Rect::default();
-    draw_bar(f, g, rows[1], theme);
+    draw_bar(f, g, bar, theme);
 }
 
 /// `6699` → `6,699`. One number on one card; a formatting crate would be a
@@ -189,17 +171,8 @@ fn draw_list(
 
     // Size from the terminal, not the content, so the box is stable across searches.
     let w = (LIST_W as u16 + 6).min(area.width.saturating_sub(2));
-    let h = area
-        .height
-        .saturating_sub(4)
-        .clamp(16, 34)
-        .min(area.height.saturating_sub(2));
-    let popup = Rect::new(
-        area.x + (area.width.saturating_sub(w)) / 2,
-        area.y + (area.height.saturating_sub(h)) / 2,
-        w,
-        h,
-    );
+    let h = area.height.saturating_sub(4).clamp(16, 34);
+    let popup = crate::tui::centered(area, w, h);
     background.paint(f, popup);
 
     let what = g.list_title();
@@ -221,7 +194,7 @@ fn draw_list(
 
     // Nothing came back: say which nothing, rather than an empty box.
     if g.rows.is_empty() {
-        let rows = ratatui::layout::Layout::vertical([Min(1), Length(1)]).split(inner);
+        let (body, bar) = crate::tui::reserve_bar(inner, 1);
         let mut lines = vec![Line::from(Span::styled(
             g.kind.map(ListKind::empty).unwrap_or("  (nothing here)"),
             Style::default().fg(sub),
@@ -237,16 +210,16 @@ fn draw_list(
                 Style::default().fg(theme.or("yellow", Color::Yellow)),
             )));
         }
-        f.render_widget(Paragraph::new(lines), rows[0]);
-        draw_bar(f, g, rows[1], theme);
+        f.render_widget(Paragraph::new(lines), body);
+        draw_bar(f, g, bar, theme);
         return;
     }
 
     // Header (fixed) · search box (rounded, near the body) · scrolling list · bar.
-    let a =
-        ratatui::layout::Layout::vertical([Length(LIST_HEADER_ROWS), Length(3), Min(1), Length(1)])
-            .split(inner);
-    let (header_area, search_area, body_area, bar_area) = (a[0], a[1], a[2], a[3]);
+    let (stack, bar_area) = crate::tui::reserve_bar(inner, 1);
+    let a = ratatui::layout::Layout::vertical([Length(LIST_HEADER_ROWS), Length(3), Min(0)])
+        .split(stack);
+    let (header_area, search_area, body_area) = (a[0], a[1], a[2]);
 
     let mut header = list_header_lines(g, text, sub, title, header_area.width as usize);
     if let Some(message) = g.error_message.as_deref() {
@@ -559,6 +532,13 @@ fn bar_width(pills: &[crate::tui::Pill]) -> u16 {
 }
 
 fn draw_bar(f: &mut Frame, g: &mut Git, area: Rect, theme: &Theme) {
+    // A bar with no room published no pills but still published its row, and
+    // `zone_at` matches on the row alone — so clicks landed on whatever the card
+    // drew there instead.
+    if area.height == 0 {
+        g.zones.bar_zones.clear();
+        return;
+    }
     let ink = theme.or("panel_bg", Color::Rgb(16, 18, 20));
     let pills = bar_pills(g, theme);
     let (spans, zones) = crate::tui::pill_row(&pills, ink, area.x);

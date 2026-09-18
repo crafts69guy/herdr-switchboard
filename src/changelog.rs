@@ -16,7 +16,7 @@ use anyhow::Result;
 use crossterm::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
@@ -106,8 +106,7 @@ impl App {
 
 fn draw(f: &mut Frame, app: &mut App) {
     app.background.paint(f, f.area());
-    let rows = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).split(f.area());
-    let area = rows[0];
+    let (area, bar) = tui::reserve_bar(f.area(), 1);
 
     let lines = markdown::render(
         &app.blocks,
@@ -120,7 +119,7 @@ fn draw(f: &mut Frame, app: &mut App) {
     app.scroll = app.scroll.min(app.height.saturating_sub(app.rows));
 
     f.render_widget(Paragraph::new(lines).scroll((app.scroll, 0)), area);
-    draw_bar(f, app, rows[1]);
+    draw_bar(f, app, bar);
 }
 
 fn draw_bar(f: &mut Frame, app: &mut App, area: Rect) {

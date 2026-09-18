@@ -101,6 +101,17 @@ uses the same state at every width:
 When a horizontal Inspector narrows the Navigator, the group strip progressively compacts its
 labels to keep every rendered tab and click zone inside its frame.
 
+Height is governed by two rules, both owned by `tui`. `reserve_bar` takes the command bar off the
+bottom of an area before anything else is laid out, so the row naming the keys is the last thing a
+short pane loses rather than the first; where a surface has several trailing rows, each is reserved
+bottom-up in the order it may be given up. `centered` sizes a floating card, and a card is never
+larger than the frame holding it: what a card wants is a preference, never a claim on rows the pane
+does not have. A bar with no room publishes no hit zone, since a click is matched on a published
+row coordinate alone.
+
+Redraw policy belongs to the host: `surface::run` repaints on `Event::Resize` whatever the surface
+made of it, so no surface has to notice its own geometry changing.
+
 The command vocabulary is typed. Projects uses `keymap::Action`; each shared picker supplies its
 scoped `ActionSpec` values while the host provides lifecycle behavior. A displayed key cap is
 derived from the same parsed chord that handles the event. A picker mode may also expose local-only

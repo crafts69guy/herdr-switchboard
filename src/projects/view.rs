@@ -20,15 +20,15 @@ pub(super) fn draw(f: &mut Frame, app: &mut App) {
     let overlay = app.theme.or("overlay0", Color::DarkGray);
     let surface = app.theme.or("surface1", Color::Indexed(236));
 
-    let root = Layout::vertical([
-        Constraint::Length(3),
-        Constraint::Min(5),
-        Constraint::Length(1),
-    ])
-    .split(f.area());
+    // The command bar is taken off the bottom before anything else is laid out.
+    // As a trailing `Constraint::Length(1)` it was the first thing ratatui gave
+    // up on a short pane — a `Min` outranks a `Length` a hundred to one — so the
+    // one row telling the user how to leave went before the list lost anything.
+    let (top, footer) = crate::tui::reserve_bar(f.area(), 1);
+    let root = Layout::vertical([Constraint::Length(3), Constraint::Min(0)]).split(top);
 
-    // Body: list + preview. The footer (root[2]) is always a separate full-width
-    // row, so the preview can sit on any side without shrinking the command bar.
+    // Body: list + preview. The footer is always a separate full-width row, so
+    // the preview can sit on any side without shrinking the command bar.
     let body = root[1];
     let (context_area, content) = if body.width >= 120 {
         let columns = Layout::horizontal([Constraint::Length(22), Constraint::Min(40)]).split(body);
@@ -97,7 +97,7 @@ pub(super) fn draw(f: &mut Frame, app: &mut App) {
     } else {
         app.preview.area = None;
     }
-    draw_footer(f, app, root[2]);
+    draw_footer(f, app, footer);
 
     match app.overlay {
         super::Overlay::Changelog => draw_changelog(f, app, f.area()),
@@ -127,12 +127,7 @@ fn draw_handoff(f: &mut Frame, app: &mut App, area: Rect) {
 
     let width = area.width.saturating_sub(10).clamp(48, 92);
     let height = area.height.saturating_sub(6).clamp(10, 24);
-    let popup = Rect::new(
-        area.x + (area.width.saturating_sub(width)) / 2,
-        area.y + (area.height.saturating_sub(height)) / 2,
-        width,
-        height,
-    );
+    let popup = crate::tui::centered(area, width, height);
     app.background.paint(f, popup);
 
     let scope = match app.handoff.scope {
@@ -152,13 +147,12 @@ fn draw_handoff(f: &mut Frame, app: &mut App, area: Rect) {
         );
     let inner = outer.inner(popup);
     f.render_widget(outer, popup);
-    let rows = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Min(4),
-        Constraint::Length(1),
-        Constraint::Length(1),
-    ])
-    .split(inner);
+    // Bottom-up, in the order the rows may be given up: the pills, then the
+    // feedback line, then the search line and the list. Trailing them as
+    // `Length`s behind the list's `Min` reversed that — the bar went first.
+    let (head, bar_area) = crate::tui::reserve_bar(inner, 1);
+    let (head, status_area) = crate::tui::reserve_bar(head, 1);
+    let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(head);
 
     let query = if app.handoff.query.is_empty() {
         "type to filter".to_string()
@@ -227,7 +221,7 @@ fn draw_handoff(f: &mut Frame, app: &mut App, area: Rect) {
                 format!(" {message}"),
                 Style::default().fg(color),
             ))),
-            rows[2],
+            status_area,
         );
     }
 
@@ -235,14 +229,18 @@ fn draw_handoff(f: &mut Frame, app: &mut App, area: Rect) {
         crate::tui::Pill::new("↵", "send", t.or("green", Color::Green)),
         crate::tui::Pill::new("esc", "back", red),
     ];
-    let (spans, zones) = crate::tui::pill_row(&pills, ink, rows[3].x);
-    app.handoff.footer_row = rows[3].y;
-    app.handoff.footer_zones = zones
-        .into_iter()
-        .zip([super::HandoffAction::Send, super::HandoffAction::Back])
-        .map(|((start, end), action)| (start, end, action))
-        .collect();
-    f.render_widget(Paragraph::new(Line::from(spans)), rows[3]);
+    let (spans, zones) = crate::tui::pill_row(&pills, ink, bar_area.x);
+    app.handoff.footer_row = bar_area.y;
+    app.handoff.footer_zones = if bar_area.height == 0 {
+        Vec::new()
+    } else {
+        zones
+            .into_iter()
+            .zip([super::HandoffAction::Send, super::HandoffAction::Back])
+            .map(|((start, end), action)| (start, end, action))
+            .collect()
+    };
+    f.render_widget(Paragraph::new(Line::from(spans)), bar_area);
 }
 
 fn draw_context(
@@ -303,12 +301,7 @@ fn draw_changelog(f: &mut Frame, app: &mut App, area: Rect) {
 
     let w = area.width.saturating_sub(8).clamp(48, 84);
     let h = area.height.saturating_sub(4).clamp(8, 32);
-    let popup = Rect::new(
-        area.x + (area.width.saturating_sub(w)) / 2,
-        area.y + (area.height.saturating_sub(h)) / 2,
-        w,
-        h,
-    );
+    let popup = crate::tui::centered(area, w, h);
     app.background.paint(f, popup);
 
     let block = crate::tui::framed(border)
@@ -719,6 +712,13 @@ fn placeholder(app: &App, frame: usize, area: Rect) -> Text<'static> {
 }
 
 fn draw_footer(f: &mut Frame, app: &mut App, area: Rect) {
+    // A row that was never painted must claim no clicks: `zone_at` matches on a
+    // published row coordinate alone, so a zero-height bar that still published
+    // one would answer for whatever the list drew there instead.
+    if area.height == 0 {
+        app.zones.footer_zones.clear();
+        return;
+    }
     let t = &app.theme;
     // Dark ink for text sitting on the coloured pills.
     let ink = t.or("panel_bg", Color::Rgb(16, 18, 20));
@@ -994,13 +994,12 @@ fn draw_help(f: &mut Frame, app: &App, area: Rect) {
         ],
     );
 
-    // Centre a comfortably sized popup within the screen.
+    // Centre a comfortably sized popup within the screen. The floors are what
+    // the card wants, never what it takes: `centered` still clamps to the frame.
     let w = area.width.saturating_sub(6).clamp(40, HELP_W);
     let want_h = left.len().max(right.len()) as u16 + 4;
     let h = want_h.min(area.height.saturating_sub(2)).max(8);
-    let x = area.x + (area.width.saturating_sub(w)) / 2;
-    let y = area.y + (area.height.saturating_sub(h)) / 2;
-    let popup = Rect::new(x, y, w, h);
+    let popup = crate::tui::centered(area, w, h);
 
     app.background.paint(f, popup);
 

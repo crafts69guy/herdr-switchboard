@@ -184,12 +184,7 @@ fn draw_form(
     let want_h = body_h + 2 /* border */ + 3 /* tabs + hint + pills */;
     let h = want_h.min(area.height.saturating_sub(1)).max(6);
     let (popup, inner) = if presentation == Presentation::Embedded {
-        let popup = Rect::new(
-            area.x + (area.width.saturating_sub(w)) / 2,
-            area.y + (area.height.saturating_sub(h)) / 2,
-            w,
-            h,
-        );
+        let popup = tui::centered(area, w, h);
         background.paint(f, popup);
         let block = tui::framed(border)
             .title(Span::styled(
@@ -206,13 +201,14 @@ fn draw_form(
         (area, area.inner(Margin::new(2, 1)))
     };
 
-    let rows = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Min(1),
-        Constraint::Length(1),
-        Constraint::Length(1),
-    ])
-    .split(inner);
+    // Bottom-up, in the order the rows may be given up: the pills first, because
+    // they are the only place the keys are written; then the selected row's
+    // hint; then the tab strip and the form. As trailing `Length`s behind a
+    // `Min` they went the other way round — ratatui drops a `Length` a hundred
+    // times sooner than a `Min`, so the bar was first out on a short pane.
+    let (head, bar_area) = tui::reserve_bar(inner, 1);
+    let (head, hint_area) = tui::reserve_bar(head, 1);
+    let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(head);
 
     // Laid out here rather than by a `Tabs` widget, because a widget that
     // positions itself internally cannot be measured from outside without the
@@ -270,10 +266,10 @@ fn draw_form(
             format!(" {}", SETTINGS[s.sel].hint),
             Style::default().fg(sub),
         ))),
-        rows[2],
+        hint_area,
     );
 
-    draw_bar(f, s, rows[3], theme);
+    draw_bar(f, s, bar_area, theme);
 }
 
 fn status_span(s: &Settings, theme: &Theme, sub: Color) -> Span<'static> {
@@ -291,6 +287,12 @@ fn status_span(s: &Settings, theme: &Theme, sub: Color) -> Span<'static> {
 
 /// The picker's coloured-pill command bar, with this form's verbs.
 fn draw_bar(f: &mut Frame, s: &mut Settings, area: Rect, theme: &Theme) {
+    // No row, no pills, and no hit zone: `zone_at` matches a published row on
+    // its coordinate alone, so an unpainted bar would answer for the form.
+    if area.height == 0 {
+        s.zones.bar_zones.clear();
+        return;
+    }
     let ink = theme.or("panel_bg", Color::Black);
 
     if let Some(err) = &s.error {

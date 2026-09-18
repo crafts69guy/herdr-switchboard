@@ -1697,7 +1697,9 @@ mod tests {
         ));
         assert_eq!(surface.app.picker.selected, 1);
 
-        // An event that is neither key nor mouse costs nothing.
+        // An event that is neither key nor mouse costs the surface nothing; a
+        // resize is upgraded to a repaint by the host (`surface::repaint_after`),
+        // not here.
         assert!(matches!(
             surface.on_event(Event::Resize(80, 24)).unwrap(),
             SurfaceTransition::Wait
@@ -3146,6 +3148,28 @@ mod tests {
             screen.contains("Search"),
             "the picker must stay behind the overlay: {screen}"
         );
+    }
+
+    /// The command bar is the one row that says how to leave, so it is taken off
+    /// the bottom before the search box or the list get a say. As a trailing
+    /// `Constraint::Length(1)` behind a `Min` it was the first row ratatui gave
+    /// up, and a short pane lost it silently.
+    #[test]
+    fn the_command_bar_survives_a_pane_too_short_for_the_layout() {
+        let mut app = App::new(
+            vec![path_entry(Kind::Repo, "/repo")],
+            Theme::default(),
+            Config::default(),
+            ".".into(),
+        );
+        for (w, h) in [(120, 3), (120, 6), (120, 9), (120, 40)] {
+            let screen = rendered(&mut app, w, h);
+            let bar = screen.lines().last().unwrap();
+            assert!(
+                bar.contains("↵ open"),
+                "a {w}x{h} pane lost its command bar: {bar}"
+            );
+        }
     }
 
     #[test]

@@ -15,7 +15,7 @@ use super::{
 };
 use crate::config::Config;
 use crate::data::Theme;
-use crate::tui::{self, Pill};
+use crate::tui::{self, centered, Pill};
 
 /// The blank columns between two provider cards.
 ///
@@ -45,7 +45,7 @@ pub(super) fn card_gap(width: u16, cards: usize) -> u16 {
 
 pub(super) fn draw(f: &mut Frame, app: &mut App) {
     app.background.paint(f, f.area());
-    let rows = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).split(f.area());
+    let (body, bar) = tui::reserve_bar(f.area(), 1);
     // Herdr frames and titles the popup pane already, so this draws no outer
     // border of its own — the same reason the changelog pane doesn't. The
     // shared background painter above still owns transparent versus opaque.
@@ -56,7 +56,7 @@ pub(super) fn draw(f: &mut Frame, app: &mut App) {
                 " No usage providers are enabled.",
                 Style::default().fg(muted),
             ))),
-            rows[0],
+            body,
         );
     } else {
         // `Fill` rather than `Percentage(100 / n)`, which throws away the
@@ -68,8 +68,8 @@ pub(super) fn draw(f: &mut Frame, app: &mut App) {
                 .map(|_| Constraint::Fill(1))
                 .collect::<Vec<_>>(),
         )
-        .spacing(card_gap(rows[0].width, app.slots.len()))
-        .split(rows[0]);
+        .spacing(card_gap(body.width, app.slots.len()))
+        .split(body);
         // Built once, here, because the same list has to size the cards and
         // fill them: a count taken from one list and a render taken from
         // another drift the moment a row is added to only one of them.
@@ -95,7 +95,7 @@ pub(super) fn draw(f: &mut Frame, app: &mut App) {
             draw_card(f, app, slot, facts, *area, rows);
         }
     }
-    draw_bar(f, app, rows[1]);
+    draw_bar(f, app, bar);
 }
 
 /// One provider: a heading, a donut for the window closest to running out, a bar
@@ -343,18 +343,6 @@ fn draw_donut(
             }
         });
     f.render_widget(canvas, square);
-}
-
-/// A `width`×`height` rect in the middle of `area`, clamped to it.
-fn centered(area: Rect, width: u16, height: u16) -> Rect {
-    let width = width.min(area.width);
-    let height = height.min(area.height);
-    Rect::new(
-        area.x + (area.width - width) / 2,
-        area.y + (area.height - height) / 2,
-        width,
-        height,
-    )
 }
 
 fn draw_bar(f: &mut Frame, app: &mut App, area: Rect) {

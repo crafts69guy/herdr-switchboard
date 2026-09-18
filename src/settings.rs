@@ -575,6 +575,47 @@ mod tests {
             .all(|cell| cell.bg != Color::Reset));
     }
 
+    /// The embedded card is centred over Projects, so it must never be taller
+    /// than the pane it floats in — the `.max(6)` floor built a rect that hung
+    /// off the bottom, taking the hint line and the pills with it.
+    #[test]
+    fn the_settings_card_keeps_its_bar_inside_a_short_pane() {
+        let theme = Theme::default();
+        let background = crate::tui::SurfaceBackground::resolve(
+            &theme,
+            crate::config::Transparency::Transparent,
+        );
+        for (w, h) in [(90u16, 3u16), (90, 5), (90, 8), (90, 24)] {
+            let mut settings = Settings::new(&Config::default());
+            let mut term =
+                ratatui::Terminal::new(ratatui::backend::TestBackend::new(w, h)).unwrap();
+            term.draw(|f| {
+                draw(
+                    f,
+                    f.area(),
+                    &theme,
+                    background,
+                    Color::Yellow,
+                    &mut settings,
+                )
+            })
+            .unwrap();
+            let buf = term.backend().buffer().clone();
+            let card = settings.zones.card;
+            assert!(
+                card.bottom() <= h && card.right() <= w,
+                "the card outgrew a {w}x{h} pane: {card:?}"
+            );
+            let bar = settings.zones.bar_row;
+            assert!(bar < h, "the bar landed at row {bar} of {h}");
+            let row: String = (0..w).map(|x| buf[(x, bar)].symbol()).collect();
+            assert!(
+                row.contains("esc close"),
+                "the bar is missing at {w}x{h}: {row}"
+            );
+        }
+    }
+
     #[test]
     fn standalone_settings_relies_on_the_herdr_frame_without_a_nested_card() {
         let theme = Theme::default();

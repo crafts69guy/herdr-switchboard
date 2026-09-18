@@ -7,6 +7,25 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **The command bar no longer disappears when the terminal is resized.** Every surface answered
+  `Event::Resize` from a catch-all that asked for no repaint, so shrinking the window left the
+  taller previous frame on screen with its bottom row — the command bar — outside the pane until
+  the next keypress. The host now repaints on a resize, for every surface at once.
+- **The command bar survives a pane too short for the layout.** It was a trailing
+  `Constraint::Length(1)` behind the list's `Min`, and ratatui gives up a `Length` a hundred times
+  sooner than a `Min` — so the one row telling you how to leave was the first thing a short pane
+  dropped, silently. The bar is now taken off the bottom before anything else is laid out, in
+  Projects, every shared picker, the git menu, the settings form, Usage, and the changelog.
+- **A floating card is never taller than the pane holding it.** The popups floored their own height
+  (`.max(6)`, `.clamp(10, 24)`), which made no room — it pushed the card's last row, its pills, off
+  the screen. The handoff, cheatsheet, changelog overlay, settings card, and all three git cards
+  now clamp to the frame.
+- **A command bar with no room claims no clicks.** A starved bar still published its row, and a hit
+  test matches on the row alone, so a click there ran the action of a bar nobody could see. The
+  wrapped two-row bar in the Central Menu stops at the space it was given for the same reason.
+
 ## [3.0.0] - 2026-09-03
 
 ### Added

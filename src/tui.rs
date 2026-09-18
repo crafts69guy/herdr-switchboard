@@ -95,6 +95,40 @@ impl<'a> Pill<'a> {
     }
 }
 
+/// Centre a card of at most `want_w` x `want_h` inside `area`, never larger
+/// than `area` itself.
+///
+/// Every popup used to floor its own height (`.max(6)`, `.clamp(10, 24)`) so a
+/// comfortable card stayed comfortable. A floor above the frame makes no room:
+/// it pushes the card's last row off the screen, and the last row is always the
+/// command bar. Shrinking costs content; overflowing costs the way out.
+pub fn centered(area: Rect, want_w: u16, want_h: u16) -> Rect {
+    let w = want_w.min(area.width);
+    let h = want_h.min(area.height);
+    Rect::new(
+        area.x + (area.width - w) / 2,
+        area.y + (area.height - h) / 2,
+        w,
+        h,
+    )
+}
+
+/// Split `rows` off the bottom of `area` for a command bar, before anything
+/// else is laid out. Returns `(body, bar)`.
+///
+/// A trailing `Constraint::Length(1)` after a `Constraint::Min(_)` is the shape
+/// every bar used, and ratatui weighs a `Min` a hundred times heavier than a
+/// `Length`: one row short and it is the bar that goes, silently. Content that
+/// scrolls can afford to lose a row; the row naming the keys cannot. A `bar` of
+/// height 0 is the honest answer for an area with nothing left — callers must
+/// publish no hit zone for it rather than a row they never painted.
+pub fn reserve_bar(area: Rect, rows: u16) -> (Rect, Rect) {
+    let h = rows.min(area.height);
+    let body = Rect::new(area.x, area.y, area.width, area.height - h);
+    let bar = Rect::new(area.x, area.y + body.height, area.width, h);
+    (body, bar)
+}
+
 /// Lay out a row of pills starting one column in from `start_x`, matching the
 /// leading space the row opens with. Returns the spans to draw and, for each
 /// pill, its `[x_start, x_end)` click zone — built in the same loop that lays
@@ -156,6 +190,50 @@ mod tests {
             })
             .unwrap();
         terminal.backend().buffer().clone()
+    }
+
+    /// A card is centred when it fits, and never larger than the frame when it
+    /// does not — the bug the `.max(6)` floors shipped was a rect taller than
+    /// the pane, whose clipped last row was the command bar.
+    #[test]
+    fn a_centred_card_never_outgrows_its_frame() {
+        let area = Rect::new(0, 0, 40, 20);
+        assert_eq!(centered(area, 20, 10), Rect::new(10, 5, 20, 10));
+
+        for (w, h) in [(80, 40), (41, 20), (40, 21)] {
+            let card = centered(area, w, h);
+            assert!(
+                card.width <= area.width && card.height <= area.height,
+                "a card of {w}x{h} outgrew a {}x{} frame",
+                area.width,
+                area.height
+            );
+            assert!(card.right() <= area.right() && card.bottom() <= area.bottom());
+        }
+
+        // Nothing to centre in: no panic, no rect outside the frame.
+        assert_eq!(
+            centered(Rect::new(3, 4, 0, 0), 10, 10),
+            Rect::new(3, 4, 0, 0)
+        );
+    }
+
+    /// The bar is taken first, so it survives every height down to the last row.
+    #[test]
+    fn the_bar_is_reserved_before_the_body_at_every_height() {
+        let full = Rect::new(2, 3, 30, 10);
+        let (body, bar) = reserve_bar(full, 3);
+        assert_eq!(body, Rect::new(2, 3, 30, 7));
+        assert_eq!(bar, Rect::new(2, 10, 30, 3));
+
+        for height in 0..=4u16 {
+            let area = Rect::new(0, 0, 30, height);
+            let (body, bar) = reserve_bar(area, 3);
+            assert_eq!(bar.height, 3.min(height), "the bar gave way at {height}");
+            assert_eq!(body.height + bar.height, height);
+            assert_eq!(bar.y, body.y + body.height);
+            assert!(bar.bottom() <= area.bottom());
+        }
     }
 
     #[test]

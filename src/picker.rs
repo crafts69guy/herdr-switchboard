@@ -686,12 +686,12 @@ fn draw<M: PickerMode>(
 ) {
     let area = frame.area();
     background.paint(frame, area);
-    let rows = Layout::vertical([
-        Constraint::Length(3),
-        Constraint::Min(3),
-        Constraint::Length(action_bar_height(mode.action_bar_rows())),
-    ])
-    .split(area);
+    // The action bar comes off the bottom before the search box or the list get
+    // a say. Trailing it as a `Constraint::Length` made it the cheapest row for
+    // ratatui to drop against a `Min`, so the pane that had least room to spare
+    // was the one that stopped saying which keys do anything.
+    let (top, bar_area) = tui::reserve_bar(area, action_bar_height(mode.action_bar_rows()));
+    let rows = Layout::vertical([Constraint::Length(3), Constraint::Min(0)]).split(top);
     let accent = theme.or(mode.accent_slot(), Color::Cyan);
     let ink = theme.or("panel_bg", Color::Black);
     let text = theme.or("text", Color::White);
@@ -1035,17 +1035,20 @@ fn draw<M: PickerMode>(
     for (row_index, range) in balanced_bar_ranges(
         &pills,
         mode.action_bar_rows().max(1) as usize,
-        rows[2].width,
+        bar_area.width,
     )
     .into_iter()
     .enumerate()
     {
-        let row = Rect::new(
-            rows[2].x,
-            rows[2].y + row_index as u16 * 2,
-            rows[2].width,
-            1,
-        );
+        // The wrapped row's y is arithmetic, not a chunk, so it has to be asked
+        // whether it still lands inside the bar: a row drawn past the bottom is
+        // clipped away by ratatui but would still register clicks through the
+        // `BarRow` it published, on whatever the list drew there.
+        let y = bar_area.y + row_index as u16 * 2;
+        if y >= bar_area.bottom() {
+            break;
+        }
+        let row = Rect::new(bar_area.x, y, bar_area.width, 1);
         let (spans, zones) = tui::pill_row(&pills[range.clone()], ink, row.x);
         state.bar_rows.push(BarRow {
             y: row.y,
@@ -1275,6 +1278,107 @@ mod tests {
         }
         fn execute(&mut self, _item_id: &str, _action: &str) -> Result<ActionOutcome> {
             Ok(ActionOutcome::Close)
+        }
+    }
+
+    /// A mode whose command bar wraps, so the two-row placement arithmetic is
+    /// exercised against a pane that cannot hold two rows.
+    struct WrappedBarMode;
+
+    impl PickerMode for WrappedBarMode {
+        fn title(&self) -> &str {
+            "Menu"
+        }
+        fn accent_slot(&self) -> &'static str {
+            "accent"
+        }
+        fn schema(&self) -> FieldSchema {
+            FieldSchema::default()
+        }
+        fn actions(&self) -> Vec<ActionSpec> {
+            Vec::new()
+        }
+        fn action_bar_rows(&self) -> u16 {
+            2
+        }
+        fn initial(&mut self) -> Result<Vec<PickerItem>> {
+            Ok(vec![test_item("keep")])
+        }
+        fn execute(&mut self, _item_id: &str, _action: &str) -> Result<ActionOutcome> {
+            Ok(ActionOutcome::Close)
+        }
+    }
+
+    fn render_sized<M: PickerMode>(
+        mode: &M,
+        state: &mut State,
+        w: u16,
+        h: u16,
+    ) -> ratatui::buffer::Buffer {
+        let theme = Theme::from_slots(&[
+            ("accent", "#6fd0a8"),
+            ("overlay0", "#6c7e76"),
+            ("panel_bg", "#101214"),
+        ]);
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(w, h)).unwrap();
+        let background =
+            tui::SurfaceBackground::resolve(&theme, crate::config::Transparency::Transparent);
+        terminal
+            .draw(|frame| draw(frame, mode, &theme, background, Color::Yellow, &[], state))
+            .unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    fn row_text(buffer: &ratatui::buffer::Buffer, y: u16) -> String {
+        (0..buffer.area.width)
+            .map(|x| buffer[(x, y)].symbol().to_string())
+            .collect()
+    }
+
+    /// The action bar is reserved before the search box and the list, so it is
+    /// the last thing a short pane loses rather than the first. A trailing
+    /// `Constraint::Length` behind a `Min` is exactly what ratatui drops first.
+    #[test]
+    fn the_action_bar_survives_a_pane_too_short_for_the_layout() {
+        let mut state = State::new(vec![test_item("keep")], false);
+        for h in [3u16, 5, 7, 12] {
+            let buffer = render_sized(&TestMode, &mut state, 80, h);
+            let bar = row_text(&buffer, h - 1);
+            assert!(
+                bar.contains("esc mode/close"),
+                "an 80x{h} pane lost its action bar: {bar}"
+            );
+        }
+    }
+
+    /// A wrapped bar places its second row by arithmetic rather than by a chunk,
+    /// so it has to stop at the reserved rect: a row drawn past the bottom is
+    /// clipped away but would still publish a `BarRow` that answers clicks.
+    #[test]
+    fn a_wrapped_bar_never_places_a_row_outside_the_space_it_was_given() {
+        let mut state = State::new(vec![test_item("keep")], false);
+        for h in [3u16, 4, 5, 8, 20] {
+            let buffer = render_sized(&WrappedBarMode, &mut state, 40, h);
+            assert!(
+                state.bar_rows.iter().all(|row| row.y < h),
+                "a 40x{h} pane published a bar row at {:?}, outside the frame",
+                state.bar_rows.iter().map(|row| row.y).collect::<Vec<_>>()
+            );
+            // Every row it did publish carries pills, and the first one always
+            // exists: a bar that reports rows it never painted is the failure.
+            assert!(
+                !state.bar_rows.is_empty(),
+                "a 40x{h} pane drew no bar at all"
+            );
+            for row in &state.bar_rows {
+                let text = row_text(&buffer, row.y);
+                assert!(
+                    !text.trim().is_empty(),
+                    "a 40x{h} pane published an empty bar row at {}",
+                    row.y
+                );
+            }
         }
     }
 
