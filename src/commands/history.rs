@@ -494,4 +494,15 @@ mod tests {
         assert_eq!(read_history_file("bash", &path).unwrap().len(), 2);
         fs::remove_dir_all(&dir).ok();
     }
+
+    /// A zsh entry continued over several lines keeps every line break, and a
+    /// cut tail in a shell with no record marker has no safe place to resume.
+    #[test]
+    fn zsh_continuations_rejoin_across_lines() {
+        let imports = parse_shell_history("zsh", ": 10:0;echo one \\\ntwo \\\nthree\n");
+        assert_eq!(imports.len(), 1);
+        assert_eq!(imports[0].command, "echo one \ntwo \nthree");
+        assert_eq!(imports[0].timestamp, 10);
+        assert_eq!(trim_to_record_boundary("csh", "partial\nnext\n"), "");
+    }
 }

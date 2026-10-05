@@ -3165,4 +3165,48 @@ mod tests {
             .to_string()
             .contains("script exhausted"));
     }
+
+    /// Word deletion eats trailing spaces first; an unknown tab is ignored;
+    /// a bar with no pills has no rows.
+    #[test]
+    fn word_deletion_unknown_tabs_and_empty_bars() {
+        let mut query = "git log  ".to_string();
+        delete_word(&mut query);
+        assert_eq!(query, "git ");
+
+        let mut h = Harness::new(items(2), false);
+        assert!(matches!(
+            h.surface().activate_tab("nowhere"),
+            Transition::Wait
+        ));
+        assert!(balanced_bar_ranges(&[], 2, 80).is_empty());
+    }
+
+    /// Settings that leave the picker in Normal mode put it back in Normal.
+    #[test]
+    fn settings_that_choose_normal_mode_restore_it() {
+        let mut exits =
+            std::collections::VecDeque::from([PickerExit::Invoke(String::new(), "__settings")]);
+        let mut after = None;
+        let mut cfg = Config::default();
+        cfg.common.keymode = crate::config::KeyMode::Insert;
+        run_with(
+            TestMode,
+            Theme::default(),
+            cfg,
+            |surface| {
+                if exits.is_empty() {
+                    after = Some(surface.state.input_mode);
+                }
+                Ok(exits.pop_front().unwrap_or(PickerExit::Close))
+            },
+            || {
+                let mut cfg = Config::default();
+                cfg.common.keymode = crate::config::KeyMode::Normal;
+                Ok((cfg, Theme::default()))
+            },
+        )
+        .unwrap();
+        assert_eq!(after, Some(InputMode::Normal));
+    }
 }
