@@ -30,6 +30,8 @@ static SINK: OnceLock<Option<PathBuf>> = OnceLock::new();
 /// counts — call it as the first statement of `main`.
 pub fn init() {
     START.get_or_init(Instant::now);
+    #[cfg(test)]
+    let _ = sink();
     SINK.get_or_init(|| {
         resolve_sink(
             std::env::var("SWITCHBOARD_TRACE").ok(),
@@ -57,7 +59,23 @@ fn resolve_sink(
 /// Whether tracing is on. Callers use this to skip work that only exists to be
 /// measured (an extra `Instant::now`, a formatted detail string).
 pub fn enabled() -> bool {
-    SINK.get().is_some_and(Option::is_some)
+    sink().is_some()
+}
+
+/// The resolved trace file, if tracing is on.
+///
+/// The test build always traces, into a scratch file of its own: every
+/// `if trace::enabled()` branch then runs under the suite, and a test can read
+/// back what was written instead of trusting that a line would have been.
+fn sink() -> Option<&'static PathBuf> {
+    #[cfg(test)]
+    SINK.get_or_init(|| Some(test_sink()));
+    SINK.get().and_then(Option::as_ref)
+}
+
+#[cfg(test)]
+fn test_sink() -> PathBuf {
+    std::env::temp_dir().join(format!("swb-trace-{}.log", std::process::id()))
 }
 
 /// Milliseconds since [`init`], or 0.0 when tracing never started.
@@ -71,7 +89,7 @@ fn since_start_ms() -> f64 {
 /// Append one line. Failures are swallowed: a trace that cannot be written must
 /// never change how the picker behaves.
 fn emit(label: &str, duration: Option<f64>, detail: Option<&str>) {
-    let Some(Some(path)) = SINK.get() else {
+    let Some(path) = sink() else {
         return;
     };
     append(path, &line(since_start_ms(), label, duration, detail));
@@ -160,17 +178,25 @@ mod tests {
         append(Path::new("/dev/null/not-a-dir/trace.log"), "c\n");
     }
 
-    /// With tracing off — the state every test runs in — every entry point is a
-    /// silent no-op that still answers `enabled`.
+    /// The test build traces into its own scratch file, so every entry point
+    /// can be checked by what it actually wrote.
     #[test]
-    fn the_public_calls_are_inert_when_tracing_is_off() {
+    fn every_entry_point_writes_its_line_to_the_sink() {
         init();
-        assert!(!enabled());
+        assert!(enabled());
         let started = Instant::now();
-        mark("m");
-        mark_with("m", "d");
-        span("s", started);
-        span_with("s", started, "d");
+        let tag = format!("probe-{}", std::process::id());
+        mark(&format!("{tag}-mark"));
+        mark_with(&format!("{tag}-mark-with"), "d");
+        span(&format!("{tag}-span"), started);
+        span_with(&format!("{tag}-span-with"), started, "d");
         assert!(since_start_ms() >= 0.0);
+        let written = std::fs::read_to_string(test_sink()).unwrap();
+        for suffix in ["mark", "mark-with", "span", "span-with"] {
+            assert!(
+                written.contains(&format!("\t{tag}-{suffix}\t")),
+                "{suffix} missing from the trace"
+            );
+        }
     }
 }

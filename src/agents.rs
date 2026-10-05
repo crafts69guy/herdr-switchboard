@@ -38,16 +38,33 @@ enum Target {
 }
 
 pub fn main(cfg: Config, theme: Theme) -> Result<()> {
+    main_in(
+        &mut crate::surface::TerminalHost,
+        std::sync::Arc::new(SystemRunner),
+        cfg,
+        theme,
+    )
+}
+
+fn main_in(
+    host: &mut impl crate::surface::Host,
+    runner: std::sync::Arc<dyn CommandRunner + Send + Sync>,
+    cfg: Config,
+    theme: Theme,
+) -> Result<()> {
     let mode = AgentsMode {
+        runner,
         origin_pane: env::var("SWITCHBOARD_ORIGIN_PANE_ID").unwrap_or_default(),
         origin_cwd: env::var("SWITCHBOARD_ORIGIN_CWD").unwrap_or_default(),
         bindings: cfg.keys.get("agents").cloned().unwrap_or_default(),
         integrations: Vec::new(),
     };
-    picker::run(mode, theme, cfg)
+    picker::run_in(host, mode, theme, cfg)
 }
 
 struct AgentsMode {
+    /// herdr, for the integration list and every launch; tests use `MockRunner`.
+    runner: std::sync::Arc<dyn CommandRunner + Send + Sync>,
     origin_pane: String,
     origin_cwd: String,
     bindings: HashMap<String, String>,
@@ -138,11 +155,13 @@ impl PickerMode for AgentsMode {
     }
 
     fn initial(&mut self) -> Result<Vec<PickerItem>> {
-        self.initial_with(&SystemRunner)
+        let runner = std::sync::Arc::clone(&self.runner);
+        self.initial_with(runner.as_ref())
     }
 
     fn execute(&mut self, item_id: &str, action: &str) -> Result<ActionOutcome> {
-        self.execute_with(&SystemRunner, item_id, action)
+        let runner = std::sync::Arc::clone(&self.runner);
+        self.execute_with(runner.as_ref(), item_id, action)
     }
 }
 
@@ -635,6 +654,7 @@ mod tests {
 
     fn agents_mode() -> AgentsMode {
         AgentsMode {
+            runner: std::sync::Arc::new(MockRunner::new()),
             origin_pane: "w1:p1".into(),
             origin_cwd: "/work/api".into(),
             bindings: HashMap::new(),
@@ -902,6 +922,7 @@ mod tests {
     fn selected_agent_only_schedules_the_detached_worker() {
         let runner = MockRunner::new();
         let mut mode = AgentsMode {
+            runner: std::sync::Arc::new(MockRunner::new()),
             origin_pane: "w1:p1".into(),
             origin_cwd: "/repo".into(),
             bindings: HashMap::new(),
@@ -1133,5 +1154,23 @@ mod tests {
             assert_ne!(display_name(id), id, "{id}");
         }
         assert_eq!(display_name("brand-new"), "brand-new");
+    }
+
+    /// The pane as `--agents` hosts it: integrations load through the given
+    /// runner, and `esc` closes without launching anything.
+    #[test]
+    fn the_agents_pane_lists_through_its_runner_and_closes_on_esc() {
+        use crate::surface::ScriptedHost;
+        let runner = MockRunner::new()
+            .on("herdr integration status", STATUS)
+            .leak();
+        main_in(
+            &mut ScriptedHost::new([ScriptedHost::key(KeyCode::Esc, KeyModifiers::NONE)]),
+            std::sync::Arc::new(runner),
+            Config::default(),
+            Theme::default(),
+        )
+        .expect("closes");
+        assert_eq!(runner.calls()[0], ["herdr", "integration", "status"]);
     }
 }

@@ -76,6 +76,7 @@ pub fn cli<R: CommandRunner>(runner: &R, args: &[String], cfg: &Config) -> Resul
         cfg,
         &SessionStore::new(),
         std::env::var("SWITCHBOARD_ORIGIN_PANE_ID").ok(),
+        chrome::disengage,
     )
 }
 
@@ -87,6 +88,7 @@ fn cli_with<R: CommandRunner>(
     cfg: &Config,
     store: &SessionStore,
     origin: Option<String>,
+    disengage: fn(&R, &[chrome::Override]) -> bool,
 ) -> Result<()> {
     let verb = args.first().map(String::as_str).unwrap_or("toggle");
     let pane = args
@@ -123,7 +125,7 @@ fn cli_with<R: CommandRunner>(
                 return Ok(());
             }
             anyhow::ensure!(
-                chrome::disengage(runner, &overrides),
+                disengage(runner, &overrides),
                 "could not rewrite {} — the original is saved as {}",
                 chrome::config_path().display(),
                 state::state_file(chrome::BACKUP)
@@ -783,7 +785,7 @@ mod tests {
         let store = temp_store();
         let runner = entering();
 
-        cli_with(
+        cli_test(
             &runner,
             &args(&["on", "--pane", "w1:p1"]),
             &cfg,
@@ -796,15 +798,15 @@ mod tests {
         let leaving = MockRunner::new()
             .on("pane list", PANES)
             .on("tab get", r#"{"result":{"tab":{"pane_count":0}}}"#);
-        cli_with(&leaving, &args(&["off"]), &cfg, &store, None).unwrap();
+        cli_test(&leaving, &args(&["off"]), &cfg, &store, None).unwrap();
         assert!(store.load().is_none(), "off clears it");
-        cli_with(&leaving, &args(&["off"]), &cfg, &store, None).unwrap();
+        cli_test(&leaving, &args(&["off"]), &cfg, &store, None).unwrap();
 
         // The origin pane stands in for `--pane`, and toggling enters.
-        cli_with(&entering(), &[], &cfg, &store, Some("w1:p1".into())).unwrap();
+        cli_test(&entering(), &[], &cfg, &store, Some("w1:p1".into())).unwrap();
         assert!(store.load().is_some());
         // `on` while zenned leaves the old session first.
-        let _ = cli_with(
+        let _ = cli_test(
             &entering(),
             &args(&["on", "--pane", "w1:p1"]),
             &cfg,
@@ -813,9 +815,9 @@ mod tests {
         );
         store.clear();
 
-        let missing = cli_with(&runner, &args(&["on"]), &cfg, &store, Some(String::new()));
+        let missing = cli_test(&runner, &args(&["on"]), &cfg, &store, Some(String::new()));
         assert!(missing.unwrap_err().to_string().contains("pane id"));
-        let unknown = cli_with(&runner, &args(&["sideways"]), &cfg, &store, None);
+        let unknown = cli_test(&runner, &args(&["sideways"]), &cfg, &store, None);
         assert!(unknown
             .unwrap_err()
             .to_string()
@@ -827,7 +829,7 @@ mod tests {
     #[test]
     fn chrome_restore_without_a_snapshot_does_nothing() {
         let runner = MockRunner::new();
-        cli_with(
+        cli_test(
             &runner,
             &args(&["chrome-restore"]),
             &safe_config(),
@@ -836,5 +838,57 @@ mod tests {
         )
         .unwrap();
         assert!(runner.calls().is_empty());
+    }
+
+    /// The CLI with a chrome restore that must never run against herdr's file.
+    fn cli_test<R: CommandRunner>(
+        runner: &R,
+        args: &[String],
+        cfg: &Config,
+        store: &SessionStore,
+        origin: Option<String>,
+    ) -> Result<()> {
+        cli_with(runner, args, cfg, store, origin, |_, _| {
+            panic!("a test reached herdr's real chrome restore")
+        })
+    }
+
+    /// With a snapshot left behind, the escape hatch restores it and clears
+    /// it; when the restore is refused it says where the original is and
+    /// keeps the snapshot for another try.
+    #[test]
+    fn chrome_restore_puts_a_leftover_snapshot_back_or_keeps_it() {
+        let store = temp_store();
+        let snapshot = vec![chrome::Override {
+            key: "pane_borders".into(),
+            want: "false".into(),
+            prior: Some("true".into()),
+        }];
+        store.save_chrome(&snapshot).unwrap();
+        let runner = MockRunner::new();
+        let refused = cli_with(
+            &runner,
+            &args(&["chrome-restore"]),
+            &safe_config(),
+            &store,
+            None,
+            |_, _| false,
+        );
+        assert!(refused
+            .unwrap_err()
+            .to_string()
+            .contains("could not rewrite"));
+        assert!(!store.load_chrome().is_empty(), "kept for another try");
+
+        cli_with(
+            &runner,
+            &args(&["chrome-restore"]),
+            &safe_config(),
+            &store,
+            None,
+            |_, overrides| overrides.len() == 1,
+        )
+        .unwrap();
+        assert!(store.load_chrome().is_empty(), "cleared once restored");
     }
 }
