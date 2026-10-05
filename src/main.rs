@@ -46,37 +46,59 @@ use data::{Config, Theme};
 /// clone flow (`bin/get.sh`) delegates here so the herdr open verbs live only in
 /// Rust rather than being mirrored in bash.
 fn cli_open(args: &[String]) -> Result<()> {
-    let (mut target, mut path, mut origin, mut label) =
-        (String::new(), String::new(), String::new(), String::new());
-    let mut it = args.iter();
-    while let Some(flag) = it.next() {
-        let val = it.next().cloned().unwrap_or_default();
-        match flag.as_str() {
-            "--target" => target = val,
-            "--path" => path = val,
-            "--origin" => origin = val,
-            "--label" => label = val,
-            _ => {}
-        }
-    }
+    let open = OpenRequest::parse(args);
     let cfg = Config::try_load()?;
-    action::open_target(&runner::SystemRunner, &target, &path, &origin, &label, &cfg)
+    action::open_target(
+        &runner::SystemRunner,
+        &open.target,
+        &open.path,
+        &open.origin,
+        &open.label,
+        &cfg,
+    )
+}
+
+/// The flags `open` understands; anything else, and a flag missing its value,
+/// is ignored rather than fatal, because Bash builds this line.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct OpenRequest {
+    target: String,
+    path: String,
+    origin: String,
+    label: String,
+}
+
+impl OpenRequest {
+    fn parse(args: &[String]) -> Self {
+        let mut open = Self::default();
+        let mut it = args.iter();
+        while let Some(flag) = it.next() {
+            let val = it.next().cloned().unwrap_or_default();
+            match flag.as_str() {
+                "--target" => open.target = val,
+                "--path" => open.path = val,
+                "--origin" => open.origin = val,
+                "--label" => open.label = val,
+                _ => {}
+            }
+        }
+        open
+    }
 }
 
 /// `herdr-switchboard config get KEY [DEFAULT]` — the scalar config reader,
 /// so bash reads a setting through the same parser the TUI uses.
 fn cli_config(args: &[String]) -> Result<()> {
+    println!("{}", config_value(&Config::try_load()?, args)?);
+    Ok(())
+}
+
+fn config_value(cfg: &Config, args: &[String]) -> Result<String> {
     match args.first().map(String::as_str) {
         Some("get") => {
             let key = args.get(1).map(String::as_str).unwrap_or("");
             let default = args.get(2).map(String::as_str).unwrap_or("");
-            println!(
-                "{}",
-                Config::try_load()?
-                    .value_for_cli(key)
-                    .unwrap_or_else(|| default.into())
-            );
-            Ok(())
+            Ok(cfg.value_for_cli(key).unwrap_or_else(|| default.into()))
         }
         _ => Err(anyhow::anyhow!("usage: config get <key> [default]")),
     }
@@ -115,10 +137,14 @@ fn main() -> Result<()> {
     // First statement on purpose: it fixes the zero point every other trace mark
     // is measured from. Inert unless SWITCHBOARD_TRACE is set.
     trace::init();
-    let args = collect_startup_args(env::args_os())?;
+    run(&collect_startup_args(env::args_os())?)
+}
+
+/// Every mode, chosen by its first argument; no argument is the switcher.
+fn run(args: &[String]) -> Result<()> {
     match args.first().map(String::as_str) {
         Some("--version") => {
-            println!("herdr-switchboard {}", env!("CARGO_PKG_VERSION"));
+            println!("{}", version_line());
             Ok(())
         }
         Some("--changelog") => changelog::main(),
@@ -139,6 +165,12 @@ fn main() -> Result<()> {
         Some("notify") => notify::cli(&args[1..], &Config::try_load()?),
         _ => projects::main(Config::try_load()?, Theme::load()),
     }
+}
+
+/// What `--version` prints; `bin/lib.sh` matches the binary against the manifest
+/// with it, so its shape is a contract.
+fn version_line() -> String {
+    format!("herdr-switchboard {}", env!("CARGO_PKG_VERSION"))
 }
 
 #[cfg(test)]
@@ -173,5 +205,57 @@ mod tests {
         let error = collect_startup_args(argv).unwrap_err();
 
         assert_eq!(error.downcast_ref::<NonUtf8Argument>().unwrap().index, 2);
+    }
+
+    fn strings(args: &[&str]) -> Vec<String> {
+        args.iter().map(|arg| arg.to_string()).collect()
+    }
+
+    #[test]
+    fn open_reads_its_flags_in_any_order_and_ignores_the_rest() {
+        let open = OpenRequest::parse(&strings(&[
+            "--label",
+            "repo",
+            "--bogus",
+            "x",
+            "--path",
+            "/src/repo",
+            "--target",
+            "tab",
+            "--origin",
+            "w1:p1",
+        ]));
+        assert_eq!(
+            open,
+            OpenRequest {
+                target: "tab".into(),
+                path: "/src/repo".into(),
+                origin: "w1:p1".into(),
+                label: "repo".into(),
+            }
+        );
+        // A trailing flag with no value reads as empty rather than failing.
+        assert_eq!(OpenRequest::parse(&strings(&["--path"])).path, "");
+    }
+
+    #[test]
+    fn config_get_answers_the_typed_value_or_the_callers_default() {
+        let mut cfg = Config::default();
+        cfg.projects.default_target = "workspace".into();
+        let value = config_value(&cfg, &strings(&["get", "default_target"])).unwrap();
+        assert_eq!(value, "workspace");
+        let fallback = config_value(&cfg, &strings(&["get", "no.such.key", "dflt"])).unwrap();
+        assert_eq!(fallback, "dflt");
+        assert!(config_value(&cfg, &strings(&["set", "x"])).is_err());
+        assert!(config_value(&cfg, &[]).is_err());
+    }
+
+    #[test]
+    fn version_names_the_binary_and_its_manifest_version() {
+        assert_eq!(
+            version_line(),
+            format!("herdr-switchboard {}", env!("CARGO_PKG_VERSION"))
+        );
+        run(&strings(&["--version"])).expect("prints and exits cleanly");
     }
 }

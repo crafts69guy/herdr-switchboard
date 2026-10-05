@@ -16,7 +16,7 @@
 
 use std::fs::OpenOptions;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::Instant;
 
@@ -31,15 +31,27 @@ static SINK: OnceLock<Option<PathBuf>> = OnceLock::new();
 pub fn init() {
     START.get_or_init(Instant::now);
     SINK.get_or_init(|| {
-        if !std::env::var("SWITCHBOARD_TRACE").is_ok_and(|v| !v.is_empty()) {
-            return None;
-        }
-        std::env::var("SWITCHBOARD_TRACE_FILE")
-            .ok()
-            .filter(|s| !s.is_empty())
-            .map(PathBuf::from)
-            .or_else(|| state::state_file("trace.log"))
+        resolve_sink(
+            std::env::var("SWITCHBOARD_TRACE").ok(),
+            std::env::var("SWITCHBOARD_TRACE_FILE").ok(),
+            || state::state_file("trace.log"),
+        )
     });
+}
+
+/// Where trace lines go: nowhere unless `SWITCHBOARD_TRACE` is non-empty, then
+/// `SWITCHBOARD_TRACE_FILE` when that is non-empty, else the state-dir default.
+fn resolve_sink(
+    trace: Option<String>,
+    file: Option<String>,
+    default: impl FnOnce() -> Option<PathBuf>,
+) -> Option<PathBuf> {
+    if !trace.is_some_and(|v| !v.is_empty()) {
+        return None;
+    }
+    file.filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+        .or_else(default)
 }
 
 /// Whether tracing is on. Callers use this to skip work that only exists to be
@@ -62,17 +74,20 @@ fn emit(label: &str, duration: Option<f64>, detail: Option<&str>) {
     let Some(Some(path)) = SINK.get() else {
         return;
     };
+    append(path, &line(since_start_ms(), label, duration, detail));
+}
+
+/// One tab-separated trace line, in the format the module docs describe.
+fn line(at_ms: f64, label: &str, duration: Option<f64>, detail: Option<&str>) -> String {
     let dur = match duration {
         Some(ms) => format!("{ms:.2}"),
         None => "-".into(),
     };
-    let line = format!(
-        "{:.2}\t{}\t{}\t{}\n",
-        since_start_ms(),
-        label,
-        dur,
-        detail.unwrap_or("-")
-    );
+    format!("{at_ms:.2}\t{label}\t{dur}\t{}\n", detail.unwrap_or("-"))
+}
+
+/// Append `line` to `path`, creating its directory. Every failure is swallowed.
+fn append(path: &Path, line: &str) {
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
@@ -103,4 +118,59 @@ pub fn span_with(label: &str, started: Instant, detail: &str) {
         Some(started.elapsed().as_secs_f64() * 1000.0),
         Some(detail),
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tracing_is_off_unless_asked_for_and_then_finds_a_file() {
+        let fallback = || Some(PathBuf::from("/state/trace.log"));
+        assert_eq!(resolve_sink(None, Some("/x".into()), fallback), None);
+        assert_eq!(resolve_sink(Some(String::new()), None, fallback), None);
+        assert_eq!(
+            resolve_sink(Some("1".into()), Some("/tmp/t.log".into()), fallback),
+            Some(PathBuf::from("/tmp/t.log"))
+        );
+        assert_eq!(
+            resolve_sink(Some("1".into()), Some(String::new()), fallback),
+            Some(PathBuf::from("/state/trace.log"))
+        );
+    }
+
+    #[test]
+    fn a_line_is_four_tab_separated_columns() {
+        assert_eq!(
+            line(1.5, "draw", Some(2.25), Some("17")),
+            "1.50\tdraw\t2.25\t17\n"
+        );
+        assert_eq!(line(0.0, "start", None, None), "0.00\tstart\t-\t-\n");
+    }
+
+    #[test]
+    fn lines_are_appended_into_a_directory_made_for_them() {
+        let dir = std::env::temp_dir().join(format!("swb-trace-{}", std::process::id()));
+        let path = dir.join("nested/trace.log");
+        append(&path, "a\n");
+        append(&path, "b\n");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "a\nb\n");
+        let _ = std::fs::remove_dir_all(&dir);
+        // An unwritable path is swallowed rather than surfaced.
+        append(Path::new("/dev/null/not-a-dir/trace.log"), "c\n");
+    }
+
+    /// With tracing off — the state every test runs in — every entry point is a
+    /// silent no-op that still answers `enabled`.
+    #[test]
+    fn the_public_calls_are_inert_when_tracing_is_off() {
+        init();
+        assert!(!enabled());
+        let started = Instant::now();
+        mark("m");
+        mark_with("m", "d");
+        span("s", started);
+        span_with("s", started, "d");
+        assert!(since_start_ms() >= 0.0);
+    }
 }

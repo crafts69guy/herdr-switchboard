@@ -18,6 +18,7 @@ use crate::picker::{
     self, ActionOutcome, ActionSpec, PickerItem, PickerMarker, PickerMode, PickerTab,
 };
 use crate::query::{Document, FieldSchema, MatchKind};
+use crate::runner::{CommandRunner, SystemRunner};
 
 pub(super) fn run(cfg: Config, theme: Theme) -> Result<()> {
     let mode = CommandMode::new(&cfg)?;
@@ -34,6 +35,11 @@ struct CommandMode {
     origin_pane: String,
     origin_cwd: Option<String>,
     notifier: Notifier,
+    /// The effect edge: herdr delivery, the clipboard, and the multiline
+    /// prompt. Production wires the real ones; tests swap in harmless doubles.
+    runner: Box<dyn CommandRunner>,
+    copy: fn(&str) -> Result<()>,
+    confirm: fn(&str) -> Result<()>,
     bindings: HashMap<String, String>,
     /// The empty-Starred sentence, rebuilt whenever the bindings are, because it
     /// names a key and every other cap on this surface follows a remap.
@@ -58,6 +64,9 @@ impl CommandMode {
                 .ok()
                 .filter(|cwd| !cwd.is_empty()),
             notifier: Notifier::new(cfg),
+            runner: Box::new(SystemRunner),
+            copy: copy_text,
+            confirm: confirm_multiline,
             bindings,
             starred_empty,
         })
@@ -251,7 +260,12 @@ impl PickerMode for CommandMode {
         }
         match action {
             "fill" => {
-                if let Err(error) = send_to_pane(&self.origin_pane, &record.command, false) {
+                if let Err(error) = send_to_pane(
+                    self.runner.as_ref(),
+                    &self.origin_pane,
+                    &record.command,
+                    false,
+                ) {
                     self.notifier.send(NotifyEvent::CommandDeliveryFailed, None);
                     return Err(error);
                 }
@@ -262,8 +276,13 @@ impl PickerMode for CommandMode {
                 )?;
             }
             "run" => {
-                confirm_multiline(&record.command)?;
-                if let Err(error) = send_to_pane(&self.origin_pane, &record.command, true) {
+                (self.confirm)(&record.command)?;
+                if let Err(error) = send_to_pane(
+                    self.runner.as_ref(),
+                    &self.origin_pane,
+                    &record.command,
+                    true,
+                ) {
                     self.notifier.send(NotifyEvent::CommandDeliveryFailed, None);
                     return Err(error);
                 }
@@ -282,16 +301,18 @@ impl PickerMode for CommandMode {
                     Path::new(cwd).is_dir(),
                     "historical cwd no longer exists: {cwd}"
                 );
-                confirm_multiline(&record.command)?;
+                (self.confirm)(&record.command)?;
                 let command = format!("cd -- {} && {}", shell_quote(cwd), record.command);
-                if let Err(error) = send_to_pane(&self.origin_pane, &command, true) {
+                if let Err(error) =
+                    send_to_pane(self.runner.as_ref(), &self.origin_pane, &command, true)
+                {
                     self.notifier.send(NotifyEvent::CommandDeliveryFailed, None);
                     return Err(error);
                 }
                 self.catalog
                     .record_selection(&record.command, SelectionAction::Run, Some(cwd))?;
             }
-            "copy" => copy_text(&record.command)?,
+            "copy" => (self.copy)(&record.command)?,
             "forget" => self.catalog.forget(&record.command)?,
             _ => anyhow::bail!("unknown command action {action}"),
         }
@@ -379,6 +400,7 @@ mod tests {
     use super::*;
     use crate::commands::catalog::{empty_record, CommandCatalog, Import, SelectionAction};
     use crate::config::Preset;
+    use crate::runner::MockRunner;
 
     fn command_mode() -> CommandMode {
         let mut starred = empty_record("cargo test".into(), String::new());
@@ -400,6 +422,9 @@ mod tests {
             origin_pane: String::new(),
             origin_cwd: None,
             notifier: Notifier::silent(),
+            runner: Box::new(MockRunner::new()),
+            copy: |_| Ok(()),
+            confirm: |_| Ok(()),
             bindings: HashMap::new(),
             starred_empty: starred_empty(&HashMap::new()),
         }
@@ -430,6 +455,9 @@ mod tests {
             origin_pane: String::new(),
             origin_cwd: None,
             notifier: Notifier::silent(),
+            runner: Box::new(MockRunner::new()),
+            copy: |_| Ok(()),
+            confirm: |_| Ok(()),
             bindings: HashMap::new(),
             starred_empty: starred_empty(&HashMap::new()),
         };
@@ -474,6 +502,9 @@ mod tests {
             origin_pane: String::new(),
             origin_cwd: None,
             notifier: Notifier::silent(),
+            runner: Box::new(MockRunner::new()),
+            copy: |_| Ok(()),
+            confirm: |_| Ok(()),
             bindings: HashMap::new(),
             starred_empty: starred_empty(&HashMap::new()),
         };
@@ -659,6 +690,130 @@ mod tests {
             .unwrap();
         let error = mode.execute(&id, "run_cwd").unwrap_err();
         assert!(error.to_string().contains("no longer exists"), "{error}");
+    }
+
+    /// A runner the test can still read after the mode owns it.
+    struct Shared(&'static MockRunner);
+
+    impl CommandRunner for Shared {
+        fn output(&self, program: &str, args: &[&str]) -> std::io::Result<std::process::Output> {
+            self.0.output(program, args)
+        }
+        fn status(
+            &self,
+            program: &str,
+            args: &[&str],
+        ) -> std::io::Result<std::process::ExitStatus> {
+            self.0.status(program, args)
+        }
+        fn spawn_detached(&self, program: &std::ffi::OsStr, args: &[&str]) -> std::io::Result<()> {
+            self.0.spawn_detached(program, args)
+        }
+        fn output_stdin(
+            &self,
+            program: &str,
+            args: &[&str],
+            stdin: &str,
+        ) -> std::io::Result<std::process::Output> {
+            self.0.output_stdin(program, args, stdin)
+        }
+    }
+
+    fn mode_with(runner: MockRunner) -> (CommandMode, &'static MockRunner) {
+        let runner: &'static MockRunner = Box::leak(Box::new(runner));
+        let mut mode = command_mode();
+        mode.runner = Box::new(Shared(runner));
+        mode.origin_pane = "w1:p1".into();
+        mode.origin_cwd = Some("/repo".into());
+        (mode, runner)
+    }
+
+    /// Fill types the command into the origin pane; run also presses Enter.
+    /// Either one is recorded as a selection in the cwd it came from.
+    #[test]
+    fn fill_and_run_deliver_the_exact_command_to_the_origin_pane() {
+        let (mut mode, runner) = mode_with(MockRunner::new());
+        let id = fingerprint("git status");
+
+        assert!(matches!(
+            mode.execute(&id, "fill").unwrap(),
+            ActionOutcome::Close
+        ));
+        assert!(matches!(
+            mode.execute(&id, "run").unwrap(),
+            ActionOutcome::Close
+        ));
+        assert_eq!(
+            runner.calls(),
+            vec![
+                vec!["herdr", "pane", "send-text", "w1:p1", "git status"],
+                vec!["herdr", "pane", "run", "w1:p1", "git status"],
+            ]
+        );
+        let record = mode
+            .catalog
+            .records()
+            .iter()
+            .find(|record| record.command == "git status")
+            .expect("still catalogued");
+        assert_eq!(record.selected_count, 2);
+        assert_eq!(record.recent_cwds, vec!["/repo".to_string()]);
+    }
+
+    /// Run-here prefixes a quoted `cd` into the remembered directory.
+    #[test]
+    fn running_in_a_historical_directory_changes_into_it_first() {
+        let (mut mode, runner) = mode_with(MockRunner::new());
+        let dir = std::env::temp_dir().to_string_lossy().into_owned();
+        mode.catalog
+            .record_selection("git status", SelectionAction::Run, Some(&dir))
+            .unwrap();
+
+        mode.execute(&fingerprint("git status"), "run_cwd").unwrap();
+        let sent = runner.calls().last().cloned().expect("delivered");
+        assert_eq!(sent[..4], ["herdr", "pane", "run", "w1:p1"]);
+        assert_eq!(
+            sent[4],
+            format!("cd -- {} && git status", shell_quote(&dir))
+        );
+    }
+
+    /// A failed delivery is an error for every verb, and nothing is recorded as
+    /// selected that never reached the pane.
+    #[test]
+    fn a_failed_delivery_is_reported_and_not_recorded() {
+        let (mut mode, _) = mode_with(MockRunner::new().failing("herdr"));
+        let dir = std::env::temp_dir().to_string_lossy().into_owned();
+        mode.catalog
+            .record_selection("git status", SelectionAction::Run, Some(&dir))
+            .unwrap();
+        let id = fingerprint("git status");
+        for action in ["fill", "run", "run_cwd"] {
+            assert!(mode.execute(&id, action).is_err(), "{action} must fail");
+        }
+        let record = mode
+            .catalog
+            .records()
+            .iter()
+            .find(|record| record.command == "git status")
+            .expect("still catalogued");
+        assert_eq!(record.selected_count, 1, "only the seeded selection");
+    }
+
+    /// Copy goes to the clipboard and touches no pane; a refused multiline
+    /// confirmation stops the run before anything is sent.
+    #[test]
+    fn copy_uses_the_clipboard_and_a_refused_confirmation_sends_nothing() {
+        let (mut mode, runner) = mode_with(MockRunner::new());
+        mode.copy = |text| {
+            anyhow::ensure!(text == "git status", "copied {text}");
+            Ok(())
+        };
+        mode.execute(&fingerprint("git status"), "copy").unwrap();
+
+        mode.confirm = |_| anyhow::bail!("multiline run cancelled");
+        assert!(mode.execute(&fingerprint("git status"), "run").is_err());
+        assert!(runner.calls().is_empty(), "{:?}", runner.calls());
     }
 
     /// Acting on a row that is gone, or with an action nothing answers to, must
