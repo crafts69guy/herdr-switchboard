@@ -905,6 +905,7 @@ mod tests {
     /// test, because these steps share the one scratch herdr config.
     #[test]
     fn full_zen_round_trips_on_the_scratch_herdr_config() {
+        let _guard = CHROME_LOCK.lock().unwrap();
         let path = chrome::config_path();
         assert!(path.starts_with(crate::state::test_scratch().unwrap()));
         fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -956,4 +957,88 @@ mod tests {
         store.clear_chrome();
         fs::remove_file(&path).ok();
     }
+
+    /// A target that sat first in a vertical split swaps back up, and a tab
+    /// that cannot be rebuilt exactly says so; herdr failing to list panes
+    /// reads as no panes, and a pane row needs an id to count.
+    #[test]
+    fn leaving_a_vertical_split_swaps_up_and_reports_an_inexact_restore() {
+        let runner = MockRunner::new()
+            .on("pane list", PANES)
+            .on("tab get", r#"{"result":{"tab":{"pane_count":0}}}"#);
+        let mut session = session_of(&[]);
+        if let Some(anchor) = session.anchor.as_mut() {
+            anchor.split = "down".into();
+            anchor.exact = false;
+        }
+        leave(&runner, &session, &Notifier::silent(), &temp_store()).unwrap();
+        assert!(runner
+            .calls()
+            .iter()
+            .any(|call| call.join(" ").contains("swap --pane w1:p1 --direction up")));
+
+        assert!(engine::list_panes(&MockRunner::new().failing("pane list")).is_empty());
+        assert!(engine::PaneInfo::from_json(&serde_json::json!({"pane_id": ""})).is_none());
+        let titled = engine::PaneInfo::from_json(&serde_json::json!({
+            "pane_id": "w1:p1", "terminal_title_stripped": "clean", "terminal_title": "\u{1b}[1mraw"
+        }))
+        .unwrap();
+        assert_eq!(titled.title, "clean");
+    }
+
+    /// With scrim on and the gutters in herdr's settled layout, each gutter is
+    /// painted — here against the test build's scratch socket, where nobody
+    /// answers, which zen treats as an undimmed gutter rather than an error.
+    #[test]
+    fn scrim_paints_each_gutter_the_layout_reports() {
+        const SETTLED: &str = r#"{"result":{"layout":{"area":{"x":0,"y":0,"width":200,"height":50},
+            "panes":[{"pane_id":"w1:p5","rect":{"x":0,"y":0,"width":30,"height":50}},
+                     {"pane_id":"w1:p1","rect":{"x":30,"y":0,"width":140,"height":50}},
+                     {"pane_id":"w1:p6","rect":{"x":170,"y":0,"width":30,"height":50}}],
+            "zoomed":false}}}"#;
+        let runner = MockRunner::new()
+            .on("pane list", PANES)
+            .on("pane layout", SETTLED)
+            .on(
+                "pane move w1:p1 --new-tab",
+                r#"{"result":{"move_result":{"created_tab":{"tab_id":"w1:t9"}}}}"#,
+            )
+            .on(
+                "--ratio 0.8500",
+                r#"{"result":{"pane":{"pane_id":"w1:p5"}}}"#,
+            )
+            .on(
+                "--ratio 0.1765",
+                r#"{"result":{"pane":{"pane_id":"w1:p6"}}}"#,
+            );
+        let store = temp_store();
+        enter(&runner, "w1:p1", &cfg(true), &Notifier::silent(), &store).unwrap();
+        assert!(store.load().is_some());
+        store.clear();
+    }
+
+    /// A chrome snapshot that cannot be saved is undone at once rather than
+    /// leaving herdr's config rewritten with no way home.
+    #[test]
+    fn an_unsavable_chrome_snapshot_is_undone_immediately() {
+        let path = chrome::config_path();
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let blocked = std::env::temp_dir().join(format!("swb-zen-blocked-{}", std::process::id()));
+        fs::write(&blocked, "a file, so nothing can be created under it").unwrap();
+        let store = SessionStore::at(blocked.join("zen.tsv"));
+        let mut panes = cfg(false);
+        panes.chrome = chrome::Level::Panes;
+        // Shares the scratch herdr config with the other chrome test, so it only
+        // checks what it alone controls: entering fails and nothing is recorded.
+        let _guard = CHROME_LOCK.lock().unwrap();
+        fs::write(&path, "[ui]\npane_borders = true\n").unwrap();
+        assert!(enter(&entering(), "w1:p1", &panes, &Notifier::silent(), &store).is_err());
+        assert!(fs::read_to_string(&path)
+            .unwrap()
+            .contains("pane_borders = true"));
+        fs::remove_file(&blocked).ok();
+    }
+
+    /// Serialises the tests that write the scratch herdr config.
+    static CHROME_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 }

@@ -415,4 +415,25 @@ mod tests {
         assert_eq!(state_dir_from(None, None), None);
         assert!(state_dir().unwrap().starts_with(test_scratch().unwrap()));
     }
+
+    /// A directory the process may not write into refuses the temp file, and
+    /// that refusal names it. (Skipped where permissions do not bind, as root.)
+    #[test]
+    fn a_read_only_directory_refuses_the_temp_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("swb-state-readonly-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        // The lock already exists, so the first thing the write must create is
+        // its temp file.
+        fs::write(dir.join(".state.tsv.lock"), b"").unwrap();
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o500)).unwrap();
+        let probe = dir.join("probe");
+        if File::create(&probe).is_err() {
+            let error = write_private(&dir.join("state.tsv"), b"x").unwrap_err();
+            assert!(error.to_string().contains("create"), "{error}");
+        }
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::remove_dir_all(&dir).ok();
+    }
 }

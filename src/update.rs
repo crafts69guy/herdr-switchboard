@@ -305,4 +305,11 @@ def456\trefs/tags/v0.10.0
             None
         );
     }
+
+    /// The detached child really starts. Here the executable is this test
+    /// binary, which rejects `--update-check` and exits at once.
+    #[test]
+    fn the_update_check_child_starts_detached() {
+        spawn_check().expect("the child starts");
+    }
 }
