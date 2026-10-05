@@ -1,6 +1,6 @@
 [package]
 name = "herdr-switchboard"
-version = "3.0.1"
+version = "3.0.2"
 edition = "2021"
 description = "Colorful Herdr command palette for projects, command history, and local TCP ports."
 license = "MIT"

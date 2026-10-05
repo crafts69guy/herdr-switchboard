@@ -7,6 +7,8 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [3.0.2] - 2026-10-05
+
 ### Fixed
 
 - **An agent's Inspector shows its recent output again.** herdr 0.9 answers `agent read` with the
@@ -916,7 +918,8 @@ tuicr's own colours.
   open it in a new workspace, tab, split, or the current pane, plus clone (`ghq get`),
   update, remove, and a handoff to the git-hub menu.
 
-[Unreleased]: https://github.com/crafts69guy/herdr-switchboard/compare/v3.0.1...HEAD
+[Unreleased]: https://github.com/crafts69guy/herdr-switchboard/compare/v3.0.2...HEAD
+[3.0.2]: https://github.com/crafts69guy/herdr-switchboard/compare/v3.0.1...v3.0.2
 [3.0.1]: https://github.com/crafts69guy/herdr-switchboard/compare/v3.0.0...v3.0.1
 [3.0.0]: https://github.com/crafts69guy/herdr-switchboard/compare/v2.1.0...v3.0.0
 [2.1.0]: https://github.com/crafts69guy/herdr-switchboard/compare/v2.0.0...v2.1.0
