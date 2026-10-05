@@ -45,17 +45,21 @@ use std::fs;
 /// Standalone settings action. Projects also embeds this same form, so both
 /// entry points preserve the draft/apply behavior and namespaced writer.
 pub fn main(cfg: Config, theme: Theme) -> Result<()> {
+    crate::surface::run(&mut standalone(&cfg, theme))
+}
+
+fn standalone(cfg: &Config, theme: Theme) -> StandaloneSettings {
     let title = theme
         .resolve(&cfg.common.title_color)
         .unwrap_or_else(|| theme.or("peach", Color::Yellow));
     let mut surface = StandaloneSettings {
-        settings: Settings::new(&cfg),
+        settings: Settings::new(cfg),
         background: crate::tui::SurfaceBackground::resolve(&theme, cfg.common.transparency),
         theme,
         title,
     };
     surface.settings.open();
-    crate::surface::run(&mut surface)
+    surface
 }
 
 struct StandaloneSettings {
@@ -1043,5 +1047,13 @@ mod tests {
             Transition::Exit(())
         ));
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The standalone pane as `--settings` builds it opens on the form.
+    #[test]
+    fn the_standalone_pane_opens_on_the_form() {
+        let surface = standalone(&Config::default(), Theme::default());
+        assert!(surface.settings.show);
+        assert_eq!(surface.title, Color::Yellow);
     }
 }

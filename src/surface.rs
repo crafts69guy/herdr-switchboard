@@ -104,10 +104,106 @@ impl Drop for RestoreGuard {
 /// repaint is the expensive half, that is what a scroll stutter is made of.
 /// Every event still reaches `on_event` in order, and a burst that ends in an
 /// `Exit` stops there rather than being drawn.
-pub fn run<S: Surface>(surface: &mut S) -> Result<S::Output> {
+pub(crate) fn run<S: Surface>(surface: &mut S) -> Result<S::Output> {
     let mut terminal = claim_terminal();
     let _restore = RestoreGuard;
     host(surface, &mut terminal, &mut TerminalInput)
+}
+
+/// Something that can host a surface to completion. Production uses
+/// [`TerminalHost`]; a mode's entry point takes `&mut impl Host` so a test can
+/// drive the same code path on a `TestBackend` with scripted input.
+pub(crate) trait Host {
+    fn run<S: Surface>(&mut self, surface: &mut S) -> Result<S::Output>;
+}
+
+/// The real terminal: claim it, host the surface, restore it.
+pub(crate) struct TerminalHost;
+
+impl Host for TerminalHost {
+    fn run<S: Surface>(&mut self, surface: &mut S) -> Result<S::Output> {
+        run(surface)
+    }
+}
+
+/// A host for tests: a `TestBackend` of the given size and a script of
+/// events. [`ScriptedHost::PAUSE`] in the script lets the surface tick for a
+/// while, so background work can land before the next key. Once the script
+/// runs out the surface may tick a bounded number of times and then the host
+/// fails, so a surface that never exits cannot hang the suite.
+#[cfg(test)]
+pub(crate) struct ScriptedHost {
+    pub(crate) events: std::collections::VecDeque<Event>,
+    pub(crate) size: (u16, u16),
+}
+
+#[cfg(test)]
+impl ScriptedHost {
+    pub(crate) fn new(events: impl IntoIterator<Item = Event>) -> Self {
+        Self {
+            events: events.into_iter().collect(),
+            size: (120, 40),
+        }
+    }
+
+    /// A key press for a script.
+    pub(crate) fn key(code: event::KeyCode, modifiers: event::KeyModifiers) -> Event {
+        Event::Key(event::KeyEvent::new(code, modifiers))
+    }
+
+    /// Not an input: a point in the script where the surface ticks instead.
+    pub(crate) const PAUSE: Event = Event::FocusLost;
+}
+
+#[cfg(test)]
+impl Host for ScriptedHost {
+    fn run<S: Surface>(&mut self, surface: &mut S) -> Result<S::Output> {
+        struct Script<'a> {
+            events: &'a mut std::collections::VecDeque<Event>,
+            idle: usize,
+            pause: usize,
+        }
+        impl Input for Script<'_> {
+            fn poll(&mut self, _wait: Duration) -> Result<bool> {
+                if self.pause > 0 {
+                    self.pause -= 1;
+                    std::thread::sleep(Duration::from_millis(2));
+                    return Ok(false);
+                }
+                if self.events.front() == Some(&ScriptedHost::PAUSE) {
+                    self.events.pop_front();
+                    self.pause = 100;
+                    return Ok(false);
+                }
+                if !self.events.is_empty() {
+                    return Ok(true);
+                }
+                self.idle += 1;
+                anyhow::ensure!(
+                    self.idle < 400,
+                    "script exhausted before the surface exited"
+                );
+                std::thread::sleep(Duration::from_millis(2));
+                Ok(false)
+            }
+            fn read(&mut self) -> Result<Event> {
+                self.events
+                    .pop_front()
+                    .ok_or_else(|| anyhow::anyhow!("read past the script"))
+            }
+        }
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(self.size.0, self.size.1))?;
+        host(
+            surface,
+            &mut terminal,
+            &mut Script {
+                events: &mut self.events,
+                idle: 0,
+                pause: 0,
+            },
+        )
+    }
 }
 
 /// Where the host's events come from: the real terminal in production, a

@@ -9,7 +9,9 @@ use std::thread;
 use std::time::Instant;
 
 use crate::data::{self, Config, Entry, Theme};
-use crate::runner::SystemRunner;
+use std::sync::Arc;
+
+use crate::runner::CommandRunner;
 use crate::{source, trace};
 
 struct CatalogRequest {
@@ -35,7 +37,9 @@ pub(super) struct CatalogWorker {
 }
 
 impl CatalogWorker {
-    pub fn spawn() -> Self {
+    /// A worker that discovers through `runner`: `SystemRunner` in production,
+    /// a `MockRunner` in tests.
+    pub fn spawn_with(runner: Arc<dyn CommandRunner + Send + Sync>) -> Self {
         let (job_tx, job_rx) = mpsc::channel::<CatalogRequest>();
         let (done_tx, done_rx) = mpsc::channel::<CatalogCompletion>();
         thread::spawn(move || {
@@ -44,20 +48,20 @@ impl CatalogWorker {
                     request = newer;
                 }
                 let started = Instant::now();
-                let runner = SystemRunner;
+                let runner = runner.as_ref();
                 // These ghq calls are independent and each takes a noticeable
                 // process-startup cost on macOS. Overlap them, then keep the
                 // resulting repository snapshot for both repo rows and probes.
                 let (root, repos) = thread::scope(|scope| {
-                    let root = scope.spawn(|| data::ghq_root(&runner));
-                    let repos = data::load_repo_names(&runner);
+                    let root = scope.spawn(|| data::ghq_root(runner));
+                    let repos = data::load_repo_names(runner);
                     let root: String = root.join().unwrap_or_default();
                     (root, repos)
                 });
                 let entries = source::load_all(
                     &request.config,
                     &source::LoadCtx {
-                        runner: &runner,
+                        runner,
                         theme: &request.theme,
                         root: &root,
                         repos: Some(&repos),

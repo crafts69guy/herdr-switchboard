@@ -865,54 +865,22 @@ impl Default for Git {
 /// recency file. The only IO before the first frame is the git reads the menu
 /// needs to label itself.
 pub fn main() -> Result<()> {
-    let runner = SystemRunner;
     let cfg = Config::try_load()?;
     let theme = Theme::load();
-    let title = theme
-        .resolve(&cfg.common.title_color)
-        .unwrap_or_else(|| theme.or("accent", Color::Cyan));
-    let background = crate::tui::SurfaceBackground::resolve(&theme, cfg.common.transparency);
-
-    // Not a repo: say so in one line and let the pane close, rather than opening
-    // a menu whose every row would fail.
-    let Some(cwd) = repo_cwd(&runner) else {
-        println!("Switchboard git menu: this pane is not inside a git repository.");
-        return Ok(());
-    };
-    let label = std::path::Path::new(&cwd)
-        .file_name()
-        .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "repo".into());
-
-    let base = detect_base_branch(&runner, &cwd, &cfg.git.base_branch);
-    let has = |bin: &str| runner.ok("sh", &["-c", &format!("command -v {bin} >/dev/null 2>&1")]);
-    let (has_lazygit, has_gh) = (has("lazygit"), has("gh"));
-    let mut g = Git::new();
-    g.open(
-        cwd.clone(),
-        label,
-        base,
-        has_lazygit,
-        has_gh,
+    let Some(spec) = choose(
+        &mut crate::surface::TerminalHost,
+        Arc::new(SystemRunner),
+        &cfg,
+        &theme,
+        repo_cwd(&SystemRunner),
+        env::var("SWITCHBOARD_ORIGIN_PANE_ID").unwrap_or_default(),
         read_menu_conf(),
-        cfg.git.all_files_warn,
-    );
-
-    crate::surface::run(&mut GitSurface {
-        git: &mut g,
-        cwd: &cwd,
-        origin_pane: env::var("SWITCHBOARD_ORIGIN_PANE_ID").unwrap_or_default(),
-        runner: Arc::new(SystemRunner),
-        archive: review_archive::set,
-        theme: &theme,
-        background,
-        title,
-        notifier: Notifier::new(&cfg),
-        effect: None,
-    })?;
-    let Some(spec) = g.chosen.take() else {
+    )?
+    else {
         return Ok(());
     };
+    let title = title_color(&theme, &cfg);
+    let background = crate::tui::SurfaceBackground::resolve(&theme, cfg.common.transparency);
 
     // Re-claim only for the pre-roll. The universal host has already restored
     // its lease, so every normal/error exit is safe; this short second lease is
@@ -936,6 +904,64 @@ pub fn main() -> Result<()> {
     // that error back to the shell.
     crate::surface::restore_terminal();
     result
+}
+
+fn title_color(theme: &Theme, cfg: &Config) -> Color {
+    theme
+        .resolve(&cfg.common.title_color)
+        .unwrap_or_else(|| theme.or("accent", Color::Cyan))
+}
+
+/// Everything up to the chosen review: label the menu for `cwd`, host it, and
+/// return what the user picked. `None` when there is no repository or the menu
+/// was closed without a choice.
+fn choose(
+    host: &mut impl crate::surface::Host,
+    runner: Arc<dyn CommandRunner + Send + Sync>,
+    cfg: &Config,
+    theme: &Theme,
+    cwd: Option<String>,
+    origin_pane: String,
+    customs: Vec<Custom>,
+) -> Result<Option<ReviewSpec>> {
+    // Not a repo: say so in one line and let the pane close, rather than opening
+    // a menu whose every row would fail.
+    let Some(cwd) = cwd else {
+        println!("Switchboard git menu: this pane is not inside a git repository.");
+        return Ok(None);
+    };
+    let label = std::path::Path::new(&cwd)
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "repo".into());
+
+    let base = detect_base_branch(runner.as_ref(), &cwd, &cfg.git.base_branch);
+    let has = |bin: &str| runner.ok("sh", &["-c", &format!("command -v {bin} >/dev/null 2>&1")]);
+    let (has_lazygit, has_gh) = (has("lazygit"), has("gh"));
+    let mut g = Git::new();
+    g.open(
+        cwd.clone(),
+        label,
+        base,
+        has_lazygit,
+        has_gh,
+        customs,
+        cfg.git.all_files_warn,
+    );
+
+    host.run(&mut GitSurface {
+        git: &mut g,
+        cwd: &cwd,
+        origin_pane,
+        runner,
+        archive: review_archive::set,
+        theme,
+        background: crate::tui::SurfaceBackground::resolve(theme, cfg.common.transparency),
+        title: title_color(theme, cfg),
+        notifier: Notifier::new(cfg),
+        effect: None,
+    })?;
+    Ok(g.chosen.take())
 }
 
 struct GitSurface<'a> {
@@ -3012,5 +3038,39 @@ z|Y|pull|git pull
             surface.on_event(Event::Resize(80, 24)).unwrap(),
             Transition::Wait
         ));
+    }
+
+    fn choose_with(events: Vec<Event>, cwd: Option<&str>) -> Result<Option<ReviewSpec>> {
+        choose(
+            &mut crate::surface::ScriptedHost::new(events),
+            Arc::new(MockRunner::new().on("symbolic-ref", "origin/main")),
+            &Config::default(),
+            &Theme::default(),
+            cwd.map(str::to_string),
+            "w1:p1".into(),
+            Vec::new(),
+        )
+    }
+
+    /// The menu as `Prefix + g` opens it: a mnemonic picks a review, closing
+    /// picks nothing, and outside a repository there is no menu at all.
+    #[test]
+    fn the_git_menu_returns_the_review_it_was_asked_for() {
+        let spec = choose_with(vec![Event::Key(key(KeyCode::Char('d')))], Some("/work/api"))
+            .unwrap()
+            .expect("d reviews the worktree");
+        assert_eq!(spec.cwd, "/work/api");
+        assert_eq!(spec.label, "api");
+
+        assert!(
+            choose_with(vec![Event::Key(key(KeyCode::Esc))], Some("/work/api"))
+                .unwrap()
+                .is_none()
+        );
+        assert!(choose_with(Vec::new(), None).unwrap().is_none());
+        assert_eq!(
+            title_color(&Theme::default(), &Config::default()),
+            Color::Cyan
+        );
     }
 }

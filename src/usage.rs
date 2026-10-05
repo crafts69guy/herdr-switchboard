@@ -315,10 +315,23 @@ fn enabled_from(cfg: &Config, mut available: Vec<Box<dyn Provider>>) -> Vec<Box<
 }
 /// Entry point for `herdr-switchboard --usage`.
 pub fn main(cfg: Config, theme: Theme) -> Result<()> {
+    let mut app = usage_popup(cfg, theme, Arc::new(SystemRunner), providers);
+    // Load before claiming the terminal, like the projects picker: the offline
+    // provider is already on screen in the first frame.
+    app.refresh();
+    crate::surface::run(&mut app)
+}
+
+fn usage_popup(
+    cfg: Config,
+    theme: Theme,
+    runner: Arc<dyn CommandRunner + Send + Sync>,
+    registry: fn() -> Vec<Box<dyn Provider>>,
+) -> App {
     let title_color = theme
         .resolve(&cfg.common.title_color)
         .unwrap_or_else(|| theme.or("peach", Color::Yellow));
-    let mut app = App {
+    App {
         background: crate::tui::SurfaceBackground::resolve(&theme, cfg.common.transparency),
         theme,
         title_color,
@@ -329,13 +342,9 @@ pub fn main(cfg: Config, theme: Theme) -> Result<()> {
         offset: 0,
         bar_row: 0,
         bar_zones: Vec::new(),
-        runner: Arc::new(SystemRunner),
-        registry: providers,
-    };
-    // Load before claiming the terminal, like the projects picker: the offline
-    // provider is already on screen in the first frame.
-    app.refresh();
-    crate::surface::run(&mut app)
+        runner,
+        registry,
+    }
 }
 
 #[cfg(test)]
@@ -1649,5 +1658,28 @@ mod tests {
         assert_eq!(Claude.id(), "claude");
         assert_eq!(Claude.name(), "Claude Code");
         assert!(!Claude.offline());
+    }
+
+    /// The popup as `--usage` builds it, refreshed through fakes and hosted
+    /// until `esc`.
+    #[test]
+    fn the_usage_popup_refreshes_and_closes() {
+        let mut cfg = Config::default();
+        cfg.usage.providers = vec!["offline-fake".into()];
+        let mut app = usage_popup(
+            cfg,
+            Theme::default(),
+            Arc::new(MockRunner::new().on("date +%z", "+0000")),
+            fakes,
+        );
+        app.refresh();
+        assert!(matches!(app.slots[0], Slot::Ready(_)));
+        use crate::surface::Host;
+        crate::surface::ScriptedHost::new([crate::surface::ScriptedHost::key(
+            KeyCode::Esc,
+            crossterm::event::KeyModifiers::NONE,
+        )])
+        .run(&mut app)
+        .expect("esc closes");
     }
 }

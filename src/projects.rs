@@ -10,6 +10,7 @@ use std::cmp::Reverse;
 use std::collections::HashMap;
 use std::env;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -26,9 +27,10 @@ use crate::agent_handoff::AgentTarget;
 use crate::agent_handoff::{discover_targets, TargetResolution, TargetScope};
 use crate::data::{Config, Entry, GroupFilter, Kind, SortMode, Theme};
 use crate::notify::{Event as NotifyEvent, Notifier};
+use crate::runner::CommandRunner;
 use crate::surface::{Surface as HostedSurface, Transition as SurfaceTransition};
 use crate::{
-    action, changelog, history, keymap, markdown, runner, settings, source, surface, trace, update,
+    action, changelog, history, keymap, markdown, runner, settings, source, trace, update,
 };
 use effect::CatalogWorker;
 use handoff::{HandoffAction, HandoffRequest, HandoffState, ItemContext};
@@ -1057,6 +1059,8 @@ const PLACEHOLDER_FRAME: Duration = Duration::from_millis(80);
 struct ProjectsSurface<'a> {
     app: &'a mut App,
     origin_pane: String,
+    /// Every background handoff step runs through this; tests use `MockRunner`.
+    runner: Arc<dyn CommandRunner + Send + Sync>,
     notifier: Notifier,
     effect: Option<Receiver<ProjectEffect>>,
     catalog_worker: CatalogWorker,
@@ -1328,13 +1332,14 @@ impl ProjectsSurface<'_> {
             Flow::DiscoverTargets(entry) => {
                 let (sender, receiver) = mpsc::channel();
                 let origin_pane = self.origin_pane.clone();
+                let runner = Arc::clone(&self.runner);
                 std::thread::spawn(move || {
-                    let runner = runner::SystemRunner;
-                    let result = handoff::resolve_item(&runner, &entry)
+                    let runner = runner.as_ref();
+                    let result = handoff::resolve_item(runner, &entry)
                         .ok_or_else(|| "Selected item has no absolute path.".to_string())
                         .map(|item| {
                             let targets =
-                                discover_targets(&runner, &item.absolute_path, &origin_pane);
+                                discover_targets(runner, &item.absolute_path, &origin_pane);
                             (item, targets)
                         });
                     let _ = sender.send(ProjectEffect::Targets(result));
@@ -1344,8 +1349,9 @@ impl ProjectsSurface<'_> {
             }
             Flow::Deliver(request) => {
                 let (sender, receiver) = mpsc::channel();
+                let runner = Arc::clone(&self.runner);
                 std::thread::spawn(move || {
-                    let result = handoff::deliver(&runner::SystemRunner, &request)
+                    let result = handoff::deliver(runner.as_ref(), &request)
                         .map_err(|error| error.to_string());
                     let _ = sender.send(ProjectEffect::Delivered(result));
                 });
@@ -1371,7 +1377,6 @@ impl ProjectsSurface<'_> {
 
 /// Run the Projects Picker after the composition root has selected this mode.
 pub(crate) fn main(cfg: Config, theme: Theme) -> Result<()> {
-    let runner = runner::SystemRunner;
     let script_dir = env::var("HERDR_PLUGIN_ROOT")
         .map(|r| format!("{r}/bin"))
         .unwrap_or_else(|_| ".".into());
@@ -1382,16 +1387,54 @@ pub(crate) fn main(cfg: Config, theme: Theme) -> Result<()> {
     update::spawn_refresh_if_stale(&cfg);
 
     trace::mark("config+theme.loaded");
+    run_with(
+        &mut crate::surface::TerminalHost,
+        Arc::new(runner::SystemRunner),
+        &AfterExit::LIVE,
+        cfg,
+        theme,
+        script_dir,
+        origin,
+    )
+}
 
+/// What runs on the restored terminal after the picker exits, apart from the
+/// herdr verbs: the clipboard and the recency file. Tests swap in no-ops.
+struct AfterExit {
+    copy: fn(&str) -> Result<()>,
+    touch: fn(&str),
+    forget: fn(&str),
+}
+
+impl AfterExit {
+    const LIVE: Self = Self {
+        copy: crate::clipboard::copy_text,
+        touch: history::touch,
+        forget: history::forget,
+    };
+}
+
+/// The whole Projects lifecycle over any host and runner: discover, host the
+/// surface, then act on its outcome with the terminal restored.
+fn run_with(
+    host: &mut impl crate::surface::Host,
+    runner: Arc<dyn CommandRunner + Send + Sync>,
+    after: &AfterExit,
+    cfg: Config,
+    theme: Theme,
+    script_dir: String,
+    origin: String,
+) -> Result<()> {
     let mut app = App::new(Vec::new(), theme, cfg, script_dir.clone());
     app.catalog = CatalogState::Loading;
     let notifier = Notifier::new(&app.cfg);
     let mut surface = ProjectsSurface {
         app: &mut app,
         origin_pane: origin.clone(),
+        runner: Arc::clone(&runner),
         notifier,
         effect: None,
-        catalog_worker: CatalogWorker::spawn(),
+        catalog_worker: CatalogWorker::spawn_with(Arc::clone(&runner)),
         catalog_generation: 0,
         catalog_intent: CatalogIntent::Initial,
         catalog_pending: false,
@@ -1401,13 +1444,14 @@ pub(crate) fn main(cfg: Config, theme: Theme) -> Result<()> {
         placeholder_frame: None,
     };
     surface.start_catalog(CatalogIntent::Initial);
-    let outcome = surface::run(&mut surface);
+    let outcome = host.run(&mut surface);
+    let runner = runner.as_ref();
 
     match outcome? {
         Some(ProjectOutcome::CopyPath(entry)) => {
-            let item = handoff::resolve_item(&runner, &entry)
+            let item = handoff::resolve_item(runner, &entry)
                 .ok_or_else(|| anyhow::anyhow!("selected item has no absolute path"))?;
-            crate::clipboard::copy_text(&item.absolute_path)?;
+            (after.copy)(&item.absolute_path)?;
         }
         Some(ProjectOutcome::Accept(entry, accept)) => {
             let id = entry.as_ref().map(|e| e.id.clone());
@@ -1423,7 +1467,7 @@ pub(crate) fn main(cfg: Config, theme: Theme) -> Result<()> {
                 &app.cfg.projects.default_target,
             );
             let dispatch_outcome = action::dispatch(
-                &runner,
+                runner,
                 entry,
                 accept,
                 &origin,
@@ -1441,8 +1485,8 @@ pub(crate) fn main(cfg: Config, theme: Theme) -> Result<()> {
                     | Accept::Workspace
                     | Accept::Tab
                     | Accept::Split
-                    | Accept::Pane => history::touch(&id),
-                    Accept::Remove => history::forget(&id),
+                    | Accept::Pane => (after.touch)(&id),
+                    Accept::Remove => (after.forget)(&id),
                     // Clone / UpdatePlugin exec away and never come back here.
                     Accept::Update | Accept::Clone | Accept::UpdatePlugin => {}
                 }
@@ -2551,11 +2595,12 @@ mod tests {
         ProjectsSurface {
             app,
             origin_pane: "w1:p1".into(),
+            runner: Arc::new(crate::runner::MockRunner::new()),
             // Never the real notifier: a delivery test would otherwise shell out
             // to `herdr notification show` on the machine running the suite.
             notifier: Notifier::silent(),
             effect: None,
-            catalog_worker: CatalogWorker::spawn(),
+            catalog_worker: CatalogWorker::spawn_with(Arc::new(crate::runner::MockRunner::new())),
             catalog_generation: 0,
             catalog_intent: CatalogIntent::Initial,
             catalog_pending: false,
@@ -3010,11 +3055,12 @@ mod tests {
         app.catalog = CatalogState::Loading;
         let notifier = Notifier::new(&app.cfg);
         let mut surface = ProjectsSurface {
+            runner: Arc::new(crate::runner::MockRunner::new()),
             app: &mut app,
             origin_pane: String::new(),
             notifier,
             effect: None,
-            catalog_worker: CatalogWorker::spawn(),
+            catalog_worker: CatalogWorker::spawn_with(Arc::new(crate::runner::MockRunner::new())),
             catalog_generation: 0,
             catalog_intent: CatalogIntent::Initial,
             catalog_pending: false,
@@ -3042,11 +3088,12 @@ mod tests {
         app.catalog = CatalogState::Loading;
         let notifier = Notifier::new(&app.cfg);
         let mut surface = ProjectsSurface {
+            runner: Arc::new(crate::runner::MockRunner::new()),
             app: &mut app,
             origin_pane: String::new(),
             notifier,
             effect: None,
-            catalog_worker: CatalogWorker::spawn(),
+            catalog_worker: CatalogWorker::spawn_with(Arc::new(crate::runner::MockRunner::new())),
             catalog_generation: 7,
             catalog_intent: CatalogIntent::Initial,
             catalog_pending: true,
@@ -4354,5 +4401,129 @@ mod tests {
             surface.on_event(release).unwrap(),
             SurfaceTransition::Wait
         ));
+    }
+
+    use crate::surface::ScriptedHost;
+
+    static AFTER_EXIT: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+    /// Records what would have reached the clipboard and the recency file.
+    const RECORDING: AfterExit = AfterExit {
+        copy: |text| {
+            AFTER_EXIT.lock().unwrap().push(format!("copy {text}"));
+            Ok(())
+        },
+        touch: |id| AFTER_EXIT.lock().unwrap().push(format!("touch {id}")),
+        forget: |id| AFTER_EXIT.lock().unwrap().push(format!("forget {id}")),
+    };
+
+    /// A ghq root on disk holding `repo`, and a runner that discovers it.
+    fn discovering_repo(repo: &str) -> (Arc<crate::runner::MockRunner>, String) {
+        let root = std::env::temp_dir().join(format!("swb-lifecycle-{}", std::process::id()));
+        let path = root.join("github.com/o").join(repo);
+        std::fs::create_dir_all(&path).unwrap();
+        let root = root.to_string_lossy().into_owned();
+        let runner = crate::runner::MockRunner::new()
+            .on("ghq root", &root)
+            .on("ghq list", &format!("github.com/o/{repo}"));
+        (Arc::new(runner), path.to_string_lossy().into_owned())
+    }
+
+    fn discovering() -> Arc<crate::runner::MockRunner> {
+        discovering_repo("lifecycle-repo").0
+    }
+
+    fn lifecycle(events: Vec<Event>, runner: Arc<crate::runner::MockRunner>) -> Result<()> {
+        let mut cfg = Config::default();
+        cfg.projects.default_target = "tab".into();
+        cfg.projects.include_agents = false;
+        cfg.projects.include_workspaces = false;
+        run_with(
+            &mut ScriptedHost::new(events),
+            runner,
+            &RECORDING,
+            cfg,
+            Theme::default(),
+            "/plugin/bin".into(),
+            "w1:p1".into(),
+        )
+    }
+
+    /// The whole lifecycle: discovery fills the list, Enter opens the repo
+    /// through herdr, and the open is recorded for the recency sort.
+    #[test]
+    fn the_lifecycle_discovers_opens_and_records_recency() {
+        let runner = discovering();
+        lifecycle(
+            vec![
+                ScriptedHost::PAUSE,
+                ScriptedHost::key(KeyCode::Enter, KeyModifiers::NONE),
+            ],
+            Arc::clone(&runner),
+        )
+        .expect("the picker opens the repo and exits");
+        assert!(
+            runner.calls().iter().any(|call| {
+                let call = call.join(" ");
+                call.contains("tab create --cwd") && call.contains("/github.com/o/lifecycle-repo")
+            }),
+            "{:?}",
+            runner.calls()
+        );
+        assert!(AFTER_EXIT
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|line| line.ends_with("lifecycle-repo") && line.starts_with("touch")));
+    }
+
+    /// Copy hands the absolute path to the clipboard; quitting does nothing.
+    #[test]
+    fn the_lifecycle_copies_a_path_or_quits_cleanly() {
+        lifecycle(
+            vec![
+                ScriptedHost::PAUSE,
+                ScriptedHost::key(KeyCode::Char('y'), KeyModifiers::CONTROL),
+            ],
+            discovering(),
+        )
+        .expect("copies and exits");
+        assert!(AFTER_EXIT.lock().unwrap().iter().any(
+            |line| line.starts_with("copy /") && line.ends_with("/github.com/o/lifecycle-repo")
+        ));
+
+        lifecycle(
+            vec![ScriptedHost::key(KeyCode::Char('c'), KeyModifiers::CONTROL)],
+            discovering(),
+        )
+        .expect("quits while still loading");
+    }
+
+    /// A failed open is an error out of the picker, and nothing is recorded.
+    #[test]
+    fn a_failed_open_is_reported_and_not_recorded() {
+        let (_, path) = discovering_repo("failing-repo");
+        let root = path
+            .trim_end_matches("/github.com/o/failing-repo")
+            .to_string();
+        let runner = Arc::new(
+            crate::runner::MockRunner::new()
+                .on("ghq root", &root)
+                .on("ghq list", "github.com/o/failing-repo")
+                .failing("tab create"),
+        );
+        let result = lifecycle(
+            vec![
+                ScriptedHost::PAUSE,
+                ScriptedHost::key(KeyCode::Enter, KeyModifiers::NONE),
+            ],
+            runner,
+        );
+        assert!(result.is_err());
+        assert!(!AFTER_EXIT
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|line| line.contains("failing-repo")));
     }
 }
