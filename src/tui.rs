@@ -253,4 +253,11 @@ mod tests {
             assert_eq!(buffer[(x, 1)].bg, Color::Rgb(0x10, 0x12, 0x14));
         }
     }
+
+    /// Padding wider than the static run is built rather than sliced.
+    #[test]
+    fn padding_wider_than_the_static_run_is_allocated() {
+        assert_eq!(spaces(4), "    ");
+        assert_eq!(spaces(500).len(), 500);
+    }
 }

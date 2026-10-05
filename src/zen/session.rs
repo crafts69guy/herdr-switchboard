@@ -188,3 +188,16 @@ impl Default for SessionStore {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The default store is the real one, which the test build keeps in scratch.
+    #[test]
+    fn the_default_store_lives_in_the_state_dir() {
+        let store = SessionStore::default();
+        let path = store.0.expect("a state dir exists");
+        assert!(path.starts_with(crate::state::test_scratch().unwrap()));
+    }
+}

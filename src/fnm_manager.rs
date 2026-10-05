@@ -950,4 +950,21 @@ mod tests {
             confirm_uninstall_with("v18.20.8", &mut "yes\n".as_bytes(), &mut Vec::new()).is_err()
         );
     }
+
+    /// A terminal that cannot be written to cancels the uninstall.
+    #[test]
+    fn an_unwritable_terminal_cancels_the_uninstall() {
+        struct BrokenPipe;
+        impl Write for BrokenPipe {
+            fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+                Err(io::Error::from(io::ErrorKind::BrokenPipe))
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        let mut output = BrokenPipe;
+        assert!(confirm_uninstall_with("v1.0.0", &mut "v1.0.0\n".as_bytes(), &mut output).is_err());
+        assert!(output.flush().is_ok());
+    }
 }

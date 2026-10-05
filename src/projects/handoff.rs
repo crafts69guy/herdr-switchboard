@@ -281,4 +281,16 @@ mod tests {
         assert!(calls[0][4].contains("/repo with space"));
         assert!(!calls[0].iter().any(|arg| arg == "--wait"));
     }
+
+    /// Moving through no agents does nothing, and every kind names itself in
+    /// the prompt it sends.
+    #[test]
+    fn an_empty_list_does_not_move_and_every_kind_has_a_name() {
+        let mut handoff = HandoffState::new();
+        handoff.move_selection(1);
+        assert_eq!(handoff.selected, 0);
+        for kind in [Kind::Agent, Kind::Workspace, Kind::Repo, Kind::Worktree] {
+            assert!(!kind_name(kind).is_empty());
+        }
+    }
 }

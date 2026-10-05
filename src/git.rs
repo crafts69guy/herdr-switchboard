@@ -3146,4 +3146,35 @@ z|Y|pull|git pull
             }
         }
     }
+
+    /// A custom row that reuses a built-in mnemonic is dropped; moving through
+    /// an empty menu does nothing; a small enough tree goes straight to review.
+    #[test]
+    fn duplicate_customs_empty_menus_and_small_trees() {
+        let mut g = Git::new();
+        g.step(1);
+        g.open(
+            "/repo".into(),
+            "repo".into(),
+            None,
+            false,
+            false,
+            vec![Custom {
+                key: 'd',
+                icon: "x".into(),
+                label: "shadowed".into(),
+                cmd: "true".into(),
+            }],
+            10,
+        );
+        assert!(!g.items.iter().any(|item| item.label == "shadowed"));
+
+        let theme = Theme::default();
+        let mut s = surface(&mut g, &theme);
+        let _ = s.git.on_key(key(KeyCode::Char('a')));
+        let (sender, receiver) = mpsc::channel();
+        sender.send(GitEffect::FileCount(Some(3))).unwrap();
+        s.effect = Some(receiver);
+        assert!(matches!(s.on_tick().unwrap(), Transition::Exit(())));
+    }
 }

@@ -109,4 +109,22 @@ mod tests {
     fn a_quoted_path_survives_single_quotes() {
         assert_eq!(shell_quote("/tmp/it's"), "'/tmp/it'\\''s'");
     }
+
+    struct BrokenPipe;
+    impl std::io::Write for BrokenPipe {
+        fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::from(std::io::ErrorKind::BrokenPipe))
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// A terminal that cannot be written to cancels rather than runs.
+    #[test]
+    fn an_unwritable_terminal_cancels_the_prompt() {
+        let mut output = BrokenPipe;
+        assert!(confirm_multiline_with("a\nb", &mut "run\n".as_bytes(), &mut output).is_err());
+        assert!(output.flush().is_ok());
+    }
 }

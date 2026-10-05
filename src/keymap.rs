@@ -953,4 +953,19 @@ mod tests {
         let f5 = crossterm::event::KeyEvent::new(KeyCode::F(5), KeyModifiers::NONE);
         assert!(chord_of(&f5).is_none());
     }
+
+    /// An override with no chord that parses leaves the default in place.
+    #[test]
+    fn an_unparseable_override_keeps_the_default_binding() {
+        let mut cfg = Config::default();
+        cfg.keys.insert(
+            "projects".into(),
+            std::collections::HashMap::from([("help".into(), "hyper-nonsense".into())]),
+        );
+        let km = Keymap::load(&cfg);
+        assert_eq!(
+            km.label_for(Mode::Normal, Action::Help).as_deref(),
+            Some("?")
+        );
+    }
 }
