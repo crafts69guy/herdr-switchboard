@@ -574,11 +574,21 @@ impl<M: PickerMode> PickerSurface<'_, M> {
 }
 
 pub fn run<M: PickerMode>(mode: M, theme: Theme, cfg: Config) -> Result<()> {
+    run_in(&mut crate::surface::TerminalHost, mode, theme, cfg)
+}
+
+/// [`run`] on any host; the settings form it may open is the real one.
+pub(crate) fn run_in<M: PickerMode>(
+    host: &mut impl crate::surface::Host,
+    mode: M,
+    theme: Theme,
+    cfg: Config,
+) -> Result<()> {
     run_with(
         mode,
         theme,
         cfg,
-        |surface| crate::surface::run(surface),
+        |surface| host.run(surface),
         || {
             crate::settings::main(Config::try_load()?, Theme::load())?;
             Ok((Config::try_load()?, Theme::load()))
@@ -3128,5 +3138,31 @@ mod tests {
                 let _ = h.surface().on_event(event.clone()).unwrap();
             }
         }
+    }
+
+    /// The picker on a scripted host: `esc` in Normal mode closes it, and a
+    /// script that runs out before the picker exits is an error, not a hang.
+    #[test]
+    fn the_picker_runs_on_any_host_and_a_stalled_script_fails() {
+        use crate::surface::ScriptedHost;
+        let mut cfg = Config::default();
+        cfg.common.keymode = crate::config::KeyMode::Normal;
+        run_in(
+            &mut ScriptedHost::new([ScriptedHost::key(KeyCode::Esc, KeyModifiers::NONE)]),
+            TestMode,
+            Theme::default(),
+            cfg.clone(),
+        )
+        .expect("esc closes");
+        let stalled = run_in(
+            &mut ScriptedHost::new([ScriptedHost::PAUSE]),
+            TestMode,
+            Theme::default(),
+            cfg,
+        );
+        assert!(stalled
+            .unwrap_err()
+            .to_string()
+            .contains("script exhausted"));
     }
 }

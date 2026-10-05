@@ -70,10 +70,17 @@ fn write_cache_at(path: &Path, checked_at: u64, latest: &str) -> Result<()> {
 
 /// The newest version tagged on the remote.
 fn fetch_latest() -> Option<String> {
-    let out = Command::new("git")
-        .args(["ls-remote", "--tags", "--refs", REPO])
-        // Never let git stop to ask for credentials: this runs with no terminal.
-        .env("GIT_TERMINAL_PROMPT", "0")
+    latest_from(
+        Command::new("git")
+            .args(["ls-remote", "--tags", "--refs", REPO])
+            // Never let git stop to ask for credentials: this runs with no terminal.
+            .env("GIT_TERMINAL_PROMPT", "0"),
+    )
+}
+
+/// Run a tag listing and take its highest version; any failure is `None`.
+fn latest_from(command: &mut Command) -> Option<String> {
+    let out = command
         .stdin(Stdio::null())
         .stderr(Stdio::null())
         .output()
@@ -280,5 +287,22 @@ def456\trefs/tags/v0.10.0
         assert!(!refresh_if_due(&config(true), None, 5_000, || Err(
             std::io::Error::other("fork failed")
         )));
+    }
+
+    /// The listing is read from whatever command produced it: a tag list is
+    /// parsed, and a failed or missing command is simply no answer.
+    #[test]
+    fn a_tag_listing_command_yields_its_highest_version() {
+        let mut listing = Command::new("sh");
+        listing.args([
+            "-c",
+            "printf 'a\\trefs/tags/v1.2.3\\nb\\trefs/tags/v1.10.0\\n'",
+        ]);
+        assert_eq!(latest_from(&mut listing).as_deref(), Some("1.10.0"));
+        assert_eq!(latest_from(&mut Command::new("false")), None);
+        assert_eq!(
+            latest_from(&mut Command::new("switchboard-no-such-git")),
+            None
+        );
     }
 }

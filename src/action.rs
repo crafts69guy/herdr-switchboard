@@ -68,20 +68,47 @@ pub fn dispatch(
     script_dir: &str,
     default_target: &str,
 ) -> Result<DispatchOutcome> {
+    dispatch_with(
+        replace_process,
+        runner,
+        entry,
+        accept,
+        origin_pane,
+        cfg,
+        script_dir,
+        default_target,
+    )
+}
+
+/// Replace this process with `command`. Returns only when the exec failed.
+fn replace_process(command: &mut Command) -> io::Error {
+    command.exec()
+}
+
+/// [`dispatch`] with the process replacement passed in: a test cannot let the
+/// clone or update flow `exec` over the test runner, so it hands in one that
+/// reports a failure instead.
+#[allow(clippy::too_many_arguments)]
+fn dispatch_with(
+    exec: fn(&mut Command) -> io::Error,
+    runner: &dyn CommandRunner,
+    entry: Option<Entry>,
+    accept: Accept,
+    origin_pane: &str,
+    cfg: &Config,
+    script_dir: &str,
+    default_target: &str,
+) -> Result<DispatchOutcome> {
     if accept == Accept::Clone {
         // Hand the whole terminal to the bash clone flow.
-        let err = Command::new("bash")
-            .arg(format!("{script_dir}/get.sh"))
-            .exec();
+        let err = exec(Command::new("bash").arg(format!("{script_dir}/get.sh")));
         return Err(anyhow!("failed to exec get.sh: {err}"));
     }
 
     // Must replace this process, not spawn beside it: `herdr plugin install` rewrites
     // the checkout holding the very binary running here. Needs no selection either.
     if accept == Accept::UpdatePlugin {
-        let err = Command::new("bash")
-            .arg(format!("{script_dir}/update-plugin.sh"))
-            .exec();
+        let err = exec(Command::new("bash").arg(format!("{script_dir}/update-plugin.sh")));
         return Err(anyhow!("failed to exec update-plugin.sh: {err}"));
     }
 
@@ -268,14 +295,23 @@ fn focus_agent(runner: &dyn CommandRunner, id: &str) -> Result<()> {
 /// `exec`s `get.sh`. `review.sh` maps `REVIEW_MODE` to the tool (`tuicr` review,
 /// `lazygit` staging, or a custom `menu.conf` command).
 pub fn run_review(spec: &ReviewSpec, script_dir: &str) -> Result<()> {
-    let err = Command::new("bash")
-        .arg(format!("{script_dir}/review.sh"))
-        .env("REVIEW_MODE", &spec.mode)
-        .env("REVIEW_CWD", &spec.cwd)
-        .env("REVIEW_ARG", &spec.arg)
-        .env("REVIEW_CUSTOM", &spec.custom)
-        .env("REVIEW_LABEL", &spec.label)
-        .exec();
+    run_review_with(replace_process, spec, script_dir)
+}
+
+fn run_review_with(
+    exec: fn(&mut Command) -> io::Error,
+    spec: &ReviewSpec,
+    script_dir: &str,
+) -> Result<()> {
+    let err = exec(
+        Command::new("bash")
+            .arg(format!("{script_dir}/review.sh"))
+            .env("REVIEW_MODE", &spec.mode)
+            .env("REVIEW_CWD", &spec.cwd)
+            .env("REVIEW_ARG", &spec.arg)
+            .env("REVIEW_CUSTOM", &spec.custom)
+            .env("REVIEW_LABEL", &spec.label),
+    );
     Err(anyhow!("failed to exec review.sh: {err}"))
 }
 
@@ -1085,5 +1121,36 @@ mod tests {
         let dir = dir.to_str().unwrap();
         assert!(open_target(&runner, "pane", dir, "", "r", &cfg).is_err());
         assert!(open_target(&runner, "sideways", dir, "w1:p1", "r", &cfg).is_err());
+    }
+
+    /// Clone, the plugin update, and a review replace the process with a Bash
+    /// flow; here the replacement is refused, which is the only way it returns,
+    /// and each says which script it could not start.
+    #[test]
+    fn a_refused_process_replacement_names_its_script() {
+        fn refuse(command: &mut Command) -> io::Error {
+            assert_eq!(command.get_program(), "bash");
+            io::Error::other("exec refused in tests")
+        }
+        let cfg = Config::default();
+        let runner = MockRunner::new();
+        for (accept, script) in [
+            (Accept::Clone, "get.sh"),
+            (Accept::UpdatePlugin, "update-plugin.sh"),
+        ] {
+            let error =
+                dispatch_with(refuse, &runner, None, accept, "", &cfg, "/bin", "tab").unwrap_err();
+            assert!(error.to_string().contains(script), "{error}");
+        }
+        let spec = ReviewSpec {
+            mode: "worktree".into(),
+            cwd: "/repo".into(),
+            arg: String::new(),
+            custom: String::new(),
+            label: "repo".into(),
+        };
+        let error = run_review_with(refuse, &spec, "/bin").unwrap_err();
+        assert!(error.to_string().contains("review.sh"), "{error}");
+        assert!(runner.calls().is_empty());
     }
 }

@@ -15,8 +15,12 @@ use crate::picker::{self, ActionOutcome, ActionSpec, PickerItem, PickerMode};
 use crate::query::{Document, FieldSchema};
 
 pub fn main(cfg: Config, theme: Theme) -> Result<()> {
+    main_in(&mut crate::surface::TerminalHost, cfg, theme)
+}
+
+fn main_in(host: &mut impl crate::surface::Host, cfg: Config, theme: Theme) -> Result<()> {
     let mode = MenuMode::new(&cfg);
-    picker::run(mode, theme, cfg)
+    picker::run_in(host, mode, theme, cfg)
 }
 
 struct MenuMode {
@@ -403,5 +407,17 @@ mod tests {
         mode.launch = |_| Err(std::io::Error::other("no fork"));
         let error = mode.execute("projects", "open").unwrap_err();
         assert!(error.to_string().contains("projects"), "{error}");
+    }
+
+    /// The menu as `--menu` hosts it closes on `esc` without scheduling anything.
+    #[test]
+    fn the_menu_closes_on_esc() {
+        use crate::surface::ScriptedHost;
+        main_in(
+            &mut ScriptedHost::new([ScriptedHost::key(KeyCode::Esc, KeyModifiers::NONE)]),
+            Config::default(),
+            Theme::default(),
+        )
+        .expect("closes");
     }
 }

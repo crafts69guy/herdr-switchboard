@@ -290,12 +290,16 @@ impl Drop for PortWorker {
 }
 
 pub fn main(cfg: Config, theme: Theme) -> Result<()> {
+    main_in(&mut crate::surface::TerminalHost, cfg, theme)
+}
+
+fn main_in(host: &mut impl crate::surface::Host, cfg: Config, theme: Theme) -> Result<()> {
     let mode = PortMode::new(
         cfg.ports.refresh_interval_ms,
         Notifier::new(&cfg),
         cfg.keys.get("ports").cloned().unwrap_or_default(),
     );
-    picker::run(mode, theme, cfg)
+    picker::run_in(host, mode, theme, cfg)
 }
 
 struct PortMode {
@@ -612,6 +616,11 @@ fn open_url(url: &str) -> Result<()> {
     } else {
         "xdg-open"
     };
+    open_with(program, url)
+}
+
+/// Hand `url` to `program` and require it to accept it.
+fn open_with(program: &str, url: &str) -> Result<()> {
     anyhow::ensure!(
         Command::new(program).arg(url).status()?.success(),
         "could not open {url}"
@@ -1207,5 +1216,32 @@ mod tests {
             Some("ctrl-k")
         );
         let _ = mode.key_bindings();
+    }
+
+    /// The opener is whatever program the platform names; one that refuses or
+    /// does not exist is an error, never a silent success.
+    #[test]
+    fn a_url_is_handed_to_the_opener_and_its_refusal_reported() {
+        open_with("true", "http://localhost:3000").unwrap();
+        assert!(open_with("false", "http://localhost:3000").is_err());
+        assert!(open_with("switchboard-no-such-opener", "http://x").is_err());
+    }
+
+    /// The pane as `--ports` hosts it: the scanner starts, a snapshot lands,
+    /// and `esc` closes it.
+    #[test]
+    fn the_ports_pane_scans_then_closes_on_esc() {
+        use crate::surface::ScriptedHost;
+        let mut cfg = Config::default();
+        cfg.ports.refresh_interval_ms = 250;
+        main_in(
+            &mut ScriptedHost::new([
+                ScriptedHost::PAUSE,
+                ScriptedHost::key(KeyCode::Esc, KeyModifiers::NONE),
+            ]),
+            cfg,
+            Theme::default(),
+        )
+        .expect("closes");
     }
 }

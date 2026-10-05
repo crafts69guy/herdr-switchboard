@@ -54,10 +54,16 @@ enum CommandTab {
 
 impl CommandMode {
     fn new(cfg: &Config) -> Result<Self> {
+        Ok(Self::with_catalog(cfg, CommandCatalog::load(cfg)?))
+    }
+
+    /// The mode over an already-loaded catalogue, with the origin read from the
+    /// environment Herdr gives the pane.
+    fn with_catalog(cfg: &Config, catalog: CommandCatalog) -> Self {
         let bindings = cfg.keys.get("commands").cloned().unwrap_or_default();
         let starred_empty = starred_empty(&bindings);
-        Ok(Self {
-            catalog: CommandCatalog::load(cfg)?,
+        Self {
+            catalog,
             tab: CommandTab::History,
             origin_pane: env::var("SWITCHBOARD_ORIGIN_PANE_ID").unwrap_or_default(),
             origin_cwd: env::var("SWITCHBOARD_ORIGIN_CWD")
@@ -69,7 +75,7 @@ impl CommandMode {
             confirm: confirm_multiline,
             bindings,
             starred_empty,
-        })
+        }
     }
 
     fn items(&self) -> Vec<PickerItem> {
@@ -864,5 +870,30 @@ mod tests {
         ));
         assert!(mode.items().is_empty());
         assert_eq!(mode.activate_tab("history").unwrap().len(), 2);
+    }
+
+    /// The mode as `--commands` builds it, over a catalogue that touched no
+    /// state, follows its key table and reloads cleanly.
+    #[test]
+    fn the_mode_is_built_over_a_loaded_catalogue() {
+        let mut cfg = Config::default();
+        cfg.keys.insert(
+            "commands".into(),
+            HashMap::from([("star".into(), "alt-y".into())]),
+        );
+        let catalog = CommandCatalog::from_sources(
+            Vec::new(),
+            &[],
+            vec![empty_record("ls".into(), String::new())],
+            HashSet::new(),
+            5_000,
+            &[],
+            None,
+            None,
+        )
+        .unwrap();
+        let mode = CommandMode::with_catalog(&cfg, catalog);
+        assert_eq!(mode.items().len(), 1);
+        assert!(mode.starred_empty.contains("⌥y"), "{}", mode.starred_empty);
     }
 }
