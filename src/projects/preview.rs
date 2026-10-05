@@ -337,13 +337,7 @@ fn agent_card(
 /// each is clipped rather than wrapped — wrapping is what turned this body into
 /// a wall of fragments.
 fn agent_output(runner: &dyn CommandRunner, id: &str, width: u16, p: &Ink) -> Vec<Line<'static>> {
-    let v = herdr_json(
-        runner,
-        &[
-            "agent", "read", id, "--source", "recent", "--format", "ansi", "--lines", "60",
-        ],
-    );
-    let Some(text) = v["result"]["read"]["text"].as_str() else {
+    let Some(text) = agent_read_text(runner, id) else {
         return vec![note("(no output available)", p)];
     };
 
@@ -378,6 +372,29 @@ fn agent_output(runner: &dyn CommandRunner, id: &str, width: u16, p: &Ink) -> Ve
         out.push(clip_line(row, width as usize));
     }
     out
+}
+
+/// The text `herdr agent read` answers with, whichever shape it arrives in.
+///
+/// The herdr this was written against wrapped it in a `result.read.text`
+/// envelope; 0.9 prints the pane text itself. Only the envelope counts as one —
+/// pane output that merely *parses* as JSON is still pane output.
+fn agent_read_text(runner: &dyn CommandRunner, id: &str) -> Option<String> {
+    let out = runner
+        .output(
+            "herdr",
+            &[
+                "agent", "read", id, "--source", "recent", "--format", "ansi", "--lines", "60",
+            ],
+        )
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let enveloped = serde_json::from_slice::<Value>(&out.stdout)
+        .ok()
+        .and_then(|v| v["result"]["read"]["text"].as_str().map(str::to_string));
+    Some(enveloped.unwrap_or_else(|| String::from_utf8_lossy(&out.stdout).into_owned()))
 }
 
 // --- workspace -------------------------------------------------------------
@@ -1091,6 +1108,32 @@ mod tests {
         assert!(out.contains("working"), "{out}");
         assert!(out.contains("building the thing"), "{out}");
         assert!(out.contains("compiling module"), "{out}");
+    }
+
+    #[test]
+    fn agent_output_reads_the_bare_pane_text_herdr_0_9_prints() {
+        // herdr 0.9 answers `agent read --format ansi` with the pane's text
+        // itself, not a JSON envelope; reading only the envelope left every
+        // agent's Inspector saying "(no output available)".
+        let read = "\u{1b}[0m\u{1b}[1mclaude\u{1b}[0m  ready\r\n\r\n  > \r\n";
+        let runner = MockRunner::new().on("agent read", read);
+        let out = flat(&agent_output(&runner, "p1", 60, &ink()));
+        assert!(out.contains("claude") && out.contains("ready"), "{out}");
+        assert!(!out.contains("no output"), "{out}");
+    }
+
+    #[test]
+    fn agent_output_treats_text_that_happens_to_be_json_as_text() {
+        let runner = MockRunner::new().on("agent read", "[1, 2, 3]\n");
+        let out = flat(&agent_output(&runner, "p1", 60, &ink()));
+        assert!(out.contains("[1, 2, 3]"), "{out}");
+    }
+
+    #[test]
+    fn agent_output_says_so_when_herdr_cannot_read_the_pane() {
+        let runner = MockRunner::new().failing("herdr");
+        let out = flat(&agent_output(&runner, "p1", 60, &ink()));
+        assert!(out.contains("(no output available)"), "{out}");
     }
 
     #[test]

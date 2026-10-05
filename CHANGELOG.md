@@ -7,6 +7,12 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **An agent's Inspector shows its recent output again.** herdr 0.9 answers `agent read` with the
+  pane text itself rather than a JSON envelope, and the Inspector read only the envelope — so every
+  agent row said `(no output available)`. Both shapes are now understood.
+
 ## [3.0.1] - 2026-09-18
 
 ### Fixed
