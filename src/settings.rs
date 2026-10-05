@@ -1084,4 +1084,42 @@ mod tests {
         }
         let _ = fs::remove_dir_all(&dir);
     }
+
+    /// A save that cannot be written keeps the form dirty with the reason on
+    /// screen; a prompt row takes typed input, ignores keys it has no use for,
+    /// and applies the trimmed value on Enter.
+    #[test]
+    fn a_failed_save_is_shown_and_prompts_take_typed_values() {
+        let (mut settings, dir) = scratch_settings("failed-save");
+        let prompt = SETTINGS
+            .iter()
+            .position(|setting| matches!(setting.cycle, Cycle::Prompt))
+            .expect("the catalogue has a typed setting");
+        settings.tab = setting_tab(SETTINGS[prompt].key);
+        settings.sel = prompt;
+        press(&mut settings, KeyCode::Enter);
+        assert!(settings.editing.is_some());
+        press(&mut settings, KeyCode::Backspace);
+        for c in " 42 ".chars() {
+            press(&mut settings, KeyCode::Char(c));
+        }
+        press(&mut settings, KeyCode::Tab);
+        press(&mut settings, KeyCode::Enter);
+        assert!(settings.editing.is_none());
+        assert!(
+            settings.values[prompt].ends_with("42"),
+            "{}",
+            settings.values[prompt]
+        );
+
+        // The config path is a directory, so the write must fail.
+        fs::create_dir_all(dir.join("blocked/config.toml")).unwrap();
+        settings.write_to(dir.join("blocked/config.toml"));
+        assert!(!press(&mut settings, KeyCode::Char('a')));
+        assert!(settings.error.is_some());
+        assert!(settings.dirty());
+        let screen = render_both(&mut settings);
+        assert!(screen.contains("could not save"), "the reason is drawn");
+        let _ = fs::remove_dir_all(&dir);
+    }
 }

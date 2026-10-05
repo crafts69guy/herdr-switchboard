@@ -1743,4 +1743,37 @@ mod tests {
             "{facts:?}"
         );
     }
+
+    /// Codex read from a home of the test's own: no sessions, sessions with no
+    /// quota line, and a reading with the account and renewal from auth.json.
+    #[test]
+    fn codex_reads_its_newest_quota_line_and_its_account() {
+        let home = std::env::temp_dir().join(format!("swb-codex-home-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        assert!(load_from(&home).is_err(), "no sessions at all");
+
+        let day = home.join(".codex/sessions/2026/10/05");
+        std::fs::create_dir_all(&day).unwrap();
+        std::fs::write(
+            day.join("rollout-a.jsonl"),
+            "{\"type\":\"session_meta\"}\n{}\n",
+        )
+        .unwrap();
+        assert!(load_from(&home).is_err(), "no rate limit line");
+
+        std::fs::write(
+            day.join("rollout-b.jsonl"),
+            format!("{{\"type\":\"session_meta\"}}\n{CODEX_LINE}\n"),
+        )
+        .unwrap();
+        std::fs::write(
+            home.join(".codex/auth.json"),
+            codex_auth(ID_TOKEN_WITH_SUBSCRIPTION),
+        )
+        .unwrap();
+        let report = load_from(&home).expect("reads the quota");
+        assert_eq!(report.facts[0].key, "account");
+        assert!(report.renews_at.is_some());
+        std::fs::remove_dir_all(&home).ok();
+    }
 }

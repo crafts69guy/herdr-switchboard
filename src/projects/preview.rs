@@ -1514,4 +1514,96 @@ mod tests {
         let runner = MockRunner::new().on("bash", "\u{1b}[1mdir\u{1b}[0m\nfile\n");
         assert_eq!(tree(&runner, "/repo", "/nowhere", 40).len(), 2);
     }
+
+    /// A workspace with a shell pane, an unfocused agent, two panes in one
+    /// repository, and a detached dirty checkout: the shell is not an agent, the
+    /// repository is listed once, and its branch falls back to the short hash.
+    #[test]
+    fn a_workspace_card_lists_agents_and_repositories_once() {
+        let dir = std::env::temp_dir().join(format!("swb-ws-card-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cwd = dir.to_string_lossy();
+        let panes = format!(
+            r#"{{"result":{{"panes":[
+                {{"workspace_id":"ws-1","cwd":"{cwd}","focused":true}},
+                {{"workspace_id":"ws-1","agent":"codex","agent_status":"idle","cwd":"{cwd}","focused":false}}
+            ]}}}}"#
+        );
+        let runner = MockRunner::new()
+            .on(
+                "workspace get",
+                r#"{"result":{"workspace":{"label":"w","pane_count":2}}}"#,
+            )
+            .on("pane list", &panes)
+            .failing("symbolic-ref")
+            .on("rev-parse", "abc1234")
+            .on("status --porcelain", " M a.rs");
+        let entry = Entry {
+            kind: Kind::Workspace,
+            id: "ws-1".into(),
+            dir: None,
+            label: "w".into(),
+            icon: String::new(),
+            icon_color: Color::Reset,
+            primary: String::new(),
+            secondary: String::new(),
+            search: String::new(),
+        };
+        let out = flat(&workspace_card(
+            &entry,
+            &runner,
+            60,
+            &ink(),
+            &Theme::default(),
+        ));
+        assert!(
+            out.contains("codex") && out.contains("abc1234") && out.contains('✎'),
+            "{out}"
+        );
+        assert_eq!(
+            out.matches(dir.file_name().unwrap().to_str().unwrap())
+                .count(),
+            1,
+            "{out}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A pane full of blank runs keeps one blank between paragraphs, and a
+    /// herdr that cannot be started reads as no output.
+    #[test]
+    fn agent_output_collapses_blank_runs_and_survives_a_missing_herdr() {
+        let read = "one\n\n\n\ntwo\n";
+        let runner = MockRunner::new().on("agent read", read);
+        let out = agent_output(&runner, "p1", 40, &ink());
+        assert_eq!(out.len(), 3, "one, a single blank, two");
+
+        struct NoHerdr;
+        impl CommandRunner for NoHerdr {
+            fn output(&self, _: &str, _: &[&str]) -> std::io::Result<std::process::Output> {
+                Err(std::io::Error::from(std::io::ErrorKind::NotFound))
+            }
+            fn status(&self, _: &str, _: &[&str]) -> std::io::Result<std::process::ExitStatus> {
+                Err(std::io::Error::from(std::io::ErrorKind::NotFound))
+            }
+            fn output_stdin(
+                &self,
+                _: &str,
+                _: &[&str],
+                _: &str,
+            ) -> std::io::Result<std::process::Output> {
+                Err(std::io::Error::from(std::io::ErrorKind::NotFound))
+            }
+            fn spawn_detached(&self, _: &std::ffi::OsStr, _: &[&str]) -> std::io::Result<()> {
+                Err(std::io::Error::from(std::io::ErrorKind::NotFound))
+            }
+        }
+        assert_eq!(herdr_json(&NoHerdr, &["pane", "list"]), Value::Null);
+        assert!(tree(&NoHerdr, "/repo", "/bin", 40).is_empty());
+        assert!(NoHerdr.status("x", &[]).is_err());
+        assert!(NoHerdr.output_stdin("x", &[], "").is_err());
+        assert!(NoHerdr
+            .spawn_detached(std::ffi::OsStr::new("x"), &[])
+            .is_err());
+    }
 }

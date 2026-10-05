@@ -25,30 +25,35 @@ impl Provider for Codex {
         true
     }
     fn load(&self, _runner: &dyn CommandRunner, _cfg: &Config) -> Result<Report> {
-        let sessions = home()?.join(".codex/sessions");
-        let rollouts = recent_rollouts(&sessions, ROLLOUT_TRIES);
-        if rollouts.is_empty() {
-            return Err(anyhow!("no Codex sessions on this machine"));
-        }
-        for path in &rollouts {
-            let Some(line) = last_rate_limit_line(path) else {
-                continue;
-            };
-            let mut report = parse_codex_rate_limits(&line)?;
-            // Which account these numbers belong to, first — the quota is
-            // meaningless without knowing whose it is, and the two providers
-            // here are routinely signed in as two different people. The same
-            // token dates the subscription, which the rollout never mentions.
-            if let Some(identity) = codex_identity() {
-                if let Some(email) = identity.email {
-                    report.facts.insert(0, Fact::new("account", email));
-                }
-                report.renews_at = identity.renews_at;
-            }
-            return Ok(report);
-        }
-        Err(anyhow!("no rate limit data in recent sessions"))
+        load_from(&home()?)
     }
+}
+
+/// Codex's newest quota reading under `home`, with the account it belongs to.
+pub(in crate::usage) fn load_from(home: &Path) -> Result<Report> {
+    let sessions = home.join(".codex/sessions");
+    let rollouts = recent_rollouts(&sessions, ROLLOUT_TRIES);
+    if rollouts.is_empty() {
+        return Err(anyhow!("no Codex sessions on this machine"));
+    }
+    for path in &rollouts {
+        let Some(line) = last_rate_limit_line(path) else {
+            continue;
+        };
+        let mut report = parse_codex_rate_limits(&line)?;
+        // Which account these numbers belong to, first — the quota is
+        // meaningless without knowing whose it is, and the two providers
+        // here are routinely signed in as two different people. The same
+        // token dates the subscription, which the rollout never mentions.
+        if let Some(identity) = codex_identity_in(home) {
+            if let Some(email) = identity.email {
+                report.facts.insert(0, Fact::new("account", email));
+            }
+            report.renews_at = identity.renews_at;
+        }
+        return Ok(report);
+    }
+    Err(anyhow!("no rate limit data in recent sessions"))
 }
 
 /// How many rollouts back to look before giving up. A session that never made a
@@ -191,8 +196,8 @@ pub(in crate::usage) struct CodexIdentity {
     pub(in crate::usage) renews_at: Option<u64>,
 }
 
-pub(in crate::usage) fn codex_identity() -> Option<CodexIdentity> {
-    let text = fs::read_to_string(home().ok()?.join(".codex/auth.json")).ok()?;
+pub(in crate::usage) fn codex_identity_in(home: &Path) -> Option<CodexIdentity> {
+    let text = fs::read_to_string(home.join(".codex/auth.json")).ok()?;
     identity_from_codex_auth(&text)
 }
 
