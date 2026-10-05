@@ -37,15 +37,14 @@ const TIMEOUT: Duration = Duration::from_millis(1500);
 /// the variable into plugin panes, so the fallback only matters when the binary
 /// is run by hand.
 fn socket_path() -> Option<PathBuf> {
-    if let Some(path) = env::var("HERDR_SOCKET_PATH")
-        .ok()
-        .filter(|value| !value.is_empty())
-    {
+    socket_path_from(env::var("HERDR_SOCKET_PATH").ok(), env::var("HOME").ok())
+}
+
+fn socket_path_from(socket: Option<String>, home: Option<String>) -> Option<PathBuf> {
+    if let Some(path) = socket.filter(|value| !value.is_empty()) {
         return Some(PathBuf::from(path));
     }
-    env::var("HOME")
-        .ok()
-        .map(|home| PathBuf::from(home).join(".config/herdr/herdr.sock"))
+    home.map(|home| PathBuf::from(home).join(".config/herdr/herdr.sock"))
 }
 
 /// One newline-delimited JSON round trip: `{id, method, params}` out, one line
@@ -255,5 +254,18 @@ mod tests {
         assert_eq!(parse_hex("mauve"), None);
         assert_eq!(parse_hex("#gggggg"), None);
         assert_eq!(parse_hex(""), None);
+    }
+
+    #[test]
+    fn the_socket_is_the_injected_path_or_herdrs_default() {
+        assert_eq!(
+            socket_path_from(Some("/run/h.sock".into()), Some("/home/u".into())),
+            Some(PathBuf::from("/run/h.sock"))
+        );
+        assert_eq!(
+            socket_path_from(Some(String::new()), Some("/home/u".into())),
+            Some(PathBuf::from("/home/u/.config/herdr/herdr.sock"))
+        );
+        assert_eq!(socket_path_from(None, None), None);
     }
 }

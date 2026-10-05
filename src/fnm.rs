@@ -114,7 +114,6 @@ fn package_engine(path: PathBuf) -> Option<String> {
 mod tests {
     use super::*;
     use crate::runner::MockRunner;
-    use std::os::unix::process::ExitStatusExt;
     use std::process::{ExitStatus, Output};
 
     fn temp_dir(tag: &str) -> PathBuf {
@@ -213,15 +212,17 @@ mod tests {
         fs::remove_dir_all(dir).ok();
     }
 
-    struct MissingRunner;
+    /// A runner whose every spawn fails with `kind`: `NotFound` is a missing
+    /// binary, anything else a spawn that failed for another reason.
+    struct FailingSpawn(std::io::ErrorKind);
 
-    impl CommandRunner for MissingRunner {
+    impl CommandRunner for FailingSpawn {
         fn output(&self, _program: &str, _args: &[&str]) -> std::io::Result<Output> {
-            Err(std::io::Error::from(std::io::ErrorKind::NotFound))
+            Err(std::io::Error::from(self.0))
         }
 
         fn status(&self, _program: &str, _args: &[&str]) -> std::io::Result<ExitStatus> {
-            Ok(ExitStatus::from_raw(0))
+            Err(std::io::Error::from(self.0))
         }
 
         fn output_stdin(
@@ -230,7 +231,7 @@ mod tests {
             _args: &[&str],
             _stdin: &str,
         ) -> std::io::Result<Output> {
-            unreachable!()
+            Err(std::io::Error::from(self.0))
         }
 
         fn spawn_detached(
@@ -238,7 +239,7 @@ mod tests {
             _program: &std::ffi::OsStr,
             _args: &[&str],
         ) -> std::io::Result<()> {
-            unreachable!()
+            Err(std::io::Error::from(self.0))
         }
     }
 
@@ -247,10 +248,21 @@ mod tests {
         let dir = temp_dir("missing-fnm");
         fs::write(dir.join(".nvmrc"), "22\n").unwrap();
         let path = dir.to_string_lossy().to_string();
-        assert_eq!(prepare(&MissingRunner, &path), Preparation::FnmMissing);
+        let missing = FailingSpawn(std::io::ErrorKind::NotFound);
+        assert_eq!(prepare(&missing, &path), Preparation::FnmMissing);
+        let denied = FailingSpawn(std::io::ErrorKind::PermissionDenied);
+        assert_eq!(prepare(&denied, &path), Preparation::Unavailable);
+        assert!(denied.status("fnm", &[]).is_err());
+        assert!(denied.output_stdin("fnm", &[], "").is_err());
+        assert!(denied
+            .spawn_detached(std::ffi::OsStr::new("fnm"), &[])
+            .is_err());
 
         let runner = MockRunner::new().failing("fnm exec");
         assert_eq!(prepare(&runner, &path), Preparation::Unavailable);
+        // fnm answered but printed no PATH: nothing to launch with.
+        let silent = MockRunner::new().on("fnm exec", "  \n");
+        assert_eq!(prepare(&silent, &path), Preparation::Unavailable);
         fs::remove_dir_all(dir).ok();
     }
 }

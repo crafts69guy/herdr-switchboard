@@ -4526,4 +4526,46 @@ mod tests {
             .iter()
             .any(|line| line.contains("failing-repo")));
     }
+
+    /// The agent picker renders every scope, a live filter, an empty list, and
+    /// the failed-catalogue card; a pane too short for a bar claims no clicks.
+    #[test]
+    fn the_overlays_render_every_scope_and_degrade_in_tiny_panes() {
+        for scope in [
+            TargetScope::SameWorktree,
+            TargetScope::SameDirectory,
+            TargetScope::AllAgents,
+        ] {
+            let mut app = app_with_layout();
+            app.overlay = Overlay::Handoff;
+            app.handoff.show_targets(
+                item_context(),
+                TargetResolution {
+                    origin: None,
+                    choices: vec![agent_target("w1:p1", "/work/api")],
+                    scope,
+                },
+            );
+            app.handoff.query = "cla".into();
+            assert!(rendered(&mut app, 120, 40).contains("cla"));
+            app.handoff.targets.clear();
+            app.handoff.refilter();
+            rendered(&mut app, 120, 40);
+            rendered(&mut app, 30, 4);
+        }
+
+        let mut failed = ready_app();
+        failed.catalog = CatalogState::Failed("discovery stopped".into());
+        assert!(rendered(&mut failed, 120, 40).contains("discovery stopped"));
+
+        let mut long = ready_app();
+        long.preview.label = "a-label-far-longer-than-any-preview-pane-could-ever-show".repeat(4);
+        long.preview.pending = true;
+        rendered(&mut long, 120, 40);
+
+        // One row is the command bar's: it is the last thing a short pane loses.
+        let mut tiny = ready_app();
+        rendered(&mut tiny, 60, 1);
+        assert!(!tiny.zones.footer_zones.is_empty());
+    }
 }

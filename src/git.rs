@@ -3073,4 +3073,31 @@ z|Y|pull|git pull
             Color::Cyan
         );
     }
+
+    /// A filter that matches nothing, an empty list with an error or a status,
+    /// the archived-review bar, and a pane too short for any bar all render.
+    #[test]
+    fn the_git_card_renders_its_empty_error_status_and_archive_states() {
+        let mut g = Git::new();
+        open_default(&mut g);
+        g.show_list(ListKind::PullRequests, rows());
+        g.query = "zzzz".into();
+        g.refilter();
+        assert!(screen(&mut g, 100, 30).contains("no matches"));
+
+        g.show_list(ListKind::Reviews, Vec::new());
+        g.error_message = Some("could not read sessions".into());
+        assert!(screen(&mut g, 100, 30).contains("could not read sessions"));
+        g.error_message = None;
+        g.status_message = Some("Finding review agents…".into());
+        assert!(screen(&mut g, 100, 30).contains("Finding review agents"));
+
+        g.show_list(ListKind::ArchivedReviews, rows());
+        assert!(screen(&mut g, 100, 30).contains("restore"));
+        g.error_message = Some("archive failed".into());
+        screen(&mut g, 100, 30);
+
+        screen(&mut g, 60, 1);
+        assert!(g.zones.bar_zones.is_empty());
+    }
 }

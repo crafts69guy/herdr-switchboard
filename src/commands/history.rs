@@ -11,32 +11,51 @@ use regex::Regex;
 use super::catalog::Import;
 
 pub(super) fn read_login_shell_history() -> Result<Vec<Import>> {
-    let shell = env::var("SHELL").unwrap_or_default();
-    let home = env::var("HOME").unwrap_or_default();
-    let (kind, path) = if shell.ends_with("/fish") {
+    let (kind, path) = history_source(
+        &env::var("SHELL").unwrap_or_default(),
+        &env::var("HOME").unwrap_or_default(),
+        env::var("XDG_DATA_HOME").ok(),
+        env::var("HISTFILE").ok(),
+    );
+    read_history_file(kind, &path)
+}
+
+/// Which shell's history to read, and where it lives: fish under its data
+/// dir, Bash and zsh at `$HISTFILE` or their dotfile in `$HOME`.
+fn history_source(
+    shell: &str,
+    home: &str,
+    xdg_data: Option<String>,
+    histfile: Option<String>,
+) -> (&'static str, PathBuf) {
+    if shell.ends_with("/fish") {
         (
             "fish",
-            env::var("XDG_DATA_HOME")
+            xdg_data
                 .map(PathBuf::from)
-                .unwrap_or_else(|_| PathBuf::from(&home).join(".local/share"))
+                .unwrap_or_else(|| PathBuf::from(home).join(".local/share"))
                 .join("fish/fish_history"),
         )
     } else if shell.ends_with("/bash") {
         (
             "bash",
-            env::var("HISTFILE")
+            histfile
                 .map(PathBuf::from)
-                .unwrap_or_else(|_| PathBuf::from(&home).join(".bash_history")),
+                .unwrap_or_else(|| PathBuf::from(home).join(".bash_history")),
         )
     } else {
         (
             "zsh",
-            env::var("HISTFILE")
+            histfile
                 .map(PathBuf::from)
-                .unwrap_or_else(|_| PathBuf::from(&home).join(".zsh_history")),
+                .unwrap_or_else(|| PathBuf::from(home).join(".zsh_history")),
         )
-    };
-    let (text, truncated) = read_tail(&path, 8 * 1024 * 1024)?;
+    }
+}
+
+/// Read one shell's history file, keeping only whole records from its tail.
+fn read_history_file(kind: &str, path: &Path) -> Result<Vec<Import>> {
+    let (text, truncated) = read_tail(path, 8 * 1024 * 1024)?;
     let text = if truncated {
         trim_to_record_boundary(kind, &text)
     } else {
@@ -440,5 +459,39 @@ mod tests {
             resolve_preset_cwd("~").unwrap().as_deref(),
             Some(home.as_str())
         );
+    }
+
+    #[test]
+    fn each_shell_reads_its_own_history_file() {
+        let (kind, path) = history_source("/usr/bin/fish", "/home/u", None, None);
+        assert_eq!(
+            (kind, path),
+            (
+                "fish",
+                PathBuf::from("/home/u/.local/share/fish/fish_history")
+            )
+        );
+        let (_, path) = history_source("/usr/bin/fish", "/home/u", Some("/data".into()), None);
+        assert_eq!(path, PathBuf::from("/data/fish/fish_history"));
+        let (kind, path) = history_source("/bin/bash", "/home/u", None, None);
+        assert_eq!(
+            (kind, path),
+            ("bash", PathBuf::from("/home/u/.bash_history"))
+        );
+        let (_, path) = history_source("/bin/bash", "/home/u", None, Some("/h".into()));
+        assert_eq!(path, PathBuf::from("/h"));
+        let (kind, path) = history_source("/bin/zsh", "/home/u", None, None);
+        assert_eq!((kind, path), ("zsh", PathBuf::from("/home/u/.zsh_history")));
+    }
+
+    #[test]
+    fn a_history_file_is_read_whole_or_refused_when_missing() {
+        let dir = std::env::temp_dir().join(format!("swb-shell-history-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(".bash_history");
+        assert!(read_history_file("bash", &path).is_err());
+        fs::write(&path, "ls\ncargo test\n").unwrap();
+        assert_eq!(read_history_file("bash", &path).unwrap().len(), 2);
+        fs::remove_dir_all(&dir).ok();
     }
 }
