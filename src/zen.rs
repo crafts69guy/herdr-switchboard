@@ -70,20 +70,37 @@ use std::fs;
 /// deleted first on the way out, so a crash mid-enter leaves no file claiming a
 /// zen that is not there.
 pub fn cli<R: CommandRunner>(runner: &R, args: &[String], cfg: &Config) -> Result<()> {
+    cli_with(
+        runner,
+        args,
+        cfg,
+        &SessionStore::new(),
+        std::env::var("SWITCHBOARD_ORIGIN_PANE_ID").ok(),
+    )
+}
+
+/// [`cli`] with its session store and the origin pane passed in, so a test can
+/// point both somewhere harmless.
+fn cli_with<R: CommandRunner>(
+    runner: &R,
+    args: &[String],
+    cfg: &Config,
+    store: &SessionStore,
+    origin: Option<String>,
+) -> Result<()> {
     let verb = args.first().map(String::as_str).unwrap_or("toggle");
     let pane = args
         .windows(2)
         .find(|pair| pair[0] == "--pane")
         .map(|pair| pair[1].clone())
-        .or_else(|| std::env::var("SWITCHBOARD_ORIGIN_PANE_ID").ok())
+        .or(origin)
         .filter(|pane| !pane.is_empty());
     let zen = ZenConfig::from(cfg);
     let notifier = Notifier::new(cfg);
-    let store = SessionStore::new();
 
     match verb {
         "off" => match store.load() {
-            Some(session) => leave(runner, &session, &notifier, &store),
+            Some(session) => leave(runner, &session, &notifier, store),
             None => Ok(()),
         },
         "on" | "toggle" => {
@@ -91,11 +108,11 @@ pub fn cli<R: CommandRunner>(runner: &R, args: &[String], cfg: &Config) -> Resul
                 pane.context("zen needs a pane id (--pane or SWITCHBOARD_ORIGIN_PANE_ID)")?;
             if verb == "on" {
                 if let Some(session) = store.load() {
-                    leave(runner, &session, &notifier, &store)?;
+                    leave(runner, &session, &notifier, store)?;
                 }
-                enter(runner, &pane, &zen, &notifier, &store).map(|_| ())
+                enter(runner, &pane, &zen, &notifier, store).map(|_| ())
             } else {
-                toggle(runner, &pane, &zen, &notifier, &store)
+                toggle(runner, &pane, &zen, &notifier, store)
             }
         }
         // The escape hatch for a zen that never got to clean up: herdr killed
@@ -745,5 +762,79 @@ mod tests {
         let runner = MockRunner::new();
         let args = vec!["sideways".to_string()];
         assert!(cli(&runner, &args, &Config::default()).is_err());
+    }
+
+    /// A config whose zen never touches herdr's own file.
+    fn safe_config() -> Config {
+        let cfg = Config::default();
+        assert_eq!(chrome::Level::parse(&cfg.zen.chrome), chrome::Level::Off);
+        cfg
+    }
+
+    fn args(list: &[&str]) -> Vec<String> {
+        list.iter().map(|arg| arg.to_string()).collect()
+    }
+
+    /// The CLI verbs: `on` enters the named pane, `toggle` brings it back, `off`
+    /// leaves whatever is zenned, and a missing pane or unknown verb is refused.
+    #[test]
+    fn the_cli_enters_toggles_leaves_and_refuses_bad_input() {
+        let cfg = safe_config();
+        let store = temp_store();
+        let runner = entering();
+
+        cli_with(
+            &runner,
+            &args(&["on", "--pane", "w1:p1"]),
+            &cfg,
+            &store,
+            None,
+        )
+        .unwrap();
+        assert!(store.load().is_some(), "on records a session");
+
+        let leaving = MockRunner::new()
+            .on("pane list", PANES)
+            .on("tab get", r#"{"result":{"tab":{"pane_count":0}}}"#);
+        cli_with(&leaving, &args(&["off"]), &cfg, &store, None).unwrap();
+        assert!(store.load().is_none(), "off clears it");
+        cli_with(&leaving, &args(&["off"]), &cfg, &store, None).unwrap();
+
+        // The origin pane stands in for `--pane`, and toggling enters.
+        cli_with(&entering(), &[], &cfg, &store, Some("w1:p1".into())).unwrap();
+        assert!(store.load().is_some());
+        // `on` while zenned leaves the old session first.
+        let _ = cli_with(
+            &entering(),
+            &args(&["on", "--pane", "w1:p1"]),
+            &cfg,
+            &store,
+            None,
+        );
+        store.clear();
+
+        let missing = cli_with(&runner, &args(&["on"]), &cfg, &store, Some(String::new()));
+        assert!(missing.unwrap_err().to_string().contains("pane id"));
+        let unknown = cli_with(&runner, &args(&["sideways"]), &cfg, &store, None);
+        assert!(unknown
+            .unwrap_err()
+            .to_string()
+            .contains("unknown zen verb"));
+    }
+
+    /// With no chrome snapshot left behind, the escape hatch has nothing to do
+    /// and writes nothing.
+    #[test]
+    fn chrome_restore_without_a_snapshot_does_nothing() {
+        let runner = MockRunner::new();
+        cli_with(
+            &runner,
+            &args(&["chrome-restore"]),
+            &safe_config(),
+            &temp_store(),
+            None,
+        )
+        .unwrap();
+        assert!(runner.calls().is_empty());
     }
 }

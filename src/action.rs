@@ -2,7 +2,7 @@
 //! (clone prompt, remove confirm, update output) use the normal pane.
 
 use std::env;
-use std::io::{self, Write};
+use std::io::{self, BufRead, Write};
 use std::os::unix::process::CommandExt;
 use std::process::Command;
 
@@ -280,24 +280,62 @@ pub fn run_review(spec: &ReviewSpec, script_dir: &str) -> Result<()> {
 }
 
 fn update(runner: &dyn CommandRunner, rel: &str, label: &str) -> Result<()> {
-    println!("\x1b[1mUpdating\x1b[0m {rel}\n");
+    update_with(
+        runner,
+        rel,
+        label,
+        &mut io::stdin().lock(),
+        &mut io::stdout(),
+    )
+}
+
+/// `ghq get -u` on the restored terminal, then wait for Enter so its output can
+/// be read before the pane closes.
+fn update_with(
+    runner: &dyn CommandRunner,
+    rel: &str,
+    label: &str,
+    input: &mut dyn BufRead,
+    output: &mut dyn Write,
+) -> Result<()> {
+    writeln!(output, "\x1b[1mUpdating\x1b[0m {rel}\n")?;
     let _ = runner.status("ghq", &["get", "-u", "--", rel]);
-    println!("\n\x1b[2m{label}: press Enter to close\x1b[0m");
+    writeln!(output, "\n\x1b[2m{label}: press Enter to close\x1b[0m")?;
     let mut s = String::new();
-    let _ = io::stdin().read_line(&mut s);
+    let _ = input.read_line(&mut s);
     Ok(())
 }
 
 fn remove(runner: &dyn CommandRunner, path: &str, label: &str) -> Result<DispatchOutcome> {
-    println!("\x1b[1;31mRemove repository\x1b[0m\n  {path}\n");
-    print!("Type the repo name (\x1b[1m{label}\x1b[0m) to confirm: ");
-    io::stdout().flush().ok();
+    remove_with(
+        runner,
+        path,
+        label,
+        &mut io::stdin().lock(),
+        &mut io::stdout(),
+    )
+}
+
+/// The removal prompt: the repository name typed back is the only confirmation.
+fn remove_with(
+    runner: &dyn CommandRunner,
+    path: &str,
+    label: &str,
+    input: &mut dyn BufRead,
+    output: &mut dyn Write,
+) -> Result<DispatchOutcome> {
+    writeln!(output, "\x1b[1;31mRemove repository\x1b[0m\n  {path}\n")?;
+    write!(
+        output,
+        "Type the repo name (\x1b[1m{label}\x1b[0m) to confirm: "
+    )?;
+    output.flush().ok();
     let mut reply = String::new();
-    io::stdin().read_line(&mut reply)?;
+    input.read_line(&mut reply)?;
     let outcome = remove_with_confirmation(runner, path, label, reply.trim())?;
     match outcome {
-        DispatchOutcome::Completed => println!("Removed {label}."),
-        DispatchOutcome::Aborted => println!("Aborted."),
+        DispatchOutcome::Completed => writeln!(output, "Removed {label}.")?,
+        DispatchOutcome::Aborted => writeln!(output, "Aborted.")?,
     }
     Ok(outcome)
 }
@@ -942,5 +980,51 @@ mod tests {
         assert_eq!(resolve_default_target(Some("bogus"), "bogus"), "workspace");
         // An empty force is the unset case (`forced_target` filters it out).
         assert_eq!(resolve_default_target(None, ""), "workspace");
+    }
+
+    /// Update runs `ghq get -u` and waits for Enter before closing.
+    #[test]
+    fn update_fetches_with_ghq_then_waits_for_enter() {
+        let runner = MockRunner::new();
+        let mut shown = Vec::new();
+        update_with(
+            &runner,
+            "github.com/o/r",
+            "r",
+            &mut "\n".as_bytes(),
+            &mut shown,
+        )
+        .unwrap();
+        assert_eq!(
+            runner.calls(),
+            vec![vec!["ghq", "get", "-u", "--", "github.com/o/r"]]
+        );
+        assert!(String::from_utf8(shown).unwrap().contains("press Enter"));
+    }
+
+    /// Removal deletes only when the typed name matches, and says which.
+    #[test]
+    fn removal_deletes_only_on_the_typed_name() {
+        let runner = MockRunner::new();
+        let mut shown = Vec::new();
+        let outcome =
+            remove_with(&runner, "/src/o/r", "r", &mut "r\n".as_bytes(), &mut shown).unwrap();
+        assert_eq!(outcome, DispatchOutcome::Completed);
+        assert!(String::from_utf8(shown).unwrap().contains("Removed r."));
+        assert_eq!(runner.calls(), vec![vec!["rm", "-rf", "--", "/src/o/r"]]);
+
+        let runner = MockRunner::new();
+        let mut shown = Vec::new();
+        let outcome = remove_with(
+            &runner,
+            "/src/o/r",
+            "r",
+            &mut "nope\n".as_bytes(),
+            &mut shown,
+        )
+        .unwrap();
+        assert_eq!(outcome, DispatchOutcome::Aborted);
+        assert!(String::from_utf8(shown).unwrap().contains("Aborted."));
+        assert!(runner.calls().is_empty());
     }
 }

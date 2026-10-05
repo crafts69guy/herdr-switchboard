@@ -12,14 +12,15 @@ use crate::data::Theme;
 use crate::notify::Notifier;
 use crate::picker::{self, ActionOutcome, ActionSpec, PickerItem, PickerMode};
 use crate::query::{Document, FieldSchema, MatchKind};
-use crate::runner::SystemRunner;
+use crate::runner::{CommandRunner, SystemRunner};
 
 pub(super) fn run(cfg: Config, theme: Theme) -> Result<()> {
-    let mode = ZenMode::new(cfg.clone());
+    let mode = ZenMode::new(SystemRunner, cfg.clone(), SessionStore::new());
     picker::run(mode, theme, cfg)
 }
 
-struct ZenMode {
+struct ZenMode<R> {
+    runner: R,
     cfg: ZenConfig,
     notifier: Notifier,
     store: SessionStore,
@@ -28,12 +29,13 @@ struct ZenMode {
     session: Option<Session>,
 }
 
-impl ZenMode {
-    fn new(cfg: Config) -> Self {
+impl<R: CommandRunner> ZenMode<R> {
+    fn new(runner: R, cfg: Config, store: SessionStore) -> Self {
         Self {
+            runner,
             cfg: ZenConfig::from(&cfg),
             notifier: Notifier::new(&cfg),
-            store: SessionStore::new(),
+            store,
             bindings: cfg.keys.get("zen").cloned().unwrap_or_default(),
             panes: Vec::new(),
             session: None,
@@ -50,7 +52,7 @@ impl ZenMode {
             .iter()
             .flat_map(|session| session.gutters.iter().map(String::as_str))
             .collect();
-        self.panes = list_panes(&SystemRunner)
+        self.panes = list_panes(&self.runner)
             .into_iter()
             .filter(|pane| !hidden.contains(&pane.pane_id.as_str()))
             .collect();
@@ -62,7 +64,7 @@ impl ZenMode {
     }
 }
 
-impl PickerMode for ZenMode {
+impl<R: CommandRunner> PickerMode for ZenMode<R> {
     fn title(&self) -> &str {
         "Zen"
     }
@@ -131,10 +133,10 @@ impl PickerMode for ZenMode {
                 // Only one pane can hold the screen; entering while another is
                 // zenned would strand the first in its tab.
                 if let Some(session) = self.store.load() {
-                    leave(&SystemRunner, &session, &self.notifier, &self.store)?;
+                    leave(&self.runner, &session, &self.notifier, &self.store)?;
                 }
                 enter(
-                    &SystemRunner,
+                    &self.runner,
                     item_id,
                     &self.cfg,
                     &self.notifier,
@@ -143,7 +145,7 @@ impl PickerMode for ZenMode {
             }
             "exit" => {
                 if let Some(session) = self.store.load() {
-                    leave(&SystemRunner, &session, &self.notifier, &self.store)?;
+                    leave(&self.runner, &session, &self.notifier, &self.store)?;
                 }
             }
             other => bail!("unknown zen action '{other}'"),
@@ -209,6 +211,7 @@ mod tests {
 
     use super::super::session::Session;
     use super::*;
+    use crate::runner::MockRunner;
 
     fn pane(id: &str, title: &str, cwd: &str, agent: Option<&str>) -> PaneInfo {
         PaneInfo {
@@ -237,9 +240,10 @@ mod tests {
         )
     }
 
-    fn mode(panes: Vec<PaneInfo>, session: Option<Session>) -> ZenMode {
+    fn mode(panes: Vec<PaneInfo>, session: Option<Session>) -> ZenMode<MockRunner> {
         let cfg = Config::default();
         ZenMode {
+            runner: MockRunner::new(),
             cfg: ZenConfig::from(&cfg),
             notifier: Notifier::silent(),
             store: store(),
@@ -419,5 +423,93 @@ mod tests {
         let error = mode.execute("w1:p1", "teleport").unwrap_err();
         assert!(error.to_string().contains("unknown zen action"), "{error}");
         assert!(error.to_string().contains("teleport"), "{error}");
+    }
+
+    const PANES: &str = r#"{"result":{"panes":[
+        {"pane_id":"w1:p1","tab_id":"w1:t1","workspace_id":"w1","terminal_title":"nvim","cwd":"/repo","focused":true},
+        {"pane_id":"w1:p2","tab_id":"w1:t1","workspace_id":"w1","terminal_title":"tests","cwd":"/repo"},
+        {"pane_id":"w1:p7","tab_id":"w1:t9","workspace_id":"w1","terminal_title":"","cwd":"/"}
+    ]}}"#;
+
+    const LAYOUT: &str = r#"{"result":{"layout":{"area":{"x":0,"y":0,"width":200,"height":50},
+        "panes":[{"pane_id":"w1:p1","rect":{"x":0,"y":0,"width":100,"height":50}},
+                 {"pane_id":"w1:p2","rect":{"x":100,"y":0,"width":100,"height":50}}],
+        "zoomed":false}}}"#;
+
+    fn live(runner: MockRunner) -> ZenMode<MockRunner> {
+        let cfg = Config::default();
+        assert_eq!(
+            crate::chrome::Level::parse(&cfg.zen.chrome),
+            crate::chrome::Level::Off,
+            "a test must never rewrite herdr's own config"
+        );
+        let mut mode = ZenMode::new(runner, cfg, store());
+        mode.notifier = Notifier::silent();
+        mode
+    }
+
+    /// The mode lists live panes through its runner, hides a session's
+    /// gutters, marks the zenned pane, and follows its key table.
+    #[test]
+    fn the_zen_mode_lists_panes_without_the_gutters() {
+        let mut mode = live(MockRunner::new().on("pane list", PANES));
+        assert_eq!(mode.title(), "Zen");
+        assert_eq!(mode.accent_slot(), "mauve");
+        let _ = mode.schema();
+        assert_eq!(mode.actions().len(), 2);
+        assert_eq!(mode.initial().unwrap().len(), 3);
+
+        mode.store.save(&session_on("w1:p1", &["w1:p7"])).unwrap();
+        let items = mode.initial().unwrap();
+        assert_eq!(items.len(), 2, "the gutter is hidden");
+
+        let mut cfg = Config::default();
+        cfg.keys.insert(
+            "zen".into(),
+            HashMap::from([("exit".into(), "ctrl-q".into())]),
+        );
+        mode.reload_config(&cfg).unwrap();
+        assert_eq!(
+            mode.key_bindings().get("exit").map(String::as_str),
+            Some("ctrl-q")
+        );
+        mode.store.clear();
+    }
+
+    /// Entering zen goes through the runner; exit leaves; an unknown action is
+    /// refused by name.
+    #[test]
+    fn executing_enters_leaves_and_refuses_unknown_actions() {
+        let runner = MockRunner::new()
+            .on("pane list", PANES)
+            .on("pane layout", LAYOUT)
+            .on(
+                "pane move w1:p1 --new-tab",
+                r#"{"result":{"move_result":{"created_tab":{"tab_id":"w1:t9"}}}}"#,
+            )
+            .on(
+                "--ratio 0.8500",
+                r#"{"result":{"pane":{"pane_id":"w1:p5"}}}"#,
+            )
+            .on(
+                "--ratio 0.1765",
+                r#"{"result":{"pane":{"pane_id":"w1:p6"}}}"#,
+            )
+            .on("tab get", r#"{"result":{"tab":{"pane_count":0}}}"#);
+        let mut mode = live(runner);
+        assert!(matches!(
+            mode.execute("w1:p1", "zen").unwrap(),
+            ActionOutcome::Close
+        ));
+        assert!(mode.store.load().is_some());
+        // Zen on another pane first leaves the current one.
+        let _ = mode.execute("w1:p2", "zen");
+        assert!(matches!(
+            mode.execute("w1:p1", "exit").unwrap(),
+            ActionOutcome::Close
+        ));
+        mode.execute("w1:p1", "exit").unwrap();
+        assert!(mode.execute("w1:p1", "sideways").is_err());
+        mode.store.clear();
     }
 }
