@@ -801,4 +801,59 @@ mod tests {
         assert_ne!(fingerprint("cargo test"), fingerprint("cargo build"));
         assert!(!fingerprint("cargo test").is_empty());
     }
+
+    /// Presets: a denied one is dropped, a fixed cwd is remembered once, an
+    /// unusable cwd is a diagnostic, and missing state files read as empty.
+    #[test]
+    fn presets_are_filtered_resolved_and_diagnosed() {
+        let dir = std::env::temp_dir();
+        let dir = dir.to_string_lossy().into_owned();
+        let presets = [
+            Preset {
+                label: "Denied".into(),
+                command: "rm -rf build".into(),
+                cwd: "origin".into(),
+            },
+            Preset {
+                label: "Here".into(),
+                command: "make".into(),
+                cwd: dir.clone(),
+            },
+            Preset {
+                label: "Shell".into(),
+                command: "make check".into(),
+                cwd: "$(pwd)".into(),
+            },
+        ];
+        let denied = HashSet::from([fingerprint("rm -rf build")]);
+        let catalog = CommandCatalog::from_sources(
+            Vec::new(),
+            &presets,
+            Vec::new(),
+            denied,
+            5_000,
+            &[],
+            None,
+            None,
+        )
+        .unwrap();
+        let names = commands(&catalog);
+        assert!(!names.contains(&"rm -rf build"), "{names:?}");
+        let here = catalog
+            .records()
+            .iter()
+            .find(|record| record.command == "make")
+            .unwrap();
+        assert_eq!(here.recent_cwds, vec![dir]);
+        let shell = catalog
+            .records()
+            .iter()
+            .find(|record| record.command == "make check")
+            .unwrap();
+        assert!(!shell.diagnostics.is_empty());
+
+        let missing = std::path::Path::new("/definitely/not/a/state/file.json");
+        assert!(read_records(missing).unwrap().is_empty());
+        assert!(read_denylist(missing).unwrap().is_empty());
+    }
 }

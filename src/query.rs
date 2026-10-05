@@ -318,4 +318,15 @@ mod tests {
         assert_eq!(error.span, 7..17);
         assert!(error.message.contains("unterminated quote"));
     }
+
+    /// A filter needs both a field and a value, and a quoted token keeps its
+    /// spaces.
+    #[test]
+    fn filters_need_both_halves_and_quotes_keep_spaces() {
+        let schema = FieldSchema::new(&[("cmd", MatchKind::Contains)], &[]);
+        assert!(CompiledQuery::compile("cmd:", &schema).is_err());
+        assert!(CompiledQuery::compile(":value", &schema).is_err());
+        assert!(CompiledQuery::compile("cmd:\"git log\"", &schema).is_ok());
+        assert!(CompiledQuery::compile("\"two words\"", &schema).is_ok());
+    }
 }

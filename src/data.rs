@@ -801,4 +801,57 @@ mod tests {
             .success());
         runner.spawn_detached(OsStr::new("x"), &[]).unwrap();
     }
+
+    /// Each forge has its own glyph colour, and anything else a neutral one.
+    #[test]
+    fn every_forge_gets_its_own_colour_and_bad_hex_is_ignored() {
+        let theme = Theme::default();
+        assert_eq!(host_icon("github.com", &theme).1, Color::Magenta);
+        assert_eq!(host_icon("bitbucket.org", &theme).1, Color::Blue);
+        assert_eq!(host_icon("gitlab.com", &theme).1, Color::Yellow);
+        assert_eq!(host_icon("example.org", &theme).1, Color::DarkGray);
+        assert_eq!(parse_hex("#abc"), None);
+    }
+
+    /// Lists herdr could not describe — not JSON, no array, rows with no id or
+    /// no agent — contribute no rows rather than broken ones.
+    #[test]
+    fn malformed_herdr_lists_contribute_no_rows() {
+        let theme = Theme::default();
+        for body in [
+            "not json",
+            r#"{"result":{}}"#,
+            r#"{"result":{"agents":[{"pane_id":"","agent":"claude"},{"pane_id":"p1","agent":""}],
+                "workspaces":[{"workspace_id":""}]}}"#,
+        ] {
+            let runner = MockRunner::new().on("herdr", body);
+            assert!(load_agents(&runner, &theme).is_empty(), "{body}");
+            assert!(load_workspaces(&runner, &theme).is_empty(), "{body}");
+        }
+    }
+
+    /// A linked worktree herdr reports without a HEAD is shown as detached.
+    #[test]
+    fn a_worktree_without_a_head_reads_as_detached() {
+        let root = std::env::temp_dir().join(format!("swb-wt-nohead-{}", std::process::id()));
+        let repo = root.join("gitlab.com/o/r");
+        std::fs::create_dir_all(repo.join(".git/worktrees/x")).unwrap();
+        let linked = root.join("linked");
+        std::fs::create_dir_all(&linked).unwrap();
+        let raw = format!(
+            "worktree {}\0HEAD abc\0branch refs/heads/main\0\0worktree {}\0detached\0\0",
+            repo.display(),
+            linked.display()
+        );
+        let runner = MockRunner::new().on("worktree list", &raw);
+        let entries = load_worktrees(
+            &runner,
+            &["gitlab.com/o/r".to_string()],
+            &Theme::default(),
+            root.to_str().unwrap(),
+        );
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].secondary, "detached");
+        std::fs::remove_dir_all(&root).ok();
+    }
 }

@@ -229,4 +229,29 @@ mod tests {
         );
         assert!(!calls[0].iter().any(|arg| arg == "--wait"));
     }
+
+    /// herdr's refusal is passed on with what it said, malformed agent lists
+    /// read as no agents, and an agent with no pane or name is skipped.
+    #[test]
+    fn refusals_carry_herdrs_reason_and_malformed_lists_read_as_empty() {
+        let target = AgentTarget {
+            pane_id: "w1:p1".into(),
+            agent: "claude".into(),
+            status: "idle".into(),
+            cwd: "/repo".into(),
+        };
+        let blocked = MockRunner::new().failing_with("agent prompt", "agent is blocked");
+        let error = deliver_prompt(&blocked, &target, "hi").unwrap_err();
+        assert!(error.to_string().ends_with("agent is blocked"), "{error}");
+        let silent = MockRunner::new().failing("agent prompt");
+        let error = deliver_prompt(&silent, &target, "hi").unwrap_err();
+        assert!(error.to_string().ends_with("handoff"), "{error}");
+
+        assert!(parse_agents(Some(r#"{"result":{}}"#)).is_empty());
+        assert!(parse_agents(Some(
+            r#"{"result":{"agents":[{"pane_id":" ","agent":"claude"}]}}"#
+        ))
+        .is_empty());
+        assert_eq!(worktree_root(&MockRunner::new(), ""), None);
+    }
 }

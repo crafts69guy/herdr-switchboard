@@ -1697,4 +1697,54 @@ mod tests {
             let _ = app.on_event(event.clone()).unwrap();
         }
     }
+
+    /// The edges of the small readers behind the cards: an unknown grade, a
+    /// clock before the epoch, a renewal whose date cannot be written, money in
+    /// another currency, a spent extra allowance, and Codex payloads with no
+    /// window, no cache share, no context window, or unlimited credits.
+    #[test]
+    fn the_card_readers_handle_their_edges() {
+        assert!(Severity::parse("bogus").is_none());
+        let window = |severity| Window {
+            label: "5h".into(),
+            used_percent: 10.0,
+            resets_at: None,
+            severity,
+        };
+        let theme = Theme::default();
+        let cfg = Config::default();
+        assert_eq!(
+            view::window_color(&theme, &window(Some(Severity::Normal)), &cfg),
+            ratatui::style::Color::Green
+        );
+
+        assert_eq!(time::format_clock(10, -3_600), "");
+        assert_eq!(time::format_date(10, -3_600), "");
+        assert_eq!(time::format_renewal(0, Some(10), -3_600), "unknown");
+
+        assert_eq!(
+            money(&serde_json::json!({"amount_minor": 1250, "currency": "EUR", "exponent": 2})),
+            "12.50 EUR"
+        );
+        let facts =
+            claude_facts(&serde_json::json!({"extra_usage": {"spend_limit_reached": true}}));
+        assert!(facts.iter().any(|fact| fact.value == "limit reached"));
+
+        assert!(parse_codex_rate_limits(
+            r#"{"payload":{"rate_limits":{"primary":null,"secondary":null}}}"#
+        )
+        .is_err());
+        let facts = codex_facts(&serde_json::json!({
+            "info": {
+                "total_token_usage": {"total_tokens": 1000, "input_tokens": 0, "cached_input_tokens": 0},
+                "last_token_usage": {"total_tokens": 10},
+                "model_context_window": 0
+            },
+            "rate_limits": {"credits": {"unlimited": true}}
+        }));
+        assert!(
+            facts.iter().any(|fact| fact.value == "unlimited"),
+            "{facts:?}"
+        );
+    }
 }

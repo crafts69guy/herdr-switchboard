@@ -116,6 +116,7 @@ mod mock {
     pub struct MockRunner {
         responses: Vec<(String, String)>,
         failures: Vec<String>,
+        stderrs: Vec<(String, String)>,
         pub calls: Mutex<Vec<Vec<String>>>,
         stdins: Mutex<Vec<String>>,
     }
@@ -135,6 +136,13 @@ mod mock {
         /// Make any command whose joined argv contains `needle` exit non-zero.
         pub fn failing(mut self, needle: &str) -> Self {
             self.failures.push(needle.to_string());
+            self
+        }
+
+        /// [`failing`](Self::failing), with `stderr` as what the program said.
+        pub fn failing_with(mut self, needle: &str, stderr: &str) -> Self {
+            self.failures.push(needle.to_string());
+            self.stderrs.push((needle.to_string(), stderr.to_string()));
             self
         }
 
@@ -214,7 +222,12 @@ mod mock {
                 } else {
                     Vec::new()
                 },
-                stderr: Vec::new(),
+                stderr: self
+                    .stderrs
+                    .iter()
+                    .find(|(needle, _)| joined.contains(needle.as_str()))
+                    .map(|(_, err)| err.as_bytes().to_vec())
+                    .unwrap_or_default(),
             })
         }
 
