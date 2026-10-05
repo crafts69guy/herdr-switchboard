@@ -21,12 +21,15 @@ pub fn main(cfg: Config, theme: Theme) -> Result<()> {
 
 struct MenuMode {
     bindings: HashMap<String, String>,
+    /// Starts the detached handoff; a test swaps in one that starts nothing.
+    launch: fn(&mut Command) -> std::io::Result<()>,
 }
 
 impl MenuMode {
     fn new(cfg: &Config) -> Self {
         Self {
             bindings: cfg.keys.get("menu").cloned().unwrap_or_default(),
+            launch: |command| command.spawn().map(drop),
         }
     }
 }
@@ -238,14 +241,14 @@ impl PickerMode for MenuMode {
             "unknown route {route_id}"
         );
         let root = env::var("HERDR_PLUGIN_ROOT").unwrap_or_else(|_| ".".into());
-        handoff_command(
+        let mut command = handoff_command(
             &root,
             route_id,
             &env::var("HERDR_PANE_ID").unwrap_or_default(),
             process::id(),
-        )
-        .spawn()
-        .with_context(|| format!("could not schedule {route_id} handoff"))?;
+        );
+        (self.launch)(&mut command)
+            .with_context(|| format!("could not schedule {route_id} handoff"))?;
         Ok(ActionOutcome::Close)
     }
 }
@@ -347,5 +350,58 @@ mod tests {
         assert_eq!(env["HERDR_PLUGIN_ACTION_ID"], "agents");
         assert_eq!(env["SWITCHBOARD_ORIGIN_PANE_ID"], "w1:p1");
         assert_eq!(env["SWITCHBOARD_HANDOFF_PARENT_PID"], "42");
+    }
+
+    fn quiet_menu() -> MenuMode {
+        let mut cfg = Config::default();
+        cfg.keys.insert(
+            "menu".into(),
+            HashMap::from([("zen".into(), "alt-y".into())]),
+        );
+        let mut mode = MenuMode::new(&cfg);
+        mode.launch = |_| Ok(());
+        mode
+    }
+
+    /// The menu lists every route with an open action and a direct chord for
+    /// each, follows its `[keys.menu]` table, and reloads it.
+    #[test]
+    fn the_menu_lists_every_route_with_a_chord_and_follows_its_bindings() {
+        let mut mode = quiet_menu();
+        assert_eq!(mode.title(), "Switchboard");
+        assert_eq!(mode.accent_slot(), "mauve");
+        assert_eq!(mode.action_bar_rows(), 2);
+        let _ = mode.schema();
+        assert_eq!(mode.actions().len(), ROUTES.len() + 1);
+        assert_eq!(
+            mode.key_bindings().get("zen").map(String::as_str),
+            Some("alt-y")
+        );
+        let items = mode.initial().unwrap();
+        assert_eq!(items.len(), ROUTES.len());
+        assert!(items[0].secondary.contains(" · "));
+
+        mode.reload_config(&Config::default()).unwrap();
+        assert!(mode.key_bindings().is_empty());
+    }
+
+    /// Enter opens the selected route and a chord opens its own; an unknown
+    /// route is refused before anything is scheduled, and a failed launch says so.
+    #[test]
+    fn executing_schedules_a_known_route_and_refuses_the_rest() {
+        let mut mode = quiet_menu();
+        assert!(matches!(
+            mode.execute("projects", "open").unwrap(),
+            ActionOutcome::Close
+        ));
+        assert!(matches!(
+            mode.execute("ignored", "usage").unwrap(),
+            ActionOutcome::Close
+        ));
+        assert!(mode.execute("teleport", "open").is_err());
+
+        mode.launch = |_| Err(std::io::Error::other("no fork"));
+        let error = mode.execute("projects", "open").unwrap_err();
+        assert!(error.to_string().contains("projects"), "{error}");
     }
 }

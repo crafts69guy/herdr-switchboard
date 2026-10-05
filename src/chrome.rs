@@ -182,21 +182,24 @@ fn ui_table(doc: &mut DocumentMut) -> &mut Item {
 /// the authoritative answer inside a session; the XDG fallbacks are for a plugin
 /// invoked by hand from outside one. herdr has no `--config` flag to ask.
 pub fn config_path() -> PathBuf {
-    let dir = env::var("HERDR_SOCKET_PATH")
-        .ok()
+    config_path_from(
+        env::var("HERDR_SOCKET_PATH").ok(),
+        env::var("XDG_CONFIG_HOME").ok(),
+        env::var("HOME").ok(),
+    )
+}
+
+/// [`config_path`] over explicit values: the socket's directory, then
+/// `$XDG_CONFIG_HOME/herdr`, then `~/.config/herdr`, then a relative fallback.
+fn config_path_from(socket: Option<String>, xdg: Option<String>, home: Option<String>) -> PathBuf {
+    let dir = socket
         .filter(|path| !path.is_empty())
         .and_then(|path| PathBuf::from(path).parent().map(Path::to_path_buf))
         .or_else(|| {
-            env::var("XDG_CONFIG_HOME")
-                .ok()
-                .filter(|dir| !dir.is_empty())
+            xdg.filter(|dir| !dir.is_empty())
                 .map(|dir| PathBuf::from(dir).join("herdr"))
         })
-        .or_else(|| {
-            env::var("HOME")
-                .ok()
-                .map(|home| PathBuf::from(home).join(".config/herdr"))
-        })
+        .or_else(|| home.map(|home| PathBuf::from(home).join(".config/herdr")))
         .unwrap_or_else(|| PathBuf::from(".config/herdr"));
     dir.join("config.toml")
 }
@@ -221,8 +224,8 @@ fn write_document(path: &Path, doc: &DocumentMut) -> Result<()> {
 
 /// Keep one copy of the config as it was before zen ever touched it. Best
 /// effort, and never overwritten — the point is the *original*, not the latest.
-fn backup_once(path: &Path) {
-    let Some(backup) = state::state_file(BACKUP) else {
+fn backup_once(path: &Path, backup: Option<PathBuf>) {
+    let Some(backup) = backup else {
         return;
     };
     if backup.exists() {
@@ -246,20 +249,29 @@ fn reload<R: CommandRunner>(runner: &R) -> bool {
 /// snapshot the caller must persist and later hand to [`disengage`]; an empty
 /// vec means nothing was changed and there is nothing to undo.
 pub fn engage<R: CommandRunner>(runner: &R, level: Level) -> Vec<Override> {
+    engage_at(runner, level, &config_path(), state::state_file(BACKUP))
+}
+
+/// [`engage`] against an explicit config file and backup location.
+fn engage_at<R: CommandRunner>(
+    runner: &R,
+    level: Level,
+    path: &Path,
+    backup: Option<PathBuf>,
+) -> Vec<Override> {
     if level == Level::Off {
         return Vec::new();
     }
-    let path = config_path();
-    let Ok(mut doc) = read_document(&path) else {
+    let Ok(mut doc) = read_document(path) else {
         return Vec::new();
     };
     let overrides = plan_overrides(&doc, level);
     if overrides.is_empty() {
         return Vec::new();
     }
-    backup_once(&path);
+    backup_once(path, backup);
     apply(&mut doc, &overrides);
-    if write_document(&path, &doc).is_err() {
+    if write_document(path, &doc).is_err() {
         return Vec::new();
     }
     reload(runner);
@@ -269,15 +281,18 @@ pub fn engage<R: CommandRunner>(runner: &R, level: Level) -> Vec<Override> {
 /// Undo [`engage`]. Reports whether the config is back the way it was, so the
 /// caller can keep the snapshot when it is not.
 pub fn disengage<R: CommandRunner>(runner: &R, overrides: &[Override]) -> bool {
+    disengage_at(runner, overrides, &config_path())
+}
+
+fn disengage_at<R: CommandRunner>(runner: &R, overrides: &[Override], path: &Path) -> bool {
     if overrides.is_empty() {
         return true;
     }
-    let path = config_path();
-    let Ok(mut doc) = read_document(&path) else {
+    let Ok(mut doc) = read_document(path) else {
         return false;
     };
     restore(&mut doc, overrides);
-    if write_document(&path, &doc).is_err() {
+    if write_document(path, &doc).is_err() {
         return false;
     }
     reload(runner);
@@ -287,6 +302,7 @@ pub fn disengage<R: CommandRunner>(runner: &R, overrides: &[Override]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::runner::MockRunner;
 
     /// Each level asks for strictly more than the one below it. `Off` asks for
     /// nothing at all, which is what makes it the safe default.
@@ -450,5 +466,98 @@ kitty_graphics = true
         apply(&mut document, &plan);
         restore(&mut document, &plan);
         assert!(document.to_string().contains("\"compact\""));
+    }
+
+    /// The config sits beside the live socket; outside a session it falls back
+    /// through XDG and HOME, and never resolves to nothing.
+    #[test]
+    fn herdrs_config_is_found_beside_the_socket_then_by_xdg_then_home() {
+        let some = |s: &str| Some(s.to_string());
+        assert_eq!(
+            config_path_from(some("/run/h/herdr.sock"), some("/x"), some("/home/u")),
+            PathBuf::from("/run/h/config.toml")
+        );
+        assert_eq!(
+            config_path_from(some(""), some("/x"), some("/home/u")),
+            PathBuf::from("/x/herdr/config.toml")
+        );
+        assert_eq!(
+            config_path_from(None, some(""), some("/home/u")),
+            PathBuf::from("/home/u/.config/herdr/config.toml")
+        );
+        assert_eq!(
+            config_path_from(None, None, None),
+            PathBuf::from(".config/herdr/config.toml")
+        );
+        assert!(config_path().ends_with("config.toml"));
+    }
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("swb-chrome-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// Engaging writes the overrides, keeps one backup of the original, and
+    /// asks herdr to reload; disengaging puts every value back. All of it on a
+    /// scratch copy, at the `panes` level — never herdr's own file.
+    #[test]
+    fn engaging_and_disengaging_round_trip_a_scratch_config() {
+        let dir = scratch("roundtrip");
+        let path = dir.join("config.toml");
+        let backup = dir.join("state/backup.toml");
+        let original = "[ui]\npane_borders = true\n";
+        fs::write(&path, original).unwrap();
+        let runner = MockRunner::new();
+
+        let overrides = engage_at(&runner, Level::Panes, &path, Some(backup.clone()));
+        assert!(!overrides.is_empty());
+        assert_ne!(fs::read_to_string(&path).unwrap(), original);
+        assert_eq!(fs::read_to_string(&backup).unwrap(), original);
+        // A second engage never replaces the backup of the original.
+        fs::write(&path, "[ui]\n").unwrap();
+        engage_at(&runner, Level::Panes, &path, Some(backup.clone()));
+        assert_eq!(fs::read_to_string(&backup).unwrap(), original);
+        fs::write(&path, original).unwrap();
+        engage_at(&runner, Level::Panes, &path, None);
+
+        assert!(disengage_at(&runner, &overrides, &path));
+        assert!(fs::read_to_string(&path)
+            .unwrap()
+            .contains("pane_borders = true"));
+        assert!(runner
+            .calls()
+            .iter()
+            .all(|call| call == &["herdr", "server", "reload-config"]));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Nothing to do, nothing readable, or nothing writable: no change is
+    /// claimed, and herdr is not asked to reload.
+    #[test]
+    fn engage_and_disengage_change_nothing_they_cannot_finish() {
+        let dir = scratch("refusals");
+        let runner = MockRunner::new();
+        let missing = dir.join("missing.toml");
+        assert!(engage_at(&runner, Level::Off, &missing, None).is_empty());
+        assert!(engage_at(&runner, Level::Panes, &missing, None).is_empty());
+        assert!(disengage_at(&runner, &[], &missing));
+
+        let path = dir.join("config.toml");
+        fs::write(&path, "[ui]\npane_borders = true\n").unwrap();
+        let overrides = engage_at(&runner, Level::Panes, &path, None);
+        assert!(!disengage_at(&runner, &overrides, &missing));
+
+        // A config already at the zen values needs no overrides at all.
+        let calm = dir.join("calm.toml");
+        fs::write(&calm, fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(engage_at(&runner, Level::Panes, &calm, None).is_empty());
+
+        // A directory where the file should be cannot be written.
+        let blocked = dir.join("blocked");
+        fs::create_dir_all(blocked.join("config.toml")).unwrap();
+        assert!(engage_at(&runner, Level::Panes, &blocked.join("config.toml"), None).is_empty());
+        let _ = fs::remove_dir_all(&dir);
     }
 }

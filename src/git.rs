@@ -27,6 +27,7 @@ mod view;
 
 use std::env;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
@@ -901,6 +902,8 @@ pub fn main() -> Result<()> {
         git: &mut g,
         cwd: &cwd,
         origin_pane: env::var("SWITCHBOARD_ORIGIN_PANE_ID").unwrap_or_default(),
+        runner: Arc::new(SystemRunner),
+        archive: review_archive::set,
         theme: &theme,
         background,
         title,
@@ -939,6 +942,11 @@ struct GitSurface<'a> {
     git: &'a mut Git,
     cwd: &'a str,
     origin_pane: String,
+    /// The process edge every background step runs through, shared with the
+    /// worker threads; tests hand in a `MockRunner` so nothing real is started.
+    runner: Arc<dyn CommandRunner + Send + Sync>,
+    /// Records a review's archive state; a test swaps in a no-op.
+    archive: fn(&str, bool) -> Result<()>,
     theme: &'a Theme,
     background: crate::tui::SurfaceBackground,
     title: Color,
@@ -1079,8 +1087,9 @@ impl GitSurface<'_> {
             Step::Load(kind) => {
                 let (sender, receiver) = mpsc::channel();
                 let cwd = self.cwd.to_string();
+                let runner = Arc::clone(&self.runner);
                 std::thread::spawn(move || {
-                    let rows = load_rows(&SystemRunner, &cwd, kind);
+                    let rows = load_rows(runner.as_ref(), &cwd, kind);
                     let _ = sender.send(GitEffect::Rows(kind, rows));
                 });
                 self.effect = Some(receiver);
@@ -1089,8 +1098,9 @@ impl GitSurface<'_> {
             Step::CountFiles => {
                 let (sender, receiver) = mpsc::channel();
                 let cwd = self.cwd.to_string();
+                let runner = Arc::clone(&self.runner);
                 std::thread::spawn(move || {
-                    let count = count_tracked_files(&SystemRunner, &cwd);
+                    let count = count_tracked_files(runner.as_ref(), &cwd);
                     let _ = sender.send(GitEffect::FileCount(count));
                 });
                 self.effect = Some(receiver);
@@ -1101,8 +1111,9 @@ impl GitSurface<'_> {
                 let cwd = self.cwd.to_string();
                 let origin_pane = self.origin_pane.clone();
                 let effect_session = session.clone();
+                let runner = Arc::clone(&self.runner);
                 std::thread::spawn(move || {
-                    let targets = discover_targets(&SystemRunner, &cwd, &origin_pane);
+                    let targets = discover_targets(runner.as_ref(), &cwd, &origin_pane);
                     let _ = sender.send(GitEffect::Targets(effect_session, targets));
                 });
                 self.effect = Some(receiver);
@@ -1110,9 +1121,10 @@ impl GitSurface<'_> {
             }
             Step::Deliver(request) => {
                 let (sender, receiver) = mpsc::channel();
+                let runner = Arc::clone(&self.runner);
                 std::thread::spawn(move || {
                     let result =
-                        deliver(&SystemRunner, &request).map_err(|error| error.to_string());
+                        deliver(runner.as_ref(), &request).map_err(|error| error.to_string());
                     let _ = sender.send(GitEffect::Delivered(result));
                 });
                 self.effect = Some(receiver);
@@ -1120,9 +1132,9 @@ impl GitSurface<'_> {
             }
             Step::SetReviewArchived { slug, archived } => {
                 let (sender, receiver) = mpsc::channel();
+                let archive = self.archive;
                 std::thread::spawn(move || {
-                    let result =
-                        review_archive::set(&slug, archived).map_err(|error| error.to_string());
+                    let result = archive(&slug, archived).map_err(|error| error.to_string());
                     let _ = sender.send(GitEffect::ReviewArchived {
                         slug,
                         archived,
@@ -1187,6 +1199,8 @@ mod tests {
             git,
             cwd: "/definitely/not/a/repository",
             origin_pane: "w1:p1".into(),
+            runner: Arc::new(MockRunner::new()),
+            archive: |_, _| Ok(()),
             theme,
             background: crate::tui::SurfaceBackground::resolve(
                 theme,
@@ -2656,5 +2670,347 @@ z|Y|pull|git pull
         assert_eq!(g.filtered.len(), 1);
         assert_eq!(g.on_key(key(KeyCode::Enter)), Step::Chosen);
         assert_eq!(g.chosen.unwrap().arg, "13");
+    }
+
+    fn ctrl(c: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)
+    }
+
+    fn agent(pane: &str) -> AgentTarget {
+        target(pane, "claude", "/repo")
+    }
+
+    /// Every list kind names itself, its review mode, its verb, and its empty
+    /// state, so the card cannot render a blank for any of them.
+    #[test]
+    fn every_list_kind_has_a_title_mode_verb_and_empty_state() {
+        for kind in [
+            ListKind::PullRequests,
+            ListKind::Reviews,
+            ListKind::ArchivedReviews,
+            ListKind::Conflicts,
+            ListKind::Agents,
+        ] {
+            assert!(!kind.title().is_empty());
+            assert!(!kind.verb().is_empty());
+            assert!(kind.empty().starts_with("  ("));
+            assert_eq!(kind.mode().is_none(), kind == ListKind::Agents);
+        }
+    }
+
+    /// The agent list says which scope it was resolved in; anything else falls
+    /// back to the list's own title, and no list at all to a plain word.
+    #[test]
+    fn the_agent_list_title_names_its_scope() {
+        let mut g = Git::new();
+        open_default(&mut g);
+        assert_eq!(g.list_title(), "list");
+        for (scope, title) in [
+            (TargetScope::SameWorktree, "agents · same worktree"),
+            (TargetScope::SameDirectory, "agents · same directory"),
+            (TargetScope::AllAgents, "agents · all running"),
+        ] {
+            g.show_targets(
+                "s1".into(),
+                TargetResolution {
+                    origin: None,
+                    choices: vec![agent("w1:p1"), agent("w1:p2")],
+                    scope,
+                },
+            );
+            assert_eq!(g.list_title(), title);
+        }
+        g.show_list(ListKind::Conflicts, rows());
+        assert_eq!(g.list_title(), "conflicts");
+    }
+
+    /// The menu moves, jumps, and closes from the keyboard.
+    #[test]
+    fn the_menu_moves_jumps_and_closes() {
+        let mut g = Git::new();
+        open_default(&mut g);
+        let last = g.items.len() - 1;
+        g.on_key(key(KeyCode::Char('k')));
+        assert_eq!(g.sel, last, "k wraps");
+        g.on_key(key(KeyCode::Char('j')));
+        assert_eq!(g.sel, 0);
+        g.on_key(key(KeyCode::Down));
+        g.on_key(key(KeyCode::Up));
+        g.on_key(key(KeyCode::End));
+        g.on_key(key(KeyCode::Home));
+        assert_eq!(g.sel, 0);
+        g.on_key(key(KeyCode::F(3)));
+        g.on_key(key(KeyCode::Esc));
+        assert!(!g.show);
+    }
+
+    /// A sub-list moves with the arrows and readline keys, jumps to its ends,
+    /// and on saved reviews hands a session to an agent or archives it.
+    #[test]
+    fn a_review_list_moves_hands_off_and_archives() {
+        let mut g = Git::new();
+        open_default(&mut g);
+        g.show_list(ListKind::Reviews, rows());
+        g.on_key(ctrl('n'));
+        assert_eq!(g.lsel, 1);
+        g.on_key(ctrl('p'));
+        g.on_key(key(KeyCode::Down));
+        g.on_key(key(KeyCode::Up));
+        g.on_key(key(KeyCode::End));
+        assert_eq!(g.lsel, 1);
+        g.on_key(key(KeyCode::Home));
+        assert_eq!(g.lsel, 0);
+        assert!(matches!(g.on_key(ctrl('a')), Step::LoadTargets(ref s) if s == "12"));
+        assert!(matches!(
+            g.on_key(ctrl('d')),
+            Step::SetReviewArchived { archived: true, .. }
+        ));
+
+        g.show_list(ListKind::ArchivedReviews, rows());
+        assert!(matches!(
+            g.on_key(ctrl('d')),
+            Step::SetReviewArchived {
+                archived: false,
+                ..
+            }
+        ));
+
+        // Nothing selected: the review verbs have nothing to act on.
+        g.show_list(ListKind::Reviews, Vec::new());
+        assert!(matches!(g.on_key(ctrl('a')), Step::Stay));
+        assert!(matches!(g.on_key(ctrl('d')), Step::Stay));
+        assert!(matches!(g.on_key(key(KeyCode::Enter)), Step::Stay));
+    }
+
+    /// The guards: activating nothing, promoting no pending review, and an
+    /// agent row with no session behind it all stay put.
+    #[test]
+    fn activating_nothing_stays_put() {
+        let mut g = Git::new();
+        assert!(matches!(g.activate(), Step::Stay));
+        assert!(matches!(g.take_pending(), Step::Stay));
+        open_default(&mut g);
+        g.show_targets(
+            "s1".into(),
+            TargetResolution {
+                origin: None,
+                choices: vec![agent("w1:p1"), agent("w1:p2")],
+                scope: TargetScope::AllAgents,
+            },
+        );
+        g.handoff_session = None;
+        assert!(matches!(g.activate_row(), Step::Stay));
+        // Backing out of an agent list with nothing to return to lands on the menu.
+        g.return_list = None;
+        g.restore_review_list();
+        assert!(matches!(g.view, View::Menu));
+    }
+
+    /// One click rule: a click selects, a click on the selected row acts, the
+    /// bar runs the key on its cap, and outside the card nothing happens.
+    #[test]
+    fn clicks_select_then_act_in_the_menu_and_the_list() {
+        let mut g = Git::new();
+        open_default(&mut g);
+        g.zones.card = Rect::new(0, 0, 60, 30);
+        g.zones.menu = Rect::new(2, 2, 50, 10);
+        assert!(matches!(g.on_click(Position::new(80, 80)), Step::Stay));
+        g.on_click(Position::new(3, 3));
+        assert_eq!(g.sel, 1, "a click selects");
+        assert!(
+            !matches!(g.on_click(Position::new(3, 3)), Step::Stay),
+            "a click on the selected row acts"
+        );
+        // Below the last item is not a row.
+        let mut g = Git::new();
+        open_default(&mut g);
+        g.zones.card = Rect::new(0, 0, 60, 40);
+        g.zones.menu = Rect::new(2, 2, 50, 30);
+        g.on_click(Position::new(3, 31));
+        assert_eq!(g.sel, 0);
+
+        g.show_list(ListKind::PullRequests, rows());
+        g.zones.body = Rect::new(2, 2, 50, 10);
+        g.zones.page_start = 0;
+        g.on_click(Position::new(3, 3));
+        assert_eq!(g.lsel, 1);
+        assert!(!matches!(g.on_click(Position::new(3, 3)), Step::Stay));
+
+        g.zones.bar_row = 35;
+        g.zones.bar_zones = vec![(0, 4, key(KeyCode::Esc))];
+        g.show_list(ListKind::PullRequests, rows());
+        g.on_click(Position::new(1, 35));
+        assert!(matches!(g.view, View::Menu), "the esc pill backs out");
+
+        g.view = View::Confirm;
+        assert!(matches!(g.on_click(Position::new(3, 3)), Step::Stay));
+        g.on_wheel(1);
+    }
+
+    /// The wheel moves whichever list is showing.
+    #[test]
+    fn the_wheel_moves_the_menu_and_the_list() {
+        let mut g = Git::new();
+        open_default(&mut g);
+        g.on_wheel(1);
+        assert_eq!(g.sel, 1);
+        g.show_list(ListKind::PullRequests, rows());
+        g.on_wheel(1);
+        assert_eq!(g.lsel, 1);
+        g.show_list(ListKind::PullRequests, Vec::new());
+        g.on_wheel(1);
+        assert_eq!(g.lsel, 0);
+    }
+
+    fn tick_until_settled(surface: &mut GitSurface<'_>) -> Transition<()> {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let transition = surface.on_tick().unwrap();
+            if !matches!(transition, Transition::Wait) || surface.effect.is_none() {
+                return transition;
+            }
+            assert!(std::time::Instant::now() < deadline, "effect never landed");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    /// Every background step runs through the surface's runner and lands back
+    /// through `on_tick` — none of them starts a real process here.
+    #[test]
+    fn every_background_step_runs_through_the_runner_and_lands() {
+        let mut g = Git::new();
+        open_default(&mut g);
+        let theme = Theme::default();
+        let mut surface = surface(&mut g, &theme);
+        assert_eq!(surface.tick_rate(), Duration::from_millis(250));
+
+        assert!(matches!(
+            surface.apply_step(Step::Load(ListKind::PullRequests)),
+            Transition::Redraw
+        ));
+        assert_eq!(surface.tick_rate(), Duration::from_millis(50));
+        tick_until_settled(&mut surface);
+        assert_eq!(surface.git.kind, Some(ListKind::PullRequests));
+
+        surface.apply_step(Step::CountFiles);
+        tick_until_settled(&mut surface);
+
+        surface.git.show_list(ListKind::Reviews, rows());
+        surface.apply_step(Step::LoadTargets("12".into()));
+        tick_until_settled(&mut surface);
+
+        surface.apply_step(Step::SetReviewArchived {
+            slug: "12".into(),
+            archived: true,
+        });
+        assert!(matches!(
+            tick_until_settled(&mut surface),
+            Transition::Redraw
+        ));
+
+        let request = HandoffRequest {
+            session: "12".into(),
+            repo: "/repo".into(),
+            target: agent("w1:p1"),
+        };
+        surface.apply_step(Step::Deliver(request));
+        assert!(matches!(
+            tick_until_settled(&mut surface),
+            Transition::Exit(())
+        ));
+
+        assert!(matches!(
+            surface.apply_step(Step::Chosen),
+            Transition::Exit(())
+        ));
+        surface.git.show = false;
+        assert!(matches!(
+            surface.apply_step(Step::Stay),
+            Transition::Exit(())
+        ));
+        surface.git.show = true;
+        assert!(matches!(surface.apply_step(Step::Stay), Transition::Redraw));
+    }
+
+    /// A failed delivery stays open with an error; a worker that died says so.
+    #[test]
+    fn a_failed_or_lost_background_step_is_reported() {
+        let mut g = Git::new();
+        open_default(&mut g);
+        let theme = Theme::default();
+        let mut surface = surface(&mut g, &theme);
+
+        let (sender, receiver) = mpsc::channel();
+        sender
+            .send(GitEffect::Delivered(Err("blocked".into())))
+            .unwrap();
+        surface.effect = Some(receiver);
+        assert!(matches!(surface.on_tick().unwrap(), Transition::Redraw));
+
+        let (sender, receiver) = mpsc::channel::<GitEffect>();
+        drop(sender);
+        surface.effect = Some(receiver);
+        assert!(matches!(surface.on_tick().unwrap(), Transition::Redraw));
+        assert!(surface.effect.is_none());
+
+        let (_sender, receiver) = mpsc::channel::<GitEffect>();
+        surface.effect = Some(receiver);
+        assert!(matches!(surface.on_tick().unwrap(), Transition::Wait));
+    }
+
+    /// While a step is in flight only `^c` gets through; otherwise keys, the
+    /// wheel, and clicks reach the menu, and releases do nothing.
+    #[test]
+    fn input_reaches_the_menu_unless_a_step_is_in_flight() {
+        let mut g = Git::new();
+        open_default(&mut g);
+        let theme = Theme::default();
+        let mut surface = surface(&mut g, &theme);
+        let mouse = |kind| {
+            Event::Mouse(crossterm::event::MouseEvent {
+                kind,
+                column: 200,
+                row: 200,
+                modifiers: KeyModifiers::NONE,
+            })
+        };
+
+        let (_sender, receiver) = mpsc::channel::<GitEffect>();
+        surface.effect = Some(receiver);
+        assert!(matches!(
+            surface.on_event(Event::Key(key(KeyCode::Down))).unwrap(),
+            Transition::Wait
+        ));
+        assert!(matches!(
+            surface.on_event(mouse(MouseEventKind::ScrollDown)).unwrap(),
+            Transition::Wait
+        ));
+        assert!(matches!(
+            surface.on_event(Event::Key(ctrl('c'))).unwrap(),
+            Transition::Exit(())
+        ));
+        surface.effect = None;
+
+        surface.on_event(Event::Key(key(KeyCode::Down))).unwrap();
+        assert_eq!(surface.git.sel, 1);
+        surface.on_event(mouse(MouseEventKind::ScrollDown)).unwrap();
+        surface.on_event(mouse(MouseEventKind::ScrollUp)).unwrap();
+        assert_eq!(surface.git.sel, 1);
+        assert!(matches!(
+            surface
+                .on_event(mouse(MouseEventKind::Down(MouseButton::Left)))
+                .unwrap(),
+            Transition::Redraw
+        ));
+        assert!(matches!(
+            surface
+                .on_event(mouse(MouseEventKind::Up(MouseButton::Left)))
+                .unwrap(),
+            Transition::Wait
+        ));
+        assert!(matches!(
+            surface.on_event(Event::Resize(80, 24)).unwrap(),
+            Transition::Wait
+        ));
     }
 }

@@ -107,6 +107,35 @@ impl Drop for RestoreGuard {
 pub fn run<S: Surface>(surface: &mut S) -> Result<S::Output> {
     let mut terminal = claim_terminal();
     let _restore = RestoreGuard;
+    host(surface, &mut terminal, &mut TerminalInput)
+}
+
+/// Where the host's events come from: the real terminal in production, a
+/// script in tests.
+trait Input {
+    /// Whether an event is ready within `wait`.
+    fn poll(&mut self, wait: Duration) -> Result<bool>;
+    fn read(&mut self) -> Result<Event>;
+}
+
+struct TerminalInput;
+
+impl Input for TerminalInput {
+    fn poll(&mut self, wait: Duration) -> Result<bool> {
+        Ok(event::poll(wait)?)
+    }
+    fn read(&mut self) -> Result<Event> {
+        Ok(event::read()?)
+    }
+}
+
+/// The host loop over any backend and input source. [`run`] hands it the
+/// claimed terminal; a test hands it a `TestBackend` and a scripted input.
+fn host<S: Surface, B: ratatui::backend::Backend>(
+    surface: &mut S,
+    terminal: &mut ratatui::Terminal<B>,
+    input: &mut impl Input,
+) -> Result<S::Output> {
     surface.terminal_claimed();
     let mut dirty = true;
 
@@ -119,11 +148,14 @@ pub fn run<S: Surface>(surface: &mut S) -> Result<S::Output> {
 
         // Block for the first event; take any already queued behind it for free.
         let tick = surface.tick_rate();
+        let input = &mut *input;
+        let pending = std::cell::RefCell::new(input);
         let outcome = drain_frame(
             |blocking| {
                 let wait = if blocking { tick } else { Duration::ZERO };
-                if event::poll(wait)? {
-                    let event = event::read()?;
+                let mut input = pending.borrow_mut();
+                if input.poll(wait)? {
+                    let event = input.read()?;
                     let resized = matches!(event, Event::Resize(..));
                     Ok(repaint_after(resized, surface.on_event(event)?))
                 } else {
@@ -132,7 +164,7 @@ pub fn run<S: Surface>(surface: &mut S) -> Result<S::Output> {
             },
             // A zero timeout answers from the queue without waiting, so the
             // burst only continues while input is genuinely already pending.
-            || Ok(event::poll(Duration::ZERO)?),
+            || pending.borrow_mut().poll(Duration::ZERO),
             &mut dirty,
         )?;
         if let Some(output) = outcome {
@@ -324,5 +356,151 @@ mod tests {
         assert!(output.is_none());
         assert!(!dirty);
         assert_eq!(blocked, [true]);
+    }
+
+    /// Input from a script: each event is "ready" until the script runs out,
+    /// after which every poll times out.
+    struct ScriptInput(std::collections::VecDeque<Event>);
+
+    impl Input for ScriptInput {
+        fn poll(&mut self, _wait: Duration) -> Result<bool> {
+            Ok(!self.0.is_empty())
+        }
+        fn read(&mut self) -> Result<Event> {
+            self.0
+                .pop_front()
+                .ok_or_else(|| anyhow::anyhow!("read past the script"))
+        }
+    }
+
+    /// A surface that redraws on `r`, exits on `q`, and exits from a tick once
+    /// its input has run dry — counting what the host asked of it.
+    #[derive(Default)]
+    struct Counting {
+        claimed: bool,
+        draws: usize,
+        after_draws: usize,
+        events: Vec<String>,
+        ticks: usize,
+    }
+
+    impl Surface for Counting {
+        type Output = &'static str;
+
+        fn draw(&mut self, frame: &mut Frame) {
+            self.draws += 1;
+            frame.render_widget(ratatui::widgets::Paragraph::new("hosted"), frame.area());
+        }
+
+        fn on_event(&mut self, event: Event) -> Result<Transition<Self::Output>> {
+            let Event::Key(key) = event else {
+                self.events.push("other".into());
+                return Ok(Transition::Wait);
+            };
+            let event::KeyCode::Char(c) = key.code else {
+                return Ok(Transition::Wait);
+            };
+            self.events.push(c.to_string());
+            Ok(match c {
+                'r' => Transition::Redraw,
+                'q' => Transition::Exit("quit"),
+                _ => Transition::Wait,
+            })
+        }
+
+        fn on_tick(&mut self) -> Result<Transition<Self::Output>> {
+            self.ticks += 1;
+            Ok(Transition::Exit("idle"))
+        }
+
+        fn terminal_claimed(&mut self) {
+            self.claimed = true;
+        }
+
+        fn after_draw(&mut self) -> Result<()> {
+            self.after_draws += 1;
+            Ok(())
+        }
+    }
+
+    fn keys(chars: &str) -> ScriptInput {
+        ScriptInput(
+            chars
+                .chars()
+                .map(|c| {
+                    Event::Key(event::KeyEvent::new(
+                        event::KeyCode::Char(c),
+                        event::KeyModifiers::NONE,
+                    ))
+                })
+                .collect(),
+        )
+    }
+
+    fn terminal() -> ratatui::Terminal<ratatui::backend::TestBackend> {
+        ratatui::Terminal::new(ratatui::backend::TestBackend::new(20, 3)).unwrap()
+    }
+
+    /// The host draws first, then feeds a queued burst in order and repaints
+    /// once for it; an exit inside a burst ends it there.
+    #[test]
+    fn the_host_draws_first_and_coalesces_a_queued_burst() {
+        let mut surface = Counting::default();
+        let mut terminal = terminal();
+        let output = host(&mut surface, &mut terminal, &mut keys("rrrqx")).unwrap();
+        assert_eq!(output, "quit");
+        assert!(surface.claimed);
+        assert_eq!(
+            surface.draws, 1,
+            "the burst ended in an exit before a repaint"
+        );
+        assert_eq!(surface.after_draws, 1);
+        assert_eq!(surface.events, ["r", "r", "r", "q"]);
+        let screen: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(screen.contains("hosted"));
+    }
+
+    /// A redraw is honoured on the next frame, and with no input left the host
+    /// falls through to the surface's tick.
+    #[test]
+    fn the_host_repaints_after_a_redraw_and_ticks_when_input_is_idle() {
+        let mut surface = Counting::default();
+        let output = host(&mut surface, &mut terminal(), &mut keys("r")).unwrap();
+        assert_eq!(output, "idle");
+        assert_eq!(surface.draws, 2);
+        assert_eq!(surface.ticks, 1);
+
+        // A resize repaints even though the surface itself only waited.
+        let mut surface = Counting::default();
+        let mut input = ScriptInput([Event::Resize(30, 4)].into_iter().collect());
+        host(&mut surface, &mut terminal(), &mut input).unwrap();
+        assert_eq!(surface.events, ["other"]);
+        assert_eq!(surface.draws, 2);
+    }
+
+    /// The default hooks are inert: a surface that only draws and handles
+    /// events still ticks, claims, and finishes drawing cleanly.
+    #[test]
+    fn the_default_surface_hooks_do_nothing() {
+        struct Plain;
+        impl Surface for Plain {
+            type Output = ();
+            fn draw(&mut self, _frame: &mut Frame) {}
+            fn on_event(&mut self, _event: Event) -> Result<Transition<()>> {
+                Ok(Transition::Exit(()))
+            }
+        }
+        let mut plain = Plain;
+        assert!(matches!(plain.on_tick().unwrap(), Transition::Wait));
+        assert_eq!(plain.tick_rate(), Duration::from_millis(200));
+        plain.terminal_claimed();
+        plain.after_draw().unwrap();
+        host(&mut plain, &mut terminal(), &mut keys("x")).unwrap();
     }
 }
