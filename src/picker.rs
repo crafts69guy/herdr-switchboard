@@ -204,7 +204,7 @@ const POLL_TICK: Duration = Duration::from_millis(50);
 /// this is only how long a wait can sit before it is re-armed.
 const IDLE_TICK: Duration = Duration::from_secs(1);
 
-#[derive(Clone, Copy, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum InputMode {
     Insert,
     Normal,
@@ -1848,6 +1848,269 @@ mod tests {
         (0..count)
             .map(|i| test_item(&format!("item-{i}")))
             .collect()
+    }
+
+    /// Every Normal-mode key, end to end on the surface: motion wraps, `g`/`G`
+    /// jump, `i` and `/` start typing, `q`/`esc` close, and anything else waits.
+    #[test]
+    fn normal_mode_keys_move_jump_type_and_close() {
+        let mut h = Harness::new(items(4), true);
+        h.press(KeyCode::Char('k'));
+        assert_eq!(h.state.selected, 3, "k wraps to the bottom");
+        h.press(KeyCode::Up);
+        h.press(KeyCode::Down);
+        h.press(KeyCode::Char('j'));
+        assert_eq!(h.state.selected, 0, "j wraps to the top");
+        h.press(KeyCode::Char('G'));
+        assert_eq!(h.state.selected, 3);
+        h.press(KeyCode::Home);
+        assert_eq!(h.state.selected, 0);
+        h.press(KeyCode::End);
+        assert_eq!(h.state.selected, 3);
+        h.press(KeyCode::Char('g'));
+        assert_eq!(h.state.selected, 0);
+        assert!(matches!(h.press(KeyCode::Char('z')), Transition::Wait));
+        assert!(matches!(
+            h.press(KeyCode::Char('q')),
+            Transition::Exit(PickerExit::Close)
+        ));
+        assert!(matches!(
+            h.press(KeyCode::Esc),
+            Transition::Exit(PickerExit::Close)
+        ));
+        h.press(KeyCode::Char('i'));
+        assert_eq!(h.state.input_mode, InputMode::Insert);
+    }
+
+    /// Insert mode types, moves with the arrows, returns to Normal on `esc`,
+    /// and closes on `^c`; a release or a resize is not a keypress.
+    #[test]
+    fn insert_mode_moves_returns_and_closes() {
+        let mut h = Harness::new(items(3), false);
+        h.press(KeyCode::Down);
+        h.press(KeyCode::Down);
+        h.press(KeyCode::Up);
+        assert_eq!(h.state.selected, 1);
+        assert!(matches!(h.press(KeyCode::F(5)), Transition::Wait));
+        assert!(matches!(
+            h.key(KeyCode::Char('c'), KeyModifiers::CONTROL),
+            Transition::Exit(PickerExit::Close)
+        ));
+        h.press(KeyCode::Esc);
+        assert_eq!(h.state.input_mode, InputMode::Normal);
+
+        let release = Event::Key(KeyEvent::new_with_kind(
+            KeyCode::Char('q'),
+            KeyModifiers::NONE,
+            KeyEventKind::Release,
+        ));
+        assert!(matches!(
+            h.surface().on_event(release).unwrap(),
+            Transition::Wait
+        ));
+        assert!(matches!(
+            h.surface().on_event(Event::Resize(80, 24)).unwrap(),
+            Transition::Wait
+        ));
+    }
+
+    #[test]
+    fn moving_through_an_empty_list_is_a_no_op() {
+        let mut h = Harness::new(Vec::new(), true);
+        h.press(KeyCode::Char('j'));
+        assert_eq!(h.state.selected, 0);
+        assert!(matches!(h.press(KeyCode::Enter), Transition::Wait));
+    }
+
+    /// The wheel scrolls the preview under the pointer and the list elsewhere;
+    /// a click selects a row, and a click on the selected row runs it.
+    #[test]
+    fn the_mouse_scrolls_selects_and_runs() {
+        let mut h = Harness::new(items(5), true);
+        h.state.preview_area = Rect::new(50, 0, 30, 10);
+        h.state.list_area = Rect::new(0, 2, 40, 10);
+
+        h.mouse(MouseEventKind::ScrollDown, 60, 3);
+        assert_eq!(h.state.preview_scroll, 3);
+        h.mouse(MouseEventKind::ScrollUp, 60, 3);
+        assert_eq!(h.state.preview_scroll, 0);
+        h.mouse(MouseEventKind::ScrollDown, 5, 3);
+        assert_eq!(h.state.selected, 1);
+        h.mouse(MouseEventKind::ScrollUp, 5, 3);
+        assert_eq!(h.state.selected, 0);
+
+        h.mouse(MouseEventKind::Down(MouseButton::Left), 5, 4);
+        assert_eq!(h.state.selected, 2, "a click selects");
+        assert_eq!(
+            invoked(h.mouse(MouseEventKind::Down(MouseButton::Left), 5, 4)),
+            Some(("item-2".to_string(), "open")),
+            "a second click runs"
+        );
+        // Below the last row, and outside every zone, nothing happens.
+        h.mouse(MouseEventKind::Down(MouseButton::Left), 5, 11);
+        assert_eq!(h.state.selected, 2);
+        assert!(matches!(
+            h.mouse(MouseEventKind::Up(MouseButton::Left), 5, 4),
+            Transition::Wait
+        ));
+    }
+
+    /// Each kind of command-bar pill does what its cap says.
+    #[test]
+    fn a_bar_pill_click_closes_opens_settings_or_runs() {
+        let mut h = Harness::new(items(2), true);
+        h.state.bar_rows = vec![BarRow {
+            y: 20,
+            zones: vec![
+                (0, 4, PillAct::Run("open")),
+                (5, 9, PillAct::Settings),
+                (10, 14, PillAct::Close),
+            ],
+        }];
+        assert_eq!(
+            invoked(h.mouse(MouseEventKind::Down(MouseButton::Left), 1, 20)),
+            Some(("item-0".to_string(), "open"))
+        );
+        assert!(matches!(
+            h.mouse(MouseEventKind::Down(MouseButton::Left), 6, 20),
+            Transition::Exit(PickerExit::Invoke(_, "__settings"))
+        ));
+        assert!(matches!(
+            h.mouse(MouseEventKind::Down(MouseButton::Left), 11, 20),
+            Transition::Exit(PickerExit::Close)
+        ));
+    }
+
+    /// A mode that disables an action, and polls a scripted background source.
+    struct GatedMode {
+        snapshots: std::collections::VecDeque<Result<Vec<PickerItem>>>,
+    }
+
+    impl PickerMode for GatedMode {
+        fn title(&self) -> &str {
+            "Gated"
+        }
+        fn accent_slot(&self) -> &'static str {
+            "accent"
+        }
+        fn schema(&self) -> FieldSchema {
+            FieldSchema::default()
+        }
+        fn actions(&self) -> Vec<ActionSpec> {
+            Vec::new()
+        }
+        fn action_disabled_reason(&self, item_id: &str, _action: &str) -> Option<String> {
+            (item_id == "item-0").then(|| "not here".to_string())
+        }
+        fn is_polling(&self) -> bool {
+            !self.snapshots.is_empty()
+        }
+        fn poll(&mut self) -> Option<Result<Vec<PickerItem>>> {
+            self.snapshots.pop_front()
+        }
+        fn initial(&mut self) -> Result<Vec<PickerItem>> {
+            Ok(items(2))
+        }
+        fn execute(&mut self, _item_id: &str, _action: &str) -> Result<ActionOutcome> {
+            Ok(ActionOutcome::Close)
+        }
+    }
+
+    /// A disabled action explains itself instead of running, a click on the
+    /// selected row runs nothing when every action is disabled, and a polling
+    /// mode ticks fast and folds each snapshot or error into the list.
+    #[test]
+    fn disabled_actions_explain_themselves_and_polls_fold_into_the_list() {
+        let mut mode = GatedMode {
+            snapshots: std::collections::VecDeque::from([
+                Ok(items(3)),
+                Err(anyhow::anyhow!("scan failed")),
+            ]),
+        };
+        let actions = vec![ActionSpec {
+            id: "open",
+            key: KeyCode::Enter,
+            modifiers: KeyModifiers::NONE,
+            key_label: "↵".into(),
+            label: "open",
+            color_slot: "blue",
+        }];
+        let schema = FieldSchema::default();
+        let mut state = State::new(items(2), true);
+        state.list_area = Rect::new(0, 0, 40, 10);
+        let theme = Theme::default();
+        let mut surface = PickerSurface {
+            mode: &mut mode,
+            theme: &theme,
+            background: tui::SurfaceBackground::resolve(
+                &theme,
+                crate::config::Transparency::Transparent,
+            ),
+            title: Color::Yellow,
+            actions: &actions,
+            schema: &schema,
+            state: &mut state,
+        };
+
+        let pressed = surface
+            .on_event(Event::Key(KeyEvent::new(
+                KeyCode::Enter,
+                KeyModifiers::NONE,
+            )))
+            .unwrap();
+        assert!(matches!(pressed, Transition::Redraw));
+        assert_eq!(surface.state.runtime_error.as_deref(), Some("not here"));
+        let click = Event::Mouse(crossterm::event::MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 1,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert!(matches!(
+            surface.on_event(click).unwrap(),
+            Transition::Redraw
+        ));
+
+        assert_eq!(surface.tick_rate(), POLL_TICK);
+        assert!(matches!(surface.on_tick().unwrap(), Transition::Redraw));
+        assert_eq!(surface.state.items.len(), 3);
+        assert_eq!(surface.state.runtime_error, None);
+        assert!(matches!(surface.on_tick().unwrap(), Transition::Redraw));
+        assert_eq!(surface.state.runtime_error.as_deref(), Some("scan failed"));
+        assert_eq!(surface.tick_rate(), IDLE_TICK);
+        assert!(matches!(surface.on_tick().unwrap(), Transition::Wait));
+    }
+
+    /// Rows with and without a marker line up, and a preview taller than its
+    /// card says where in it you are.
+    #[test]
+    fn markers_align_and_a_long_preview_reports_its_position() {
+        let mut rows = items(2);
+        rows[0].trailing_marker = Some(PickerMarker::new("★", "peach"));
+        rows[0].trailing = Some("tag".into());
+        rows[1].trailing = Some("tag".into());
+        rows[0].preview = (0..40).map(|i| format!("line {i}")).collect();
+        let mut state = State::new(rows, true);
+        let screen: String = render(&mut state)
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(screen.contains('★'), "{screen}");
+        assert!(
+            screen.contains("⌥jk"),
+            "the scroll position is shown: {screen}"
+        );
+
+        let mut empty = State::new(items(1), true);
+        empty.query = "zzzz".into();
+        empty.recompute(&FieldSchema::default());
+        let screen: String = render(&mut empty)
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(screen.contains("No matches"), "{screen}");
     }
 
     /// What a [`ScriptedMode`] was asked, readable after the loop consumed it.

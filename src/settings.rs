@@ -166,6 +166,13 @@ impl Settings {
         }
     }
 
+    /// Point the form's writes at another file, so a test of a surface that
+    /// embeds it never touches the user's config.
+    #[cfg(test)]
+    pub(crate) fn write_to(&mut self, path: PathBuf) {
+        self.path = path;
+    }
+
     /// Open the overlay at the top of the form. Values already match `saved` (a close
     /// applies or discards), so there is nothing to reset but the cursor.
     pub fn open(&mut self) {

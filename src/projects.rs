@@ -583,7 +583,10 @@ impl App {
     /// it anyway. `mode` is left as the user has it — `keymode` only picks the *start*
     /// mode.
     fn reconfigure(&mut self) -> CatalogIntent {
-        let cfg = Config::load();
+        self.reconfigure_with(Config::load())
+    }
+
+    fn reconfigure_with(&mut self, cfg: Config) -> CatalogIntent {
         let default_tab_changed = self.cfg.projects.default_tab != cfg.projects.default_tab;
 
         self.title_color = self
@@ -3812,5 +3815,544 @@ mod tests {
             Flow::Continue
         ));
         assert_eq!(app.mode, keymap::Mode::Normal);
+    }
+
+    fn handoff_app(targets: usize) -> App {
+        let mut app = app_with_layout();
+        app.overlay = Overlay::Handoff;
+        app.handoff.show_targets(
+            item_context(),
+            TargetResolution {
+                origin: None,
+                choices: (0..targets)
+                    .map(|i| agent_target(&format!("w1:p{i}"), "/work/api"))
+                    .collect(),
+                scope: TargetScope::AllAgents,
+            },
+        );
+        app
+    }
+
+    fn press(app: &mut App, code: KeyCode) -> Flow {
+        handle_key(app, key(code, KeyModifiers::NONE))
+    }
+
+    /// The agent picker owns every key while it is open: motion, typing a
+    /// filter, `esc` clearing it before closing, Enter delivering, `^c` quitting.
+    #[test]
+    fn the_handoff_overlay_owns_the_keyboard() {
+        let mut app = handoff_app(3);
+        handle_key(&mut app, key(KeyCode::Char('n'), KeyModifiers::CONTROL));
+        assert_eq!(app.handoff.selected, 1);
+        handle_key(&mut app, key(KeyCode::Char('p'), KeyModifiers::CONTROL));
+        assert_eq!(app.handoff.selected, 0);
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Up);
+        press(&mut app, KeyCode::End);
+        assert_eq!(app.handoff.selected, 2);
+        press(&mut app, KeyCode::Home);
+        assert_eq!(app.handoff.selected, 0);
+        press(&mut app, KeyCode::F(2));
+
+        // The filter reads agent, status, and cwd.
+        press(&mut app, KeyCode::Char('a'));
+        press(&mut app, KeyCode::Char('z'));
+        assert_eq!(app.handoff.query, "az");
+        assert!(app.handoff.filtered.is_empty());
+        press(&mut app, KeyCode::Backspace);
+        assert_eq!(app.handoff.query, "a");
+        assert_eq!(app.handoff.filtered.len(), 3);
+        match press(&mut app, KeyCode::Enter) {
+            Flow::Deliver(request) => assert_eq!(request.item.absolute_path, "/work/api"),
+            _ => panic!("enter delivers to the selected agent"),
+        }
+
+        press(&mut app, KeyCode::Esc);
+        assert!(app.handoff.query.is_empty(), "esc clears the filter first");
+        assert_eq!(app.overlay, Overlay::Handoff);
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.overlay, Overlay::None, "then closes");
+
+        let mut app = handoff_app(1);
+        assert!(matches!(
+            handle_key(&mut app, key(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+            Flow::Quit
+        ));
+        // With nothing to deliver to, Enter is inert.
+        let mut empty = handoff_app(0);
+        assert!(matches!(press(&mut empty, KeyCode::Enter), Flow::Continue));
+    }
+
+    /// The handoff command bar: Back closes, Send delivers to the selection.
+    #[test]
+    fn the_handoff_bar_sends_or_goes_back() {
+        let mut app = handoff_app(2);
+        app.handoff.footer_row = 20;
+        app.handoff.footer_zones = vec![(0, 5, HandoffAction::Send), (6, 10, HandoffAction::Back)];
+        assert!(matches!(
+            app.on_handoff_click(Position::new(1, 20)),
+            Flow::Deliver(_)
+        ));
+        assert!(matches!(
+            app.on_handoff_click(Position::new(7, 20)),
+            Flow::Continue
+        ));
+        assert_eq!(app.overlay, Overlay::None);
+        // A click above the first row of the list is not a row.
+        let mut app = handoff_app(2);
+        app.handoff.list_area = Rect::new(0, 5, 60, 10);
+        assert!(matches!(
+            app.on_handoff_click(Position::new(3, 5)),
+            Flow::Continue
+        ));
+    }
+
+    /// The changelog popup scrolls by line, page, and end, and closes on
+    /// `esc`/`q`; the help popup closes on any key; `^c` quits from either.
+    #[test]
+    fn the_changelog_and_help_popups_scroll_close_and_quit() {
+        let mut app = ready_app();
+        app.overlay = Overlay::Changelog;
+        app.changelog.len = 100;
+        app.changelog.rows = 10;
+        press(&mut app, KeyCode::Char('j'));
+        assert_eq!(app.changelog.scroll, 1);
+        press(&mut app, KeyCode::Char(' '));
+        assert_eq!(app.changelog.scroll, 9);
+        press(&mut app, KeyCode::PageUp);
+        assert_eq!(app.changelog.scroll, 1);
+        press(&mut app, KeyCode::Char('k'));
+        assert_eq!(app.changelog.scroll, 0);
+        press(&mut app, KeyCode::Char('G'));
+        assert_eq!(app.changelog.scroll, 90);
+        press(&mut app, KeyCode::PageDown);
+        assert_eq!(app.changelog.scroll, 90, "clamped at the end");
+        press(&mut app, KeyCode::Char('g'));
+        assert_eq!(app.changelog.scroll, 0);
+        press(&mut app, KeyCode::End);
+        press(&mut app, KeyCode::Home);
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Up);
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.overlay, Overlay::Changelog);
+        press(&mut app, KeyCode::Char('q'));
+        assert_eq!(app.overlay, Overlay::None);
+        app.overlay = Overlay::Changelog;
+        assert!(matches!(
+            handle_key(&mut app, key(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+            Flow::Quit
+        ));
+
+        app.overlay = Overlay::Help;
+        press(&mut app, KeyCode::Char('x'));
+        assert_eq!(app.overlay, Overlay::None);
+        app.overlay = Overlay::Help;
+        assert!(matches!(
+            handle_key(&mut app, key(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+            Flow::Quit
+        ));
+    }
+
+    /// The settings form takes every key while it is open; closing it hands the
+    /// keyboard back, and `^c` still quits.
+    #[test]
+    fn the_settings_overlay_owns_the_keyboard_until_it_closes() {
+        let mut app = ready_app();
+        apply_action(&mut app, keymap::Action::Settings);
+        assert_eq!(app.overlay, Overlay::Settings);
+        assert!(matches!(press(&mut app, KeyCode::Down), Flow::Continue));
+        assert_eq!(app.overlay, Overlay::Settings);
+        assert!(matches!(
+            handle_key(&mut app, key(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+            Flow::Quit
+        ));
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.overlay, Overlay::None);
+    }
+
+    /// Applying a staged setting re-derives the live state and refreshes the
+    /// catalogue. The write lands in a scratch file, never the user's config.
+    #[test]
+    fn applying_a_setting_reconfigures_and_reloads_the_catalogue() {
+        let dir =
+            std::env::temp_dir().join(format!("swb-projects-settings-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut app = ready_app();
+        app.settings.write_to(dir.join("config.toml"));
+        apply_action(&mut app, keymap::Action::Settings);
+        // Cycle the first editable value, then apply.
+        press(&mut app, KeyCode::Enter);
+        let flow = press(&mut app, KeyCode::Char('a'));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(
+            matches!(flow, Flow::ReloadCatalog(_)),
+            "an applied change reloads"
+        );
+        assert_eq!(app.catalog, CatalogState::Refreshing);
+    }
+
+    /// Reconfiguring adopts the new settings: sort, preview geometry, and the
+    /// starting group when it changed.
+    #[test]
+    fn reconfiguring_adopts_sort_preview_and_a_changed_default_group() {
+        let mut app = ready_app();
+        let mut cfg = Config::default();
+        cfg.projects.sort = "name".into();
+        cfg.projects.preview = "disabled".into();
+        cfg.projects.preview_size = "95%".into();
+        cfg.projects.default_tab = "repos".into();
+        match app.reconfigure_with(cfg) {
+            CatalogIntent::Refresh {
+                requested_group,
+                preserve_selection,
+            } => {
+                assert_eq!(requested_group, GroupFilter::Only(Kind::Repo));
+                assert!(!preserve_selection);
+            }
+            _ => panic!("reconfiguring refreshes"),
+        }
+        assert!(!app.preview.enabled);
+        assert_eq!(app.preview.pct, 80, "clamped");
+        assert_eq!(app.picker.sort, SortMode::Name);
+
+        // An unchanged default group keeps the one the user is on.
+        let same = app.cfg.clone();
+        match app.reconfigure_with(same) {
+            CatalogIntent::Refresh {
+                preserve_selection, ..
+            } => assert!(preserve_selection),
+            _ => panic!("reconfiguring refreshes"),
+        }
+    }
+
+    /// The wheel goes to whichever popup is open before anything beneath it.
+    #[test]
+    fn the_wheel_drives_the_open_popup_first() {
+        let mut app = handoff_app(3);
+        assert!(app.on_wheel(Position::new(0, 0), 1));
+        assert_eq!(app.handoff.selected, 1);
+
+        let mut app = ready_app();
+        app.overlay = Overlay::Changelog;
+        app.changelog.len = 50;
+        app.changelog.rows = 10;
+        app.on_wheel(Position::new(0, 0), 1);
+        assert_eq!(app.changelog.scroll, 3);
+        app.on_wheel(Position::new(0, 0), -1);
+        assert_eq!(app.changelog.scroll, 0);
+
+        app.overlay = Overlay::Settings;
+        app.settings.open();
+        assert!(app.on_wheel(Position::new(0, 0), 1));
+
+        // Over a preview that cannot scroll, the wheel reports no movement.
+        let mut app = app_with_preview(3, 20);
+        app.overlay = Overlay::None;
+        assert!(!app.on_wheel(Position::new(1, 1), 1));
+    }
+
+    /// A click dismisses a popup; outside the settings card it closes the form.
+    #[test]
+    fn a_click_dismisses_popups_and_closes_settings_from_outside() {
+        let mut app = app_with_layout();
+        app.overlay = Overlay::Help;
+        assert!(matches!(app.on_click(Position::new(0, 0)), Flow::Continue));
+        assert_eq!(app.overlay, Overlay::None);
+        app.overlay = Overlay::Changelog;
+        app.on_click(Position::new(0, 0));
+        assert_eq!(app.overlay, Overlay::None);
+
+        app.overlay = Overlay::Settings;
+        app.settings.open();
+        app.on_click(Position::new(500, 500));
+        assert_eq!(app.overlay, Overlay::None);
+        assert!(!app.settings.show);
+
+        let mut handoff = handoff_app(1);
+        handoff.on_click(Position::new(500, 500));
+        assert_eq!(handoff.overlay, Overlay::Handoff, "routed to the handoff");
+
+        // A bar pill that needs a selection does nothing on an empty list.
+        let mut empty = app_with_layout();
+        empty.picker.query = "no such entry".into();
+        empty.picker.recompute();
+        assert!(matches!(
+            empty.on_click(Position::new(2, 30)),
+            Flow::Continue
+        ));
+    }
+
+    /// Each navigation and view action does exactly its one thing.
+    #[test]
+    fn navigation_and_view_actions_move_toggle_and_sort() {
+        let mut app = ready_app();
+        for action in [
+            keymap::Action::Down,
+            keymap::Action::PageDown,
+            keymap::Action::PageUp,
+            keymap::Action::Up,
+            keymap::Action::Bottom,
+        ] {
+            apply_action(&mut app, action);
+        }
+        assert_eq!(app.picker.selected, app.picker.filtered.len() - 1);
+        apply_action(&mut app, keymap::Action::Top);
+        assert_eq!(app.picker.selected, 0);
+
+        let enabled = app.preview.enabled;
+        apply_action(&mut app, keymap::Action::TogglePreview);
+        assert_ne!(app.preview.enabled, enabled);
+        apply_action(&mut app, keymap::Action::TogglePreview);
+        apply_action(&mut app, keymap::Action::PreviewDown);
+        apply_action(&mut app, keymap::Action::PreviewUp);
+
+        let sort = app.picker.sort;
+        apply_action(&mut app, keymap::Action::CycleSort);
+        assert_ne!(app.picker.sort, sort);
+
+        apply_action(&mut app, keymap::Action::NextGroup);
+        assert_ne!(app.picker.group, GroupFilter::All);
+        apply_action(&mut app, keymap::Action::PrevGroup);
+        assert_eq!(app.picker.group, GroupFilter::All);
+
+        apply_action(&mut app, keymap::Action::Help);
+        assert_eq!(app.overlay, Overlay::Help);
+        apply_action(&mut app, keymap::Action::Changelog);
+        assert_eq!(app.overlay, Overlay::Changelog);
+        assert!(matches!(
+            apply_action(&mut app, keymap::Action::Quit),
+            Flow::Quit
+        ));
+    }
+
+    /// Row actions hand their entry to the host: copy, send, and star.
+    #[test]
+    fn row_actions_carry_the_selected_entry_out() {
+        let mut app = App::new(
+            vec![path_entry(Kind::Repo, "/work/api")],
+            Theme::default(),
+            Config::default(),
+            ".".into(),
+        );
+        app.catalog = CatalogState::Ready;
+        assert!(matches!(
+            apply_action(&mut app, keymap::Action::CopyPath),
+            Flow::CopyPath(_)
+        ));
+        assert!(matches!(
+            apply_action(&mut app, keymap::Action::SendToAgent),
+            Flow::DiscoverTargets(_)
+        ));
+        assert_eq!(app.overlay, Overlay::Handoff);
+        assert!(matches!(
+            apply_action(&mut app, keymap::Action::ToggleStar),
+            Flow::SetStar(_, true)
+        ));
+    }
+
+    /// Only one group present means there is nothing to cycle to, and an empty
+    /// list has nothing to move through.
+    #[test]
+    fn cycling_needs_two_groups_and_moving_needs_rows() {
+        let mut app = App::new(
+            vec![entry(Kind::Repo, "gh/a", "a")],
+            Theme::default(),
+            Config::default(),
+            ".".into(),
+        );
+        let tabs = app.picker.tabs().len();
+        if tabs < 2 {
+            app.picker.cycle_group(1);
+            assert_eq!(app.picker.group, GroupFilter::All);
+        }
+        app.picker.query = "zzzz".into();
+        app.picker.recompute();
+        app.picker.move_sel(1);
+        assert_eq!(app.picker.selected, 0);
+    }
+
+    /// Background effects land where they belong: targets open the agent list
+    /// or deliver straight to the origin, deliveries close or explain, and star
+    /// writes update the marker or say they failed.
+    #[test]
+    fn background_effects_land_in_the_overlay_the_list_or_the_exit() {
+        let mut app = handoff_app(0);
+        let mut surface = surface(&mut app);
+
+        let send = |surface: &mut ProjectsSurface<'_>, effect: ProjectEffect| {
+            let (sender, receiver) = mpsc::channel();
+            sender.send(effect).unwrap();
+            surface.effect = Some(receiver);
+            surface.on_tick().unwrap()
+        };
+
+        let listed = send(
+            &mut surface,
+            ProjectEffect::Targets(Ok((
+                item_context(),
+                TargetResolution {
+                    origin: None,
+                    choices: vec![agent_target("w1:p3", "/work/api")],
+                    scope: TargetScope::AllAgents,
+                },
+            ))),
+        );
+        assert!(matches!(listed, SurfaceTransition::Redraw));
+        assert_eq!(surface.app.handoff.targets.len(), 1);
+
+        let direct = send(
+            &mut surface,
+            ProjectEffect::Targets(Ok((
+                item_context(),
+                TargetResolution {
+                    origin: Some(agent_target("w1:p9", "/work/api")),
+                    choices: Vec::new(),
+                    scope: TargetScope::SameWorktree,
+                },
+            ))),
+        );
+        assert!(matches!(direct, SurfaceTransition::Redraw));
+        assert!(
+            surface.effect.is_some(),
+            "delivery started in the background"
+        );
+        surface.effect = None;
+
+        send(
+            &mut surface,
+            ProjectEffect::Targets(Err("no agents".into())),
+        );
+        assert_eq!(surface.app.handoff.error.as_deref(), Some("no agents"));
+
+        assert!(matches!(
+            send(
+                &mut surface,
+                ProjectEffect::Delivered(Err("blocked".into()))
+            ),
+            SurfaceTransition::Redraw
+        ));
+        assert!(surface.app.handoff.error.is_some());
+        assert!(matches!(
+            send(&mut surface, ProjectEffect::Delivered(Ok(()))),
+            SurfaceTransition::Exit(None)
+        ));
+
+        send(
+            &mut surface,
+            ProjectEffect::Stars(Ok(stars::Stars::default())),
+        );
+        send(&mut surface, ProjectEffect::Stars(Err("disk full".into())));
+        assert_eq!(
+            surface.app.feedback.as_deref(),
+            Some("Could not update star.")
+        );
+
+        // A worker that died reports it instead of spinning.
+        let (sender, receiver) = mpsc::channel::<ProjectEffect>();
+        drop(sender);
+        surface.effect = Some(receiver);
+        assert!(matches!(
+            surface.on_tick().unwrap(),
+            SurfaceTransition::Redraw
+        ));
+        assert!(surface.effect.is_none());
+        // And an effect still in flight is waited on.
+        let (_sender, receiver) = mpsc::channel::<ProjectEffect>();
+        surface.effect = Some(receiver);
+        assert!(matches!(
+            surface.on_tick().unwrap(),
+            SurfaceTransition::Wait
+        ));
+    }
+
+    /// While a background effect runs, only `^c` gets through; while the
+    /// catalogue is still loading, only Quit does, by key or by its pill.
+    #[test]
+    fn input_is_held_while_work_is_in_flight() {
+        let mut app = ready_app();
+        let mut busy = surface(&mut app);
+        let (_sender, receiver) = mpsc::channel::<ProjectEffect>();
+        busy.effect = Some(receiver);
+        let plain = Event::Key(key(KeyCode::Char('x'), KeyModifiers::NONE));
+        assert!(matches!(
+            busy.on_event(plain).unwrap(),
+            SurfaceTransition::Wait
+        ));
+        let quit = Event::Key(key(KeyCode::Char('c'), KeyModifiers::CONTROL));
+        assert!(matches!(
+            busy.on_event(quit).unwrap(),
+            SurfaceTransition::Exit(None)
+        ));
+
+        let mut loading = ready_app();
+        loading.catalog = CatalogState::Loading;
+        loading.zones.footer_row = 30;
+        loading.zones.footer_zones = vec![(0, 4, keymap::Action::Quit)];
+        let mut held = surface(&mut loading);
+        let click = |row: u16| {
+            Event::Mouse(crossterm::event::MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: 1,
+                row,
+                modifiers: KeyModifiers::NONE,
+            })
+        };
+        assert!(matches!(
+            held.on_event(click(5)).unwrap(),
+            SurfaceTransition::Wait
+        ));
+        assert!(matches!(
+            held.on_event(click(30)).unwrap(),
+            SurfaceTransition::Exit(None)
+        ));
+        let esc = Event::Key(key(KeyCode::Char('c'), KeyModifiers::CONTROL));
+        assert!(matches!(
+            held.on_event(esc).unwrap(),
+            SurfaceTransition::Exit(None)
+        ));
+        let typed = Event::Key(key(KeyCode::Char('z'), KeyModifiers::NONE));
+        assert!(matches!(
+            held.on_event(typed).unwrap(),
+            SurfaceTransition::Wait
+        ));
+    }
+
+    /// Ready input: the wheel moves, a release is ignored, and a key release
+    /// or a resize does nothing.
+    #[test]
+    fn ready_input_scrolls_and_ignores_releases() {
+        let mut app = ready_app();
+        let mut surface = surface(&mut app);
+        let mouse = |kind| {
+            Event::Mouse(crossterm::event::MouseEvent {
+                kind,
+                column: 1,
+                row: 1,
+                modifiers: KeyModifiers::NONE,
+            })
+        };
+        assert!(matches!(
+            surface.on_event(mouse(MouseEventKind::ScrollDown)).unwrap(),
+            SurfaceTransition::Redraw
+        ));
+        assert!(matches!(
+            surface.on_event(mouse(MouseEventKind::ScrollUp)).unwrap(),
+            SurfaceTransition::Redraw
+        ));
+        assert!(matches!(
+            surface
+                .on_event(mouse(MouseEventKind::Up(MouseButton::Left)))
+                .unwrap(),
+            SurfaceTransition::Wait
+        ));
+        let release = Event::Key(crossterm::event::KeyEvent::new_with_kind(
+            KeyCode::Char('j'),
+            KeyModifiers::NONE,
+            KeyEventKind::Release,
+        ));
+        assert!(matches!(
+            surface.on_event(release).unwrap(),
+            SurfaceTransition::Wait
+        ));
     }
 }

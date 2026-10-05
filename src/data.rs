@@ -116,7 +116,7 @@ impl Kind {
 
 /// How the no-query browse list is ordered. Fuzzy score always wins while the
 /// user is typing; this only decides the resting order.
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum SortMode {
     /// Latest opened first (default), from the recency history file.
     Recent,
