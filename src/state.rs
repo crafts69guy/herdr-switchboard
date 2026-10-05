@@ -362,4 +362,28 @@ mod tests {
         );
         fs::remove_dir_all(path.parent().unwrap()).ok();
     }
+
+    /// Every refusal leaves nothing behind: replacing a directory, a path with
+    /// no file name, and a target whose temp file cannot be created.
+    #[test]
+    fn a_refused_write_leaves_no_temp_file_behind() {
+        let dir = std::env::temp_dir().join(format!("swb-state-refusals-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("occupied/inner")).unwrap();
+
+        let error = write_private(&dir.join("occupied"), b"x").unwrap_err();
+        assert!(error.to_string().contains("replace"), "{error}");
+        let leftovers: Vec<_> = fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "{leftovers:?}");
+
+        assert!(replace_atomically(Path::new("/"), b"x").is_err());
+        // The parent is a file, so nothing can be created beneath it.
+        fs::write(dir.join("plain"), b"").unwrap();
+        assert!(write_private(&dir.join("plain/child.tsv"), b"x").is_err());
+        fs::remove_dir_all(&dir).ok();
+    }
 }

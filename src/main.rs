@@ -258,4 +258,24 @@ mod tests {
         );
         run(&strings(&["--version"])).expect("prints and exits cleanly");
     }
+
+    /// The CLI verbs Bash calls, through the same dispatcher `main` uses. Each
+    /// one here stops before it could reach herdr, a terminal, or state: a
+    /// config read, a refused notification sound, an unknown zen verb, and an
+    /// open of a path that does not exist.
+    #[test]
+    fn the_bash_facing_verbs_answer_through_run() {
+        run(&strings(&["config", "get", "default_target", "workspace"])).expect("prints a value");
+        assert!(run(&strings(&["config", "set"])).is_err());
+        assert!(run(&strings(&["notify", "hello", "loud"])).is_err());
+        assert!(run(&strings(&["zen", "sideways"])).is_err());
+        let open = run(&strings(&[
+            "open",
+            "--target",
+            "tab",
+            "--path",
+            "/definitely/not/here",
+        ]));
+        assert!(open.unwrap_err().to_string().contains("no longer exists"));
+    }
 }

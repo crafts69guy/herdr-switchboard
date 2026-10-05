@@ -253,21 +253,81 @@ pub(super) fn repo_cwd(runner: &dyn CommandRunner) -> Option<String> {
     let cwd = env::current_dir()
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_else(|_| ".".into());
-    if is_repo(runner, &cwd) {
-        return Some(cwd);
+    repo_cwd_from(runner, &cwd, env::var("SWITCHBOARD_ORIGIN_CWD").ok())
+}
+
+fn repo_cwd_from(runner: &dyn CommandRunner, cwd: &str, origin: Option<String>) -> Option<String> {
+    if is_repo(runner, cwd) {
+        return Some(cwd.to_string());
     }
-    env::var("SWITCHBOARD_ORIGIN_CWD")
-        .ok()
-        .filter(|s| !s.is_empty() && is_repo(runner, s))
+    origin.filter(|s| !s.is_empty() && is_repo(runner, s))
 }
 
 /// Read the `menu.conf` custom rows from the plugin's config dir, if any.
 pub(super) fn read_menu_conf() -> Vec<Custom> {
-    let dir = env::var("HERDR_PLUGIN_CONFIG_DIR").unwrap_or_default();
+    read_menu_conf_in(&env::var("HERDR_PLUGIN_CONFIG_DIR").unwrap_or_default())
+}
+
+fn read_menu_conf_in(dir: &str) -> Vec<Custom> {
     if dir.is_empty() {
         return Vec::new();
     }
-    std::fs::read_to_string(std::path::Path::new(&dir).join("menu.conf"))
+    std::fs::read_to_string(std::path::Path::new(dir).join("menu.conf"))
         .map(|t| parse_menu_conf(&t))
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::runner::MockRunner;
+
+    /// The pane's own cwd wins when it is a repository; the origin cwd is only
+    /// a fallback, and only when it is one too.
+    #[test]
+    fn the_menu_acts_on_the_pane_cwd_then_a_repository_origin() {
+        let repo = MockRunner::new().on("rev-parse --git-dir", ".git");
+        assert_eq!(
+            repo_cwd_from(&repo, "/here", Some("/there".into())).as_deref(),
+            Some("/here")
+        );
+        let only_origin = MockRunner::new().failing("-C /here");
+        assert_eq!(
+            repo_cwd_from(&only_origin, "/here", Some("/there".into())).as_deref(),
+            Some("/there")
+        );
+        assert_eq!(
+            repo_cwd_from(&only_origin, "/here", Some(String::new())),
+            None
+        );
+        assert_eq!(repo_cwd_from(&only_origin, "/here", None), None);
+        let _ = repo_cwd(&MockRunner::new().failing("git"));
+    }
+
+    #[test]
+    fn custom_rows_come_from_menu_conf_in_the_plugin_config_dir() {
+        assert!(read_menu_conf_in("").is_empty());
+        let dir = std::env::temp_dir().join(format!("swb-menu-conf-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(read_menu_conf_in(dir.to_str().unwrap()).is_empty());
+        std::fs::write(dir.join("menu.conf"), "t|*|Run tests|cargo test\n").unwrap();
+        assert_eq!(read_menu_conf_in(dir.to_str().unwrap()).len(), 1);
+        std::fs::remove_dir_all(&dir).ok();
+        let _ = read_menu_conf();
+    }
+
+    #[test]
+    fn every_list_kind_loads_and_agents_load_nothing_here() {
+        let runner = MockRunner::new();
+        for kind in [
+            ListKind::PullRequests,
+            ListKind::Reviews,
+            ListKind::ArchivedReviews,
+            ListKind::Conflicts,
+            ListKind::Agents,
+        ] {
+            let _ = load_rows(&runner, "/repo", kind);
+        }
+        assert!(load_rows(&runner, "/repo", ListKind::Agents).is_empty());
+    }
 }

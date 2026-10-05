@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::env;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -262,17 +262,25 @@ impl Config {
     }
 
     pub fn load() -> Self {
-        Self::try_load().unwrap_or_else(|error| {
+        Self::or_default(Self::try_load())
+    }
+
+    /// A config that failed to load is reported and replaced by the defaults.
+    fn or_default(loaded: Result<Self>) -> Self {
+        loaded.unwrap_or_else(|error| {
             eprintln!("herdr-switchboard: config load failed: {error}");
             Self::default()
         })
     }
 
     pub fn try_load() -> Result<Self> {
-        let path = config_path();
+        Self::try_load_at(&config_path())
+    }
+
+    fn try_load_at(path: &Path) -> Result<Self> {
         Ok(if path.exists() {
             Self::parse(
-                &fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?,
+                &fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?,
             )?
         } else {
             Self::default()
@@ -448,5 +456,31 @@ keys.down = "ctrl-j,ctrl-n"
         assert_eq!(cfg.value_for_cli("notifications").as_deref(), Some("false"));
         assert_eq!(cfg.value_for_cli("common.notifications"), None);
         assert_eq!(cfg.value_for_cli("keys.projects.open"), None);
+    }
+
+    /// The file is read when it exists and defaults stand in when it does not;
+    /// a broken file is an error from `try_load` and the defaults from `load`.
+    #[test]
+    fn a_config_file_is_read_when_present_and_a_broken_one_falls_back() {
+        let dir = std::env::temp_dir().join(format!("swb-config-load-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        assert!(Config::try_load_at(&path).is_ok(), "absent means defaults");
+        fs::write(&path, "[projects]\ndefault_target = \"tab\"\n").unwrap();
+        assert_eq!(
+            Config::try_load_at(&path).unwrap().projects.default_target,
+            "tab"
+        );
+        fs::write(&path, "[nonsense\n").unwrap();
+        let broken = Config::try_load_at(&path);
+        assert!(broken.is_err());
+        let fallback = Config::or_default(broken);
+        assert_eq!(
+            fallback.projects.default_target,
+            Config::default().projects.default_target
+        );
+        fs::remove_dir_all(&dir).ok();
+        let _ = Config::load();
+        assert_eq!(Transparency::Opaque.as_str(), "opaque");
     }
 }

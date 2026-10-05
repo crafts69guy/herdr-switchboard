@@ -120,21 +120,31 @@ fn refresh_due(cfg: &Config, cache: Option<&(u64, String)>, now: u64) -> bool {
 
 /// Kick off a refresh, if it is due, in a process that outlives this one.
 pub fn spawn_refresh_if_stale(cfg: &Config) {
-    if !refresh_due(cfg, read_cache().as_ref(), now()) {
-        return;
-    }
-    let Ok(exe) = std::env::current_exe() else {
-        return;
-    };
-    // Detached: its own process group, so closing the pane does not signal it, and no
-    // stdio, so it can never draw on a terminal the TUI owns.
-    let _ = Command::new(exe)
+    refresh_if_due(cfg, read_cache(), now(), spawn_check);
+}
+
+/// Start `spawn` when a refresh is due; reports whether it was started.
+fn refresh_if_due(
+    cfg: &Config,
+    cache: Option<(u64, String)>,
+    now: u64,
+    spawn: fn() -> std::io::Result<()>,
+) -> bool {
+    refresh_due(cfg, cache.as_ref(), now) && spawn().is_ok()
+}
+
+/// The detached `--update-check` child: its own process group, so closing the
+/// pane does not signal it, and no stdio, so it can never draw on a terminal
+/// the TUI owns.
+fn spawn_check() -> std::io::Result<()> {
+    Command::new(std::env::current_exe()?)
         .arg("--update-check")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .process_group(0)
-        .spawn();
+        .spawn()
+        .map(drop)
 }
 
 /// Entry point for `herdr-switchboard --update-check`: fetch, cache, exit. No UI.
@@ -251,5 +261,24 @@ def456\trefs/tags/v0.10.0
     fn nothing_runs_when_update_checks_are_off() {
         assert_eq!(available(&config(false)), None);
         spawn_refresh_if_stale(&config(false));
+    }
+
+    /// A due refresh starts the child; a fresh reading, checks switched off, or
+    /// a child that would not start all report nothing started.
+    #[test]
+    fn a_due_refresh_starts_exactly_one_child() {
+        assert!(refresh_if_due(&config(true), None, 5_000, || Ok(())));
+        assert!(!refresh_if_due(
+            &config(true),
+            Some((5_000, "1.0.0".into())),
+            5_001,
+            || panic!("a fresh reading must not spawn")
+        ));
+        assert!(!refresh_if_due(&config(false), None, 5_000, || panic!(
+            "checks are off"
+        )));
+        assert!(!refresh_if_due(&config(true), None, 5_000, || Err(
+            std::io::Error::other("fork failed")
+        )));
     }
 }

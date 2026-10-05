@@ -325,4 +325,23 @@ mod system_tests {
             .spawn_detached(OsStr::new("definitely-not-a-real-program"), &[])
             .is_err());
     }
+
+    /// A leaked mock answers every verb exactly as the mock itself would.
+    #[test]
+    fn a_leaked_mock_delegates_every_verb() {
+        let runner: &'static MockRunner = MockRunner::new().on("echo", "hi").leak();
+        let boxed: Box<dyn CommandRunner> = Box::new(runner);
+        assert_eq!(boxed.capture("echo", &[]).as_deref(), Some("hi"));
+        assert!(boxed.ok("true", &[]));
+        assert!(boxed
+            .output_stdin("cat", &[], "in")
+            .unwrap()
+            .status
+            .success());
+        boxed
+            .spawn_detached(std::ffi::OsStr::new("sleep"), &["1"])
+            .unwrap();
+        assert_eq!(runner.calls().len(), 4);
+        assert_eq!(runner.stdins(), ["in"]);
+    }
 }
