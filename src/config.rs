@@ -367,14 +367,19 @@ pub fn config_path() -> PathBuf {
     if let Some(scratch) = crate::state::test_scratch() {
         return scratch.join("plugin-config/config.toml");
     }
-    env::var("HERDR_PLUGIN_CONFIG_DIR")
-        .ok()
+    config_path_from(
+        env::var("HERDR_PLUGIN_CONFIG_DIR").ok(),
+        env::var("HERDR_PLUGIN_ROOT").ok(),
+    )
+}
+
+/// The plugin's `config.toml`: in herdr's plugin config dir when herdr names
+/// one, else in `.config` under the plugin root (or the working directory).
+fn config_path_from(config_dir: Option<String>, plugin_root: Option<String>) -> PathBuf {
+    config_dir
         .filter(|dir| !dir.is_empty())
         .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            PathBuf::from(env::var("HERDR_PLUGIN_ROOT").unwrap_or_else(|_| ".".into()))
-                .join(".config")
-        })
+        .unwrap_or_else(|| PathBuf::from(plugin_root.unwrap_or_else(|| ".".into())).join(".config"))
         .join("config.toml")
 }
 
@@ -486,5 +491,21 @@ keys.down = "ctrl-j,ctrl-n"
         fs::remove_dir_all(&dir).ok();
         let _ = Config::load();
         assert_eq!(Transparency::Opaque.as_str(), "opaque");
+    }
+
+    #[test]
+    fn the_plugin_config_is_in_herdrs_dir_or_under_the_plugin_root() {
+        assert_eq!(
+            config_path_from(Some("/cfg".into()), Some("/root".into())),
+            PathBuf::from("/cfg/config.toml")
+        );
+        assert_eq!(
+            config_path_from(Some(String::new()), Some("/root".into())),
+            PathBuf::from("/root/.config/config.toml")
+        );
+        assert_eq!(
+            config_path_from(None, None),
+            PathBuf::from("./.config/config.toml")
+        );
     }
 }

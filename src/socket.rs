@@ -55,9 +55,17 @@ fn socket_path_from(socket: Option<String>, home: Option<String>) -> Option<Path
 /// back. Returns the `result` object, or an error for a transport failure *or*
 /// an `{"error":{"code","message"}}` reply — callers treat both the same.
 pub fn request(method: &str, params: Value) -> Result<Value> {
-    let path = socket_path().context("no herdr socket path")?;
+    request_at(
+        &socket_path().context("no herdr socket path")?,
+        method,
+        params,
+    )
+}
+
+/// [`request`] against an explicit socket.
+fn request_at(path: &std::path::Path, method: &str, params: Value) -> Result<Value> {
     let stream =
-        UnixStream::connect(&path).with_context(|| format!("connect {}", path.display()))?;
+        UnixStream::connect(path).with_context(|| format!("connect {}", path.display()))?;
     stream.set_read_timeout(Some(TIMEOUT))?;
     stream.set_write_timeout(Some(TIMEOUT))?;
 
@@ -281,5 +289,47 @@ mod tests {
         assert!(!set_scrim("w1:p5", 0, 10, [0, 0, 0, 255]));
         assert!(!clear_scrim("w1:p5"));
         assert_eq!(export_layout("w1:t1"), None);
+    }
+
+    /// One round trip against a stand-in herdr on a socket of its own: the
+    /// request carries its method and id, a result comes back as the value,
+    /// and an error reply or a closed socket is an error.
+    #[test]
+    fn a_request_is_one_json_line_each_way() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::os::unix::net::UnixListener;
+
+        let path = std::env::temp_dir().join(format!("swb-sock-{}.sock", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let listener = UnixListener::bind(&path).unwrap();
+        let server = std::thread::spawn(move || {
+            let replies = [
+                r#"{"result":{"ok":true}}"#,
+                r#"{"error":{"code":"nope","message":"refused"}}"#,
+            ];
+            let mut seen = Vec::new();
+            for reply in replies {
+                let (stream, _) = listener.accept().unwrap();
+                let mut line = String::new();
+                BufReader::new(&stream).read_line(&mut line).unwrap();
+                seen.push(line);
+                writeln!(&stream, "{reply}").unwrap();
+            }
+            // A third client gets its connection closed without a reply.
+            drop(listener.accept().unwrap());
+            seen
+        });
+
+        let ok = request_at(&path, "pane.graphics.clear", json!({"pane_id": "w1:p5"})).unwrap();
+        assert_eq!(ok, json!({"ok": true}));
+        assert!(request_at(&path, "layout.export", json!({})).is_err());
+        assert!(request_at(&path, "layout.export", json!({})).is_err());
+        let seen = server.join().unwrap();
+        assert!(
+            seen[0].contains(r#""method":"pane.graphics.clear""#),
+            "{seen:?}"
+        );
+        assert!(seen[0].contains("switchboard:pane.graphics.clear"));
+        std::fs::remove_file(&path).ok();
     }
 }
