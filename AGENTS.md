@@ -3,7 +3,8 @@
 ## Project Structure & Module Organization
 
 The Rust TUI lives in `src/`, Bash entrypoints in `bin/`, integration checks in
-`tests/`, and user-facing assets in `docs/`. Current module ownership lives in
+`tests/`, user-facing assets in `docs/`, and the README's recorded demos in `demo/`
+(tapes and a sandbox; the rendered media lands in `docs/media/`). Current module ownership lives in
 `docs/architecture.md`; do not duplicate its file-by-file inventory here or in
 `CLAUDE.md`. Read `CLAUDE.md` for non-obvious runtime, security, and performance
 contracts before changing their implementations.
@@ -57,7 +58,10 @@ them after observable behavior. Extend `tests/manifest_spec.sh` when changing
 the manifest or entrypoint contract. Before submitting, run `bash bin/check.sh`.
 Manually exercise the overlay
 for layout, keybinding, or Herdr CLI changes; attach a current screenshot when
-visual output changes.
+visual output changes. When a change alters what a README demo shows, re-record it
+with `bash demo/render.sh <take>`: it builds a disposable sandbox with its own Herdr
+server, so no real repository, account, or path reaches a published GIF. Never
+capture README media from a personal session.
 
 ## Commit & Pull Request Guidelines
 
