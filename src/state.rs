@@ -20,16 +20,29 @@ static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 /// `~/.local/state/herdr-switchboard`. `None` when neither var is set — callers then
 /// skip the file entirely, which is the "no history / no cache" degrade.
 pub fn state_dir() -> Option<PathBuf> {
-    let base = env::var("XDG_STATE_HOME")
-        .ok()
+    #[cfg(test)]
+    if let Some(scratch) = test_scratch() {
+        return Some(scratch.join("state"));
+    }
+    state_dir_from(env::var("XDG_STATE_HOME").ok(), env::var("HOME").ok())
+}
+
+fn state_dir_from(xdg_state: Option<String>, home: Option<String>) -> Option<PathBuf> {
+    let base = xdg_state
         .filter(|s| !s.is_empty())
         .map(PathBuf::from)
-        .or_else(|| {
-            env::var("HOME")
-                .ok()
-                .map(|h| PathBuf::from(h).join(".local/state"))
-        })?;
+        .or_else(|| home.map(|h| PathBuf::from(h).join(".local/state")))?;
     Some(base.join("herdr-switchboard"))
+}
+
+/// Where the test build keeps everything that would otherwise be the user's:
+/// this plugin's state, its config, herdr's config, and herdr's socket. One
+/// directory per test process, so no test can read or write the real ones —
+/// a background step that once reached `review_archive::set` from a test wrote
+/// a fixture slug into the developer's own archive.
+#[cfg(test)]
+pub(crate) fn test_scratch() -> Option<PathBuf> {
+    Some(std::env::temp_dir().join(format!("swb-test-{}", std::process::id())))
 }
 
 /// A file inside [`state_dir`], or `None` when there is no state dir.
@@ -385,5 +398,21 @@ mod tests {
         fs::write(dir.join("plain"), b"").unwrap();
         assert!(write_private(&dir.join("plain/child.tsv"), b"x").is_err());
         fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Outside the test build the state lives under XDG, then HOME, and
+    /// nowhere when neither is set; inside it, under the per-process scratch.
+    #[test]
+    fn state_lives_under_xdg_then_home_and_tests_use_scratch() {
+        assert_eq!(
+            state_dir_from(Some("/x".into()), Some("/home/u".into())),
+            Some(PathBuf::from("/x/herdr-switchboard"))
+        );
+        assert_eq!(
+            state_dir_from(Some(String::new()), Some("/home/u".into())),
+            Some(PathBuf::from("/home/u/.local/state/herdr-switchboard"))
+        );
+        assert_eq!(state_dir_from(None, None), None);
+        assert!(state_dir().unwrap().starts_with(test_scratch().unwrap()));
     }
 }

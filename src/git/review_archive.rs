@@ -168,4 +168,14 @@ mod tests {
         assert!(error.to_string().contains("replace"), "{error:#}");
         fs::remove_dir_all(path.parent().unwrap()).ok();
     }
+
+    /// The public verbs, which the test build points at its scratch state.
+    #[test]
+    fn the_public_verbs_archive_and_restore_in_the_state_dir() {
+        let slug = format!("swb-archive-public-{}", std::process::id());
+        set(&slug, true).unwrap();
+        assert!(load().contains(&slug));
+        set(&slug, false).unwrap();
+        assert!(!load().contains(&slug));
+    }
 }

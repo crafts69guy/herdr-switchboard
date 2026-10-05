@@ -37,6 +37,10 @@ const TIMEOUT: Duration = Duration::from_millis(1500);
 /// the variable into plugin panes, so the fallback only matters when the binary
 /// is run by hand.
 fn socket_path() -> Option<PathBuf> {
+    #[cfg(test)]
+    if let Some(scratch) = crate::state::test_scratch() {
+        return Some(scratch.join("herdr.sock"));
+    }
     socket_path_from(env::var("HERDR_SOCKET_PATH").ok(), env::var("HOME").ok())
 }
 
@@ -267,5 +271,15 @@ mod tests {
             Some(PathBuf::from("/home/u/.config/herdr/herdr.sock"))
         );
         assert_eq!(socket_path_from(None, None), None);
+    }
+
+    /// With no herdr listening — the test build's scratch socket — painting,
+    /// clearing, and exporting all report that nothing happened.
+    #[test]
+    fn with_no_herdr_listening_the_socket_verbs_report_nothing_done() {
+        assert!(!set_scrim("w1:p5", 10, 10, [0, 0, 0, 255]));
+        assert!(!set_scrim("w1:p5", 0, 10, [0, 0, 0, 255]));
+        assert!(!clear_scrim("w1:p5"));
+        assert_eq!(export_layout("w1:t1"), None);
     }
 }

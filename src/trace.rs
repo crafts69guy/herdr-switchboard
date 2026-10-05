@@ -32,13 +32,12 @@ pub fn init() {
     START.get_or_init(Instant::now);
     #[cfg(test)]
     let _ = sink();
-    SINK.get_or_init(|| {
-        resolve_sink(
-            std::env::var("SWITCHBOARD_TRACE").ok(),
-            std::env::var("SWITCHBOARD_TRACE_FILE").ok(),
-            || state::state_file("trace.log"),
-        )
-    });
+    let resolved = resolve_sink(
+        std::env::var("SWITCHBOARD_TRACE").ok(),
+        std::env::var("SWITCHBOARD_TRACE_FILE").ok(),
+        || state::state_file("trace.log"),
+    );
+    SINK.get_or_init(|| resolved);
 }
 
 /// Where trace lines go: nowhere unless `SWITCHBOARD_TRACE` is non-empty, then

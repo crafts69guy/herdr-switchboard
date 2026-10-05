@@ -182,6 +182,10 @@ fn ui_table(doc: &mut DocumentMut) -> &mut Item {
 /// the authoritative answer inside a session; the XDG fallbacks are for a plugin
 /// invoked by hand from outside one. herdr has no `--config` flag to ask.
 pub fn config_path() -> PathBuf {
+    #[cfg(test)]
+    if let Some(scratch) = crate::state::test_scratch() {
+        return scratch.join("herdr/config.toml");
+    }
     config_path_from(
         env::var("HERDR_SOCKET_PATH").ok(),
         env::var("XDG_CONFIG_HOME").ok(),
@@ -489,7 +493,7 @@ kitty_graphics = true
             config_path_from(None, None, None),
             PathBuf::from(".config/herdr/config.toml")
         );
-        assert!(config_path().ends_with("config.toml"));
+        assert!(config_path().starts_with(crate::state::test_scratch().unwrap()));
     }
 
     fn scratch(name: &str) -> PathBuf {

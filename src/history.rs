@@ -230,4 +230,14 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         let _ = load();
     }
+
+    /// The public verbs, which the test build points at its scratch state.
+    #[test]
+    fn the_public_verbs_record_and_forget_in_the_state_dir() {
+        let id = format!("swb-history-public-{}", std::process::id());
+        touch(&id);
+        assert!(load().contains_key(&id));
+        forget(&id);
+        assert!(!load().contains_key(&id));
+    }
 }

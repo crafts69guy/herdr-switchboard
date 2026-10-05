@@ -891,4 +891,69 @@ mod tests {
         .unwrap();
         assert!(store.load_chrome().is_empty(), "cleared once restored");
     }
+
+    const PANES_WITH_GUTTERS: &str = r#"{"result":{"panes":[
+        {"pane_id":"w1:p1","tab_id":"w1:t9","workspace_id":"w1","terminal_title":"nvim","cwd":"/repo","focused":true},
+        {"pane_id":"w1:p5","tab_id":"w1:t9","workspace_id":"w1","terminal_title":"","cwd":"/"},
+        {"pane_id":"w1:p6","tab_id":"w1:t9","workspace_id":"w1","terminal_title":"","cwd":"/"}
+    ]}}"#;
+
+    /// Zen with every option on, end to end, against the test build's scratch
+    /// herdr config and socket: entering paints (or tries to) and hides chrome,
+    /// leaving restores it and closes live gutters, a restore that cannot write
+    /// keeps its snapshot, and a leftover snapshot is never overwritten. One
+    /// test, because these steps share the one scratch herdr config.
+    #[test]
+    fn full_zen_round_trips_on_the_scratch_herdr_config() {
+        let path = chrome::config_path();
+        assert!(path.starts_with(crate::state::test_scratch().unwrap()));
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let original = "[ui]\npane_borders = true\nsidebar_start_collapsed = false\n";
+        fs::write(&path, original).unwrap();
+
+        let mut full = cfg(true);
+        full.chrome = chrome::Level::Full;
+        let store = temp_store();
+        enter(&entering(), "w1:p1", &full, &Notifier::silent(), &store).unwrap();
+        assert!(
+            !store.load_chrome().is_empty(),
+            "the original is snapshotted"
+        );
+        assert_ne!(fs::read_to_string(&path).unwrap(), original);
+
+        let leaving = MockRunner::new()
+            .on("pane list", PANES_WITH_GUTTERS)
+            .on("tab get", r#"{"result":{"tab":{"pane_count":0}}}"#);
+        let session = store.load().expect("entered");
+        leave(&leaving, &session, &Notifier::silent(), &store).unwrap();
+        assert!(store.load_chrome().is_empty());
+        assert!(fs::read_to_string(&path)
+            .unwrap()
+            .contains("pane_borders = true"));
+        assert!(leaving
+            .calls()
+            .iter()
+            .any(|call| call == &["herdr", "pane", "close", "w1:p5"]));
+
+        // A snapshot that cannot be written back is kept for chrome-restore.
+        let snapshot = vec![chrome::Override {
+            key: "pane_borders".into(),
+            want: "false".into(),
+            prior: Some("true".into()),
+        }];
+        store.save_chrome(&snapshot).unwrap();
+        fs::remove_file(&path).unwrap();
+        leave(&leaving, &session_of(&[]), &Notifier::silent(), &store).unwrap();
+        assert_eq!(store.load_chrome(), snapshot);
+
+        // With that leftover in place, entering again never re-snapshots.
+        fs::write(&path, original).unwrap();
+        let mut panes = cfg(false);
+        panes.chrome = chrome::Level::Panes;
+        enter(&entering(), "w1:p1", &panes, &Notifier::silent(), &store).unwrap();
+        assert_eq!(store.load_chrome(), snapshot);
+        store.clear();
+        store.clear_chrome();
+        fs::remove_file(&path).ok();
+    }
 }

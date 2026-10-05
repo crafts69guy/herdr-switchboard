@@ -363,6 +363,10 @@ impl Config {
 }
 
 pub fn config_path() -> PathBuf {
+    #[cfg(test)]
+    if let Some(scratch) = crate::state::test_scratch() {
+        return scratch.join("plugin-config/config.toml");
+    }
     env::var("HERDR_PLUGIN_CONFIG_DIR")
         .ok()
         .filter(|dir| !dir.is_empty())
