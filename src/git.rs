@@ -3100,4 +3100,50 @@ z|Y|pull|git pull
         screen(&mut g, 60, 1);
         assert!(g.zones.bar_zones.is_empty());
     }
+
+    /// Every key and pointer event, from the menu, each list, and the size
+    /// confirmation, answers without panicking; background steps run on the
+    /// mock runner and the archive is a no-op.
+    #[test]
+    fn the_git_surface_answers_every_event_in_every_view() {
+        let events = crate::surface::every_event(100, 30, &[]);
+        let theme = Theme::default();
+        let views: Vec<fn(&mut Git)> = vec![
+            |_| {},
+            |g| g.show_list(ListKind::PullRequests, rows()),
+            |g| g.show_list(ListKind::Reviews, rows()),
+            |g| g.show_list(ListKind::ArchivedReviews, rows()),
+            |g| g.show_list(ListKind::Conflicts, rows()),
+            |g| {
+                g.show_targets(
+                    "s1".into(),
+                    TargetResolution {
+                        origin: None,
+                        choices: vec![agent("w1:p1"), agent("w1:p2")],
+                        scope: TargetScope::SameWorktree,
+                    },
+                );
+            },
+            |g| {
+                g.warn_at = 1;
+                let _ = g.on_key(key(KeyCode::Char('a')));
+                let _ = g.show_count(Some(5));
+            },
+        ];
+        for view in views {
+            let mut g = Git::new();
+            open_default(&mut g);
+            view(&mut g);
+            let mut terminal =
+                ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
+            let mut s = surface(&mut g, &theme);
+            for (n, event) in events.iter().enumerate() {
+                if n % 40 == 0 {
+                    terminal.draw(|frame| s.draw(frame)).unwrap();
+                }
+                s.effect = None;
+                let _ = s.on_event(event.clone()).unwrap();
+            }
+        }
+    }
 }

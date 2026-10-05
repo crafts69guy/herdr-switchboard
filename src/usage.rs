@@ -1682,4 +1682,19 @@ mod tests {
         .run(&mut app)
         .expect("esc closes");
     }
+
+    /// Every key and pointer event reaches the popup without panicking.
+    #[test]
+    fn the_usage_popup_answers_every_event() {
+        let events = crate::surface::every_event(96, 26, &[]);
+        let mut app = app_with(vec![codex_slot()]);
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(96, 26)).unwrap();
+        for (n, event) in events.iter().enumerate() {
+            if n % 40 == 0 {
+                terminal.draw(|frame| app.draw(frame)).unwrap();
+            }
+            let _ = app.on_event(event.clone()).unwrap();
+        }
+    }
 }

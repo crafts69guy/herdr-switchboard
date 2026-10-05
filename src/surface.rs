@@ -206,6 +206,76 @@ impl Host for ScriptedHost {
     }
 }
 
+/// Every key a surface could meet — each base key under each modifier — and
+/// every mouse kind over a grid of `width`×`height`, for sweeps that check a
+/// surface answers all of them without panicking. `skip` drops chords a
+/// sweep must not press, such as one that would write the user's state.
+#[cfg(test)]
+pub(crate) fn every_event(
+    width: u16,
+    height: u16,
+    skip: &[(event::KeyCode, event::KeyModifiers)],
+) -> Vec<Event> {
+    use event::{KeyCode, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+    let mut codes: Vec<KeyCode> = ('a'..='z')
+        .chain('A'..='Z')
+        .chain('0'..='9')
+        .chain([' ', '/', '?', ',', '.', '-', '!'])
+        .map(KeyCode::Char)
+        .collect();
+    codes.extend([
+        KeyCode::Enter,
+        KeyCode::Esc,
+        KeyCode::Tab,
+        KeyCode::BackTab,
+        KeyCode::Backspace,
+        KeyCode::Up,
+        KeyCode::Down,
+        KeyCode::Left,
+        KeyCode::Right,
+        KeyCode::Home,
+        KeyCode::End,
+        KeyCode::PageUp,
+        KeyCode::PageDown,
+        KeyCode::Delete,
+        KeyCode::F(1),
+    ]);
+    let mut events = Vec::new();
+    for modifiers in [
+        KeyModifiers::NONE,
+        KeyModifiers::CONTROL,
+        KeyModifiers::ALT,
+        KeyModifiers::SHIFT,
+    ] {
+        for code in &codes {
+            if !skip.contains(&(*code, modifiers)) {
+                events.push(Event::Key(event::KeyEvent::new(*code, modifiers)));
+            }
+        }
+    }
+    for row in (0..height).step_by(2) {
+        for column in (0..width).step_by(4) {
+            for kind in [
+                MouseEventKind::ScrollDown,
+                MouseEventKind::ScrollUp,
+                MouseEventKind::Down(MouseButton::Left),
+                MouseEventKind::Up(MouseButton::Left),
+                MouseEventKind::Moved,
+            ] {
+                events.push(Event::Mouse(MouseEvent {
+                    kind,
+                    column,
+                    row,
+                    modifiers: KeyModifiers::NONE,
+                }));
+            }
+        }
+    }
+    events.push(Event::Resize(width, height));
+    events.push(Event::FocusGained);
+    events
+}
+
 /// Where the host's events come from: the real terminal in production, a
 /// script in tests.
 trait Input {

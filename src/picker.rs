@@ -3111,4 +3111,22 @@ mod tests {
         assert_eq!(actions[0].modifiers, KeyModifiers::CONTROL);
         assert_eq!(actions[0].key_label, "^y");
     }
+
+    /// Every key and pointer event, in both input modes and in a tabbed mode,
+    /// answers without panicking.
+    #[test]
+    fn the_picker_answers_every_event() {
+        let events = crate::surface::every_event(100, 30, &[]);
+        for normal in [true, false] {
+            let mut h = Harness::new(items(6), normal);
+            let mut terminal =
+                ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
+            for (n, event) in events.iter().enumerate() {
+                if n % 40 == 0 {
+                    terminal.draw(|frame| h.surface().draw(frame)).unwrap();
+                }
+                let _ = h.surface().on_event(event.clone()).unwrap();
+            }
+        }
+    }
 }

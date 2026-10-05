@@ -396,4 +396,20 @@ mod tests {
         let esc = Event::Key(KeyEvent::from(KeyCode::Esc));
         assert!(matches!(app.on_event(esc).unwrap(), Transition::Exit(())));
     }
+
+    /// Every key and pointer event reaches the popup without panicking.
+    #[test]
+    fn the_changelog_popup_answers_every_event() {
+        let events = crate::surface::every_event(88, 28, &[]);
+        let text = changelog_text().expect("the checkout carries a changelog");
+        let mut app = popup(Config::default(), Theme::default(), &text);
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(88, 28)).unwrap();
+        for (n, event) in events.iter().enumerate() {
+            if n % 40 == 0 {
+                terminal.draw(|frame| app.draw(frame)).unwrap();
+            }
+            let _ = app.on_event(event.clone()).unwrap();
+        }
+    }
 }

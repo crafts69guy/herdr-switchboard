@@ -1056,4 +1056,32 @@ mod tests {
         assert!(surface.settings.show);
         assert_eq!(surface.title, Color::Yellow);
     }
+
+    /// Every key and pointer event reaches the standalone form without
+    /// panicking; applied changes land in a scratch file.
+    #[test]
+    fn the_settings_form_answers_every_event() {
+        let events = crate::surface::every_event(100, 32, &[]);
+        let (settings, dir) = scratch_settings("sweep");
+        let theme = Theme::default();
+        let mut surface = StandaloneSettings {
+            settings,
+            background: crate::tui::SurfaceBackground::resolve(
+                &theme,
+                crate::config::Transparency::Transparent,
+            ),
+            theme,
+            title: Color::Yellow,
+        };
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 32)).unwrap();
+        for (n, event) in events.iter().enumerate() {
+            if n % 40 == 0 {
+                surface.settings.open();
+                terminal.draw(|frame| surface.draw(frame)).unwrap();
+            }
+            let _ = surface.on_event(event.clone()).unwrap();
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
 }

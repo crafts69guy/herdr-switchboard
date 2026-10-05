@@ -4568,4 +4568,64 @@ mod tests {
         rendered(&mut tiny, 60, 1);
         assert!(!tiny.zones.footer_zones.is_empty());
     }
+
+    /// Every key and pointer event, in every state the surface can be in,
+    /// answers without panicking. `^s` is left out: it would write the user's
+    /// real star file. The settings form writes to a scratch file.
+    #[test]
+    fn the_surface_answers_every_event_in_every_state() {
+        let skip = [
+            (KeyCode::Char('s'), KeyModifiers::CONTROL),
+            (KeyCode::Char('S'), KeyModifiers::CONTROL),
+        ];
+        let events = crate::surface::every_event(120, 40, &skip);
+        let scratch =
+            std::env::temp_dir().join(format!("swb-projects-sweep-{}", std::process::id()));
+        std::fs::create_dir_all(&scratch).unwrap();
+
+        let states: Vec<fn(&mut App)> = vec![
+            |_| {},
+            |app| app.mode = keymap::Mode::Insert,
+            |app| app.overlay = Overlay::Help,
+            |app| {
+                app.overlay = Overlay::Changelog;
+                app.changelog.open();
+            },
+            |app| {
+                app.settings.open();
+                app.overlay = Overlay::Settings;
+            },
+            |app| {
+                app.overlay = Overlay::Handoff;
+                app.handoff.show_targets(
+                    item_context(),
+                    TargetResolution {
+                        origin: None,
+                        choices: vec![agent_target("w1:p1", "/work/api")],
+                        scope: TargetScope::AllAgents,
+                    },
+                );
+            },
+            |app| app.catalog = CatalogState::Loading,
+            |app| app.catalog = CatalogState::Failed("stopped".into()),
+            |app| app.catalog = CatalogState::Refreshing,
+        ];
+        for (index, state) in states.into_iter().enumerate() {
+            let mut app = ready_app();
+            app.settings
+                .write_to(scratch.join(format!("config-{index}.toml")));
+            state(&mut app);
+            let mut terminal =
+                ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 40)).unwrap();
+            let mut surface = surface(&mut app);
+            for (n, event) in events.iter().enumerate() {
+                if n % 40 == 0 {
+                    terminal.draw(|frame| surface.draw(frame)).unwrap();
+                }
+                let _ = surface.on_event(event.clone()).unwrap();
+                let _ = surface.on_tick();
+            }
+        }
+        std::fs::remove_dir_all(&scratch).ok();
+    }
 }
