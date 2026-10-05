@@ -4612,4 +4612,61 @@ mod tests {
         }
         std::fs::remove_dir_all(&scratch).ok();
     }
+
+    /// Unstarring the selected row inside Starred moves the cursor to the row
+    /// that took its place rather than back to the top.
+    #[test]
+    fn unstarring_inside_starred_keeps_the_cursor_in_place() {
+        let entries = sample();
+        let mut picker = Picker::new(entries.clone(), SortMode::Name, HashMap::new());
+        let repos: Vec<Entry> = entries
+            .iter()
+            .filter(|entry| entry.kind == Kind::Repo)
+            .cloned()
+            .collect();
+        picker.replace_stars(stars::Stars::memory(&repos));
+        picker.group = GroupFilter::Starred;
+        picker.recompute();
+        picker.selected = picker.filtered.len() - 1;
+        let gone = picker.selected_entry().unwrap().clone();
+        let kept: Vec<Entry> = repos.into_iter().filter(|e| e.id != gone.id).collect();
+        picker.replace_stars(stars::Stars::memory(&kept));
+        assert_eq!(picker.selected, picker.filtered.len() - 1);
+    }
+
+    /// A discovery worker that is already gone fails the catalogue at once.
+    #[test]
+    fn a_dead_discovery_worker_fails_the_catalogue_at_start() {
+        let mut app = ready_app();
+        let mut surface = surface(&mut app);
+        surface.catalog_worker = CatalogWorker::disconnected();
+        surface.start_catalog(CatalogIntent::Initial);
+        assert!(!surface.catalog_pending);
+        assert!(matches!(surface.app.catalog, CatalogState::Failed(_)));
+    }
+
+    /// Deleting a word eats the trailing spaces before it; applying settings
+    /// with the mouse reloads like the key does.
+    #[test]
+    fn word_deletion_and_a_clicked_apply() {
+        let mut app = ready_app();
+        app.picker.query = "git log  ".into();
+        apply_action(&mut app, keymap::Action::DeleteWord);
+        assert_eq!(app.picker.query, "git ");
+
+        let scratch =
+            std::env::temp_dir().join(format!("swb-projects-apply-{}", std::process::id()));
+        std::fs::create_dir_all(&scratch).unwrap();
+        let mut app = ready_app();
+        app.settings.write_to(scratch.join("config.toml"));
+        apply_action(&mut app, keymap::Action::Settings);
+        press(&mut app, KeyCode::Enter);
+        rendered(&mut app, 120, 40);
+        let apply = app
+            .settings
+            .pill_at(KeyCode::Char('a'))
+            .expect("an apply pill");
+        assert!(matches!(app.on_click(apply), Flow::ReloadCatalog(_)));
+        std::fs::remove_dir_all(&scratch).ok();
+    }
 }

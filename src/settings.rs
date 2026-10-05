@@ -177,6 +177,17 @@ impl Settings {
         self.path = path;
     }
 
+    /// Where the last draw put the command-bar pill for `code`, for tests of
+    /// a surface that embeds the form.
+    #[cfg(test)]
+    pub(crate) fn pill_at(&self, code: KeyCode) -> Option<Position> {
+        self.zones
+            .bar_zones
+            .iter()
+            .find(|(_, _, key)| *key == code)
+            .map(|&(x, _, _)| Position::new(x, self.zones.bar_row))
+    }
+
     /// Open the overlay at the top of the form. Values already match `saved` (a close
     /// applies or discards), so there is nothing to reset but the cursor.
     pub fn open(&mut self) {
