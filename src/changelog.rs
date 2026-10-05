@@ -173,26 +173,26 @@ pub fn changelog_text() -> Result<String> {
 
 /// Entry point for `herdr-switchboard --changelog`.
 pub fn main() -> Result<()> {
-    let cfg = Config::try_load()?;
-    let theme = Theme::load();
+    let mut app = popup(Config::try_load()?, Theme::load(), &changelog_text()?);
+    crate::surface::run(&mut app)
+}
+
+/// The popup over `text`, coloured from `cfg` and `theme`.
+fn popup(cfg: Config, theme: Theme, text: &str) -> App {
     let title_color = theme
         .resolve(&cfg.common.title_color)
         .unwrap_or(Color::Yellow);
-
-    let blocks = markdown::parse(&changelog_text()?);
-    let mut app = App {
+    App {
         background: crate::tui::SurfaceBackground::resolve(&theme, cfg.common.transparency),
         theme,
         title_color,
-        blocks,
+        blocks: markdown::parse(text),
         scroll: 0,
         height: 0,
         rows: 1,
         bar_row: 0,
         bar_zones: Vec::new(),
-    };
-
-    crate::surface::run(&mut app)
+    }
 }
 
 #[cfg(test)]
@@ -368,5 +368,32 @@ mod tests {
 
         let opaque = render(Transparency::Opaque);
         assert!(opaque.content.iter().all(|cell| cell.bg != Color::Reset));
+    }
+
+    /// The popup as `--changelog` builds it: the repository's own changelog
+    /// draws, scrolls by key and wheel, and closes on `esc`.
+    #[test]
+    fn the_changelog_popup_draws_scrolls_and_closes() {
+        let text = changelog_text().expect("the checkout carries a changelog");
+        let mut app = popup(Config::default(), Theme::default(), &text);
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(88, 28)).unwrap();
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+
+        let down = Event::Key(KeyEvent::from(KeyCode::Down));
+        assert!(matches!(app.on_event(down).unwrap(), Transition::Redraw));
+        let wheel = Event::Mouse(crossterm::event::MouseEvent {
+            kind: crossterm::event::MouseEventKind::ScrollDown,
+            column: 1,
+            row: 1,
+            modifiers: crossterm::event::KeyModifiers::NONE,
+        });
+        app.on_event(wheel).unwrap();
+        assert!(matches!(
+            app.on_event(Event::Resize(80, 20)).unwrap(),
+            Transition::Wait
+        ));
+        let esc = Event::Key(KeyEvent::from(KeyCode::Esc));
+        assert!(matches!(app.on_event(esc).unwrap(), Transition::Exit(())));
     }
 }

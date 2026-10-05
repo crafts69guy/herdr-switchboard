@@ -20,12 +20,14 @@ fn path() -> Option<PathBuf> {
 
 /// Load the id → last-opened-epoch map. Missing/unreadable file → empty map.
 pub fn load() -> HashMap<String, u64> {
+    path().map(|p| load_at(&p)).unwrap_or_default()
+}
+
+fn load_at(path: &std::path::Path) -> HashMap<String, u64> {
     let mut map = HashMap::new();
-    let Some(p) = path() else { return map };
-    let Ok(text) = fs::read_to_string(p) else {
-        return map;
-    };
-    parse(&text, &mut map);
+    if let Ok(text) = fs::read_to_string(path) {
+        parse(&text, &mut map);
+    }
     map
 }
 
@@ -47,11 +49,17 @@ fn parse(text: &str, map: &mut HashMap<String, u64>) {
 
 /// Record that `id` was just opened (upsert to now), capped to the newest CAP.
 pub fn touch(id: &str) {
+    if let Some(path) = path() {
+        touch_at(&path, id);
+    }
+}
+
+fn touch_at(path: &std::path::Path, id: &str) {
     if id.is_empty() {
         return;
     }
     let id = id.to_string();
-    edit(move |map| {
+    edit_at(path, move |map| {
         map.insert(id, now());
         true
     });
@@ -59,8 +67,14 @@ pub fn touch(id: &str) {
 
 /// Drop `id` from history (e.g. when a repo is removed).
 pub fn forget(id: &str) {
+    if let Some(path) = path() {
+        forget_at(&path, id);
+    }
+}
+
+fn forget_at(path: &std::path::Path, id: &str) {
     let id = id.to_string();
-    edit(move |map| map.remove(&id).is_some());
+    edit_at(path, move |map| map.remove(&id).is_some());
 }
 
 /// Apply one change to the recency map and persist it, if it changed anything.
@@ -73,13 +87,6 @@ pub fn forget(id: &str) {
 ///
 /// Failure is silence, as everywhere else here: recency is a convenience, and
 /// nothing about opening a project should depend on it.
-fn edit(change: impl FnOnce(&mut HashMap<String, u64>) -> bool) {
-    let Some(path) = path() else { return };
-    edit_at(&path, change);
-}
-
-/// [`edit`] against an explicit path, so the transaction can be tested without
-/// reaching into the real state directory.
 fn edit_at(path: &std::path::Path, change: impl FnOnce(&mut HashMap<String, u64>) -> bool) {
     let _ = state::update_private(path, |current| {
         let mut map = HashMap::new();
@@ -203,5 +210,24 @@ mod tests {
         assert_eq!(map.get("b"), Some(&50));
         assert!(!map.contains_key("empty")); // blank id skipped
         assert!(!map.contains_key("x")); // unparseable ts skipped
+    }
+
+    /// The public verbs against a scratch file: touch records, forget drops,
+    /// an empty id is ignored, and a missing file loads as empty.
+    #[test]
+    fn touch_and_forget_round_trip_through_a_scratch_file() {
+        let dir = std::env::temp_dir().join(format!("swb-history-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("recent.tsv");
+        assert!(load_at(&path).is_empty());
+
+        touch_at(&path, "gh/a");
+        touch_at(&path, "");
+        assert_eq!(load_at(&path).len(), 1);
+        forget_at(&path, "gh/a");
+        assert!(load_at(&path).is_empty());
+        let _ = fs::remove_dir_all(&dir);
+        let _ = load();
     }
 }

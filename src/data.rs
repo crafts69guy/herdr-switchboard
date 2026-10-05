@@ -28,22 +28,28 @@ impl Theme {
                 env::var("HOME").unwrap_or_default()
             )
         });
+        fs::read_to_string(path)
+            .map(|text| Self::from_herdr_config(&text))
+            .unwrap_or_default()
+    }
+
+    /// The `[theme.custom]` hex slots out of herdr's config text; every other
+    /// section, and any value that is not a `#rrggbb`, is ignored.
+    fn from_herdr_config(text: &str) -> Self {
         let mut slots = HashMap::new();
-        if let Ok(text) = fs::read_to_string(path) {
-            let mut in_section = false;
-            for line in text.lines() {
-                let t = line.trim();
-                if t.starts_with('[') {
-                    in_section = t == "[theme.custom]";
-                    continue;
-                }
-                if !in_section {
-                    continue;
-                }
-                if let Some((k, v)) = t.split_once('=') {
-                    if let Some(color) = parse_hex(v.trim()) {
-                        slots.insert(k.trim().to_string(), color);
-                    }
+        let mut in_section = false;
+        for line in text.lines() {
+            let t = line.trim();
+            if t.starts_with('[') {
+                in_section = t == "[theme.custom]";
+                continue;
+            }
+            if !in_section {
+                continue;
+            }
+            if let Some((k, v)) = t.split_once('=') {
+                if let Some(color) = parse_hex(v.trim()) {
+                    slots.insert(k.trim().to_string(), color);
                 }
             }
         }
@@ -767,5 +773,32 @@ mod tests {
         assert!(load_workspaces(&MockRunner::new(), &Theme::default()).is_empty());
         assert!(load_repos(&[], &Theme::default(), "/root").is_empty());
         assert!(load_worktrees(&MockRunner::new(), &[], &Theme::default(), "/root").is_empty());
+    }
+
+    /// Only `[theme.custom]` hex values become slots.
+    #[test]
+    fn the_theme_reads_only_custom_hex_slots() {
+        let theme = Theme::from_herdr_config(
+            "[theme]\nname = \"terminal\"\naccent = \"#ffffff\"\n\
+             [theme.custom]\naccent = \"#00CF6A\"\nbroken = \"blue\"\nno equals sign\n\
+             [ui]\npanel_bg = \"#000000\"\n",
+        );
+        assert_eq!(theme.get("accent"), Some(Color::Rgb(0x00, 0xCF, 0x6A)));
+        assert_eq!(theme.get("broken"), None);
+        assert_eq!(theme.get("panel_bg"), None);
+        let _ = Theme::load();
+    }
+
+    /// The probe runner's other verbs answer success without running anything.
+    #[test]
+    fn the_probe_runner_answers_every_verb() {
+        let runner = ProbeRunner::new();
+        assert!(runner.status("x", &[]).unwrap().success());
+        assert!(runner
+            .output_stdin("x", &[], "in")
+            .unwrap()
+            .status
+            .success());
+        runner.spawn_detached(OsStr::new("x"), &[]).unwrap();
     }
 }

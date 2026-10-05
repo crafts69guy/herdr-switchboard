@@ -404,4 +404,33 @@ Preamble prose that is not part of any release.
         assert_eq!(out[1].style, code);
         assert_eq!(out[0].style, base);
     }
+
+    /// Rendering: the installed version is marked, each section takes its
+    /// colour, unknown sections fall back, and bullets wrap with a hanging indent.
+    #[test]
+    fn rendering_marks_the_installed_version_and_wraps_bullets() {
+        let text = format!(
+            "## [{VERSION}] - 2026-01-01\n\n### Added\n\n- a `code` span and a bullet long \
+             enough to wrap across the narrow width given here\n\n### Changed\n\n- c\n\n\
+             ### Fixed\n\n- f\n\n### Removed\n\n- r\n\n### Security\n\n- s\n\n\
+             ## [0.0.1]\n\n- old\n"
+        );
+        let lines = render(&parse(&text), 30, &Theme::default(), Color::Yellow);
+        let flat: Vec<String> = lines
+            .iter()
+            .map(|line| line.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect();
+        assert!(flat.iter().any(|l| l.contains("← installed")), "{flat:?}");
+        assert!(flat.iter().any(|l| l.contains("2026-01-01")));
+        for name in ["Added", "Changed", "Fixed", "Removed", "Security"] {
+            assert!(flat.iter().any(|l| l.trim() == name), "{name}: {flat:?}");
+        }
+        assert!(
+            flat.iter().any(|l| l.starts_with("     ")),
+            "a wrapped continuation"
+        );
+        assert!(flat
+            .iter()
+            .any(|l| l.contains("0.0.1") && !l.contains("installed")));
+    }
 }

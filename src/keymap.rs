@@ -864,4 +864,93 @@ mod tests {
             assert_eq!(km.action(mode, ctrl(Key::Char('s'))), None);
         }
     }
+
+    /// Every base key turns back into the crossterm event that produced it, with
+    /// its modifiers, and has a cap to print.
+    #[test]
+    fn every_key_round_trips_to_its_event_and_has_a_cap() {
+        let keys = [
+            Key::Char('x'),
+            Key::Char(' '),
+            Key::Enter,
+            Key::Esc,
+            Key::Tab,
+            Key::BackTab,
+            Key::Backspace,
+            Key::Up,
+            Key::Down,
+            Key::PageUp,
+            Key::PageDown,
+            Key::Home,
+            Key::End,
+        ];
+        for key in keys {
+            let chord = Chord {
+                key,
+                ctrl: true,
+                alt: true,
+            };
+            let (code, modifiers) = chord.event_parts();
+            assert!(modifiers.contains(KeyModifiers::CONTROL | KeyModifiers::ALT));
+            assert_eq!(modifiers.contains(KeyModifiers::SHIFT), key == Key::BackTab);
+            if let Key::Char(c) = key {
+                assert_eq!(code, KeyCode::Char(c));
+            }
+            assert!(!key_label(key).is_empty());
+            assert!(chord.label().starts_with('^'));
+        }
+    }
+
+    /// Every key name the config accepts parses, and every key a terminal sends
+    /// maps back to a chord; anything else is refused rather than guessed.
+    #[test]
+    fn every_key_name_parses_and_every_terminal_key_maps() {
+        for name in [
+            "enter",
+            "return",
+            "cr",
+            "esc",
+            "escape",
+            "tab",
+            "shift-tab",
+            "backtab",
+            "backspace",
+            "bs",
+            "up",
+            "down",
+            "pgup",
+            "pageup",
+            "pgdn",
+            "pagedown",
+            "home",
+            "end",
+            "space",
+            "ctrl-x",
+            "alt-shift-q",
+        ] {
+            assert!(parse_chord(name).is_some(), "{name}");
+        }
+        assert!(parse_chord("hyper-x").is_none());
+        assert!(parse_chord("ctrl-nonsense").is_none());
+
+        for code in [
+            KeyCode::Enter,
+            KeyCode::Esc,
+            KeyCode::Tab,
+            KeyCode::BackTab,
+            KeyCode::Backspace,
+            KeyCode::Up,
+            KeyCode::Down,
+            KeyCode::PageUp,
+            KeyCode::PageDown,
+            KeyCode::Home,
+            KeyCode::End,
+            KeyCode::Char('q'),
+        ] {
+            let event = crossterm::event::KeyEvent::new(code, KeyModifiers::ALT);
+            assert!(chord_of(&event).is_some(), "{code:?}");
+        }
+        let f5 = crossterm::event::KeyEvent::new(KeyCode::F(5), KeyModifiers::NONE);
+        assert!(chord_of(&f5).is_none());
+    }
 }

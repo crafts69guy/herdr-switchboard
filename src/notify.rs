@@ -53,15 +53,24 @@ impl Notifier {
     }
 
     pub fn send_message(&self, body: &str, event_sound: &str) {
-        if !self.enabled {
+        let Some(args) = self.message_args(body, event_sound) else {
             return;
+        };
+        let _ = Command::new("herdr").args(args).status();
+    }
+
+    /// The `herdr notification show` argv for a free-form message, or `None`
+    /// when notifications are off.
+    fn message_args(&self, body: &str, event_sound: &str) -> Option<Vec<String>> {
+        if !self.enabled {
+            return None;
         }
         let sound = if self.sound == "auto" {
             event_sound
         } else {
             self.sound.as_str()
         };
-        let mut args = vec![
+        let mut args: Vec<String> = [
             "notification",
             "show",
             "Switchboard",
@@ -69,11 +78,13 @@ impl Notifier {
             body,
             "--sound",
             sound,
-        ];
+        ]
+        .map(String::from)
+        .into();
         if !self.position.is_empty() {
-            args.extend(["--position", self.position.as_str()]);
+            args.extend(["--position".into(), self.position.clone()]);
         }
-        let _ = Command::new("herdr").args(args).status();
+        Some(args)
     }
 
     fn args(&self, event: Event, subject: Option<&str>) -> Option<Vec<String>> {
@@ -144,6 +155,14 @@ impl Notifier {
 }
 
 pub fn cli(args: &[String], cfg: &Config) -> anyhow::Result<()> {
+    let (body, sound) = cli_message(args)?;
+    Notifier::new(cfg).send_message(body, sound);
+    Ok(())
+}
+
+/// `notify [BODY] [SOUND]`: the body defaults to a generic line and the sound
+/// to none, and only herdr's three sounds are accepted.
+fn cli_message(args: &[String]) -> anyhow::Result<(&str, &str)> {
     let body = args
         .first()
         .map(String::as_str)
@@ -153,8 +172,7 @@ pub fn cli(args: &[String], cfg: &Config) -> anyhow::Result<()> {
         matches!(sound, "none" | "done" | "request"),
         "invalid notification sound"
     );
-    Notifier::new(cfg).send_message(body, sound);
-    Ok(())
+    Ok((body, sound))
 }
 
 fn suffix(subject: Option<&str>) -> String {
@@ -373,5 +391,51 @@ mod tests {
         assert!(!rendered.contains("/private"));
         assert!(!rendered.contains("secret"));
         assert!(rendered.contains("--sound done"));
+    }
+
+    /// A message carries its body and sound, the configured sound overrides
+    /// `auto`, the position is passed when set, and nothing is built when off.
+    #[test]
+    fn a_message_builds_herdrs_argv_only_when_notifications_are_on() {
+        let mut cfg = Config::default();
+        cfg.common.notifications = true;
+        cfg.common.notification_sound = "auto".into();
+        cfg.common.notification_position = "top-right".into();
+        let args = Notifier::new(&cfg).message_args("hello", "done").unwrap();
+        assert_eq!(
+            args,
+            [
+                "notification",
+                "show",
+                "Switchboard",
+                "--body",
+                "hello",
+                "--sound",
+                "done",
+                "--position",
+                "top-right"
+            ]
+        );
+        cfg.common.notification_sound = "none".into();
+        cfg.common.notification_position = String::new();
+        let args = Notifier::new(&cfg).message_args("hello", "done").unwrap();
+        assert_eq!(args.last().map(String::as_str), Some("none"));
+        assert!(Notifier::silent().message_args("hello", "done").is_none());
+        Notifier::silent().send_message("never shown", "done");
+    }
+
+    #[test]
+    fn the_cli_defaults_its_message_and_refuses_unknown_sounds() {
+        let none: [String; 0] = [];
+        assert_eq!(
+            cli_message(&none).unwrap(),
+            ("Switchboard needs attention.", "none")
+        );
+        let args = ["Built".to_string(), "done".to_string()];
+        assert_eq!(cli_message(&args).unwrap(), ("Built", "done"));
+        let bad = ["x".to_string(), "loud".to_string()];
+        assert!(cli_message(&bad).is_err());
+        assert!(cli(&bad, &Config::default()).is_err());
+        cli(&none, &Config::default()).expect("off by default, so nothing is shown");
     }
 }

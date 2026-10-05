@@ -863,4 +863,185 @@ mod tests {
         assert_eq!(s.values[0], "workspace", "esc must roll the draft back");
         assert!(!s.dirty());
     }
+
+    fn scratch_settings(name: &str) -> (Settings, PathBuf) {
+        let dir = std::env::temp_dir().join(format!("swb-settings-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let mut settings = Settings::new(&Config::default());
+        settings.write_to(dir.join("config.toml"));
+        settings.open();
+        (settings, dir)
+    }
+
+    fn render_both(settings: &mut Settings) -> String {
+        let theme = Theme::default();
+        let background = crate::tui::SurfaceBackground::resolve(
+            &theme,
+            crate::config::Transparency::Transparent,
+        );
+        let mut screen = String::new();
+        for standalone in [false, true] {
+            let mut terminal =
+                ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 40)).unwrap();
+            terminal
+                .draw(|frame| {
+                    if standalone {
+                        view::draw_standalone(
+                            frame,
+                            frame.area(),
+                            &theme,
+                            background,
+                            Color::Yellow,
+                            settings,
+                        );
+                    } else {
+                        view::draw(
+                            frame,
+                            frame.area(),
+                            &theme,
+                            background,
+                            Color::Yellow,
+                            settings,
+                        );
+                    }
+                })
+                .unwrap();
+            screen = terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect();
+        }
+        screen
+    }
+
+    /// Every tab and every row of the form: rings cycle, prompts edit, and each
+    /// state renders in both presentations. Writes land in a scratch file.
+    #[test]
+    fn every_row_of_every_tab_cycles_or_edits_and_renders() {
+        let (mut settings, dir) = scratch_settings("walk");
+        for _ in 0..TABS.len() {
+            let rows = settings.indices_in_tab().len();
+            press(&mut settings, KeyCode::End);
+            press(&mut settings, KeyCode::Home);
+            for _ in 0..rows {
+                press(&mut settings, KeyCode::Enter);
+                if settings.editing.is_some() {
+                    render_both(&mut settings);
+                    press(&mut settings, KeyCode::Char('9'));
+                    press(&mut settings, KeyCode::Backspace);
+                    press(&mut settings, KeyCode::F(1));
+                    press(&mut settings, KeyCode::Esc);
+                    assert!(settings.editing.is_none());
+                }
+                render_both(&mut settings);
+                press(&mut settings, KeyCode::Char('j'));
+            }
+            press(&mut settings, KeyCode::Char('k'));
+            press(&mut settings, KeyCode::Tab);
+        }
+        press(&mut settings, KeyCode::BackTab);
+        press(&mut settings, KeyCode::F(9));
+        assert!(settings.dirty());
+        press(&mut settings, KeyCode::Char('q'));
+        assert!(!settings.show);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The mouse: a tab click switches tabs, a row click selects, a click on the
+    /// selected row acts like Enter, and a bar pill runs the key on its cap.
+    #[test]
+    fn clicks_switch_tabs_select_rows_and_run_pills() {
+        let (mut settings, dir) = scratch_settings("clicks");
+        render_both(&mut settings);
+        let zones_tab = settings.zones.tab_zones.clone();
+        let (a, _, tab) = *zones_tab.iter().find(|z| z.2 != settings.tab).unwrap();
+        settings.on_click(Position::new(a, settings.zones.tab_row));
+        assert_eq!(settings.tab, tab);
+        // The tab already selected changes nothing.
+        settings.on_click(Position::new(a, settings.zones.tab_row));
+
+        render_both(&mut settings);
+        let sel = settings.sel;
+        let (col, row) = (0..2)
+            .find_map(|c| {
+                settings.zones.rows[c]
+                    .iter()
+                    .position(|index| matches!(index, Some(i) if *i != sel))
+                    .map(|row| (settings.zones.cols[c], row))
+            })
+            .expect("a second row to click");
+        let at = Position::new(col.x + 1, col.y + row as u16);
+        settings.on_click(at);
+        let chosen = settings.sel;
+        let before = settings.values[chosen].clone();
+        settings.on_click(at);
+        assert!(
+            settings.values[chosen] != before || settings.editing.is_some(),
+            "a second click acts"
+        );
+        // While editing, clicks outside the bar do nothing.
+        settings.editing = Some(String::new());
+        assert!(!settings.on_click(at));
+        settings.editing = None;
+        assert!(!settings.on_click(Position::new(500, 500)));
+
+        render_both(&mut settings);
+        let (x, _, _) = settings.zones.bar_zones[0];
+        settings.on_click(Position::new(x, settings.zones.bar_row));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The standalone pane: keys and the mouse reach the form, and closing it
+    /// ends the surface.
+    #[test]
+    fn the_standalone_pane_routes_input_and_closes_with_the_form() {
+        let (settings, dir) = scratch_settings("standalone");
+        let theme = Theme::default();
+        let mut surface = StandaloneSettings {
+            settings,
+            background: crate::tui::SurfaceBackground::resolve(
+                &theme,
+                crate::config::Transparency::Opaque,
+            ),
+            theme,
+            title: Color::Yellow,
+        };
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 32)).unwrap();
+        terminal.draw(|frame| surface.draw(frame)).unwrap();
+        let mouse = |kind| {
+            Event::Mouse(crossterm::event::MouseEvent {
+                kind,
+                column: 0,
+                row: 0,
+                modifiers: crossterm::event::KeyModifiers::NONE,
+            })
+        };
+        assert!(matches!(
+            surface.on_event(mouse(MouseEventKind::ScrollDown)).unwrap(),
+            Transition::Redraw
+        ));
+        surface.on_event(mouse(MouseEventKind::ScrollUp)).unwrap();
+        surface
+            .on_event(mouse(MouseEventKind::Down(MouseButton::Left)))
+            .unwrap();
+        assert!(matches!(
+            surface.on_event(mouse(MouseEventKind::Moved)).unwrap(),
+            Transition::Wait
+        ));
+        assert!(matches!(
+            surface.on_event(Event::Resize(1, 1)).unwrap(),
+            Transition::Wait
+        ));
+        let esc = Event::Key(KeyEvent::from(KeyCode::Esc));
+        assert!(matches!(
+            surface.on_event(esc).unwrap(),
+            Transition::Exit(())
+        ));
+        let _ = fs::remove_dir_all(&dir);
+    }
 }

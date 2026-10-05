@@ -35,6 +35,7 @@ mod time;
 mod view;
 
 use std::sync::mpsc::{self, Receiver};
+use std::sync::Arc;
 use std::thread;
 
 #[cfg(test)]
@@ -49,7 +50,7 @@ use ratatui::Frame;
 
 use crate::config::Config;
 use crate::data::Theme;
-use crate::runner::SystemRunner;
+use crate::runner::{CommandRunner, SystemRunner};
 use crate::state::now;
 use crate::surface::{Surface, Transition};
 use crate::tui;
@@ -138,6 +139,10 @@ pub struct App {
     now: u64,
     /// Seconds east of UTC, for the absolute reset times.
     offset: i64,
+    /// The process edge and the provider registry a refresh reads through;
+    /// tests hand in a `MockRunner` and providers that read nothing real.
+    runner: Arc<dyn CommandRunner + Send + Sync>,
+    registry: fn() -> Vec<Box<dyn Provider>>,
     /// The command bar's row and its pills, each carrying the key its cap
     /// names. Written by [`draw_bar`], the loop that lays them out.
     bar_row: u16,
@@ -231,7 +236,7 @@ impl App {
     /// Re-read everything: offline providers inline, networked ones on a worker.
     fn refresh(&mut self) {
         let cfg = self.cfg.clone();
-        let enabled = enabled_providers(&cfg);
+        let enabled = enabled_from(&cfg, (self.registry)());
         let (tx, rx) = mpsc::channel();
         self.slots = enabled
             .iter()
@@ -244,7 +249,8 @@ impl App {
         // splitting them.
         for (index, provider) in enabled.iter().enumerate() {
             if provider.offline() {
-                self.slots[index] = slot_of(provider.name(), provider.load(&SystemRunner, &cfg));
+                self.slots[index] =
+                    slot_of(provider.name(), provider.load(self.runner.as_ref(), &cfg));
             }
         }
         let networked = enabled
@@ -254,18 +260,20 @@ impl App {
             .map(|(index, provider)| (index, provider.id()))
             .collect::<Vec<_>>();
         self.now = now();
-        self.offset = local_offset(&SystemRunner);
+        self.offset = local_offset(self.runner.as_ref());
         if networked.is_empty() {
             self.inbox = None;
             return;
         }
+        let registry = self.registry;
+        let runner = Arc::clone(&self.runner);
         thread::spawn(move || {
             for (index, id) in networked {
-                let Some(provider) = providers().into_iter().find(|p| p.id() == id) else {
+                let Some(provider) = registry().into_iter().find(|p| p.id() == id) else {
                     continue;
                 };
                 let result = provider
-                    .load(&SystemRunner, &cfg)
+                    .load(runner.as_ref(), &cfg)
                     .map_err(|error| error.to_string());
                 // A closed receiver means the popup is gone; stop, don't panic.
                 if tx.send((index, result)).is_err() {
@@ -290,9 +298,13 @@ fn slot_of(name: &str, result: Result<Report>) -> Slot {
 /// The providers this config asks for, in the order it lists them. An unknown
 /// name is ignored rather than fatal — a config written for a later version
 /// should not stop the popup opening.
+#[cfg(test)]
 fn enabled_providers(cfg: &Config) -> Vec<Box<dyn Provider>> {
+    enabled_from(cfg, providers())
+}
+
+fn enabled_from(cfg: &Config, mut available: Vec<Box<dyn Provider>>) -> Vec<Box<dyn Provider>> {
     let wanted = &cfg.usage.providers;
-    let mut available = providers();
     let mut chosen = Vec::new();
     for id in wanted {
         if let Some(position) = available.iter().position(|provider| provider.id() == id) {
@@ -317,6 +329,8 @@ pub fn main(cfg: Config, theme: Theme) -> Result<()> {
         offset: 0,
         bar_row: 0,
         bar_zones: Vec::new(),
+        runner: Arc::new(SystemRunner),
+        registry: providers,
     };
     // Load before claiming the terminal, like the projects picker: the offline
     // provider is already on screen in the first frame.
@@ -351,6 +365,8 @@ mod tests {
             offset: 0,
             bar_row: 0,
             bar_zones: Vec::new(),
+            runner: Arc::new(MockRunner::new()),
+            registry: providers,
         }
     }
 
@@ -1204,6 +1220,8 @@ mod tests {
             offset: 0,
             bar_row: 0,
             bar_zones: Vec::new(),
+            runner: Arc::new(MockRunner::new()),
+            registry: providers,
         }
     }
 
@@ -1506,5 +1524,130 @@ mod tests {
         fs::write(&path, "{\"payload\":{}}\n").unwrap();
         assert_eq!(last_rate_limit_line(&path), None);
         fs::remove_dir_all(&dir).ok();
+    }
+
+    struct OfflineFake;
+    struct OnlineFake;
+
+    impl Provider for OfflineFake {
+        fn id(&self) -> &'static str {
+            "offline-fake"
+        }
+        fn name(&self) -> &'static str {
+            "Offline"
+        }
+        fn offline(&self) -> bool {
+            true
+        }
+        fn load(&self, _runner: &dyn CommandRunner, _cfg: &Config) -> Result<Report> {
+            parse_codex_rate_limits(CODEX_LINE)
+        }
+    }
+
+    impl Provider for OnlineFake {
+        fn id(&self) -> &'static str {
+            "online-fake"
+        }
+        fn name(&self) -> &'static str {
+            "Online"
+        }
+        fn offline(&self) -> bool {
+            false
+        }
+        fn load(&self, runner: &dyn CommandRunner, _cfg: &Config) -> Result<Report> {
+            runner
+                .capture("probe", &[])
+                .ok_or_else(|| anyhow::anyhow!("endpoint unreachable"))?;
+            parse_codex_rate_limits(CODEX_LINE)
+        }
+    }
+
+    fn fakes() -> Vec<Box<dyn Provider>> {
+        vec![Box::new(OfflineFake), Box::new(OnlineFake)]
+    }
+
+    /// A refresh fills the offline card inline and the networked one from the
+    /// worker, reading the clock offset through the same runner; a failed
+    /// fetch becomes a stated reason, never an empty card.
+    #[test]
+    fn a_refresh_reads_offline_inline_and_networked_on_the_worker() {
+        for (runner, ready) in [
+            (
+                MockRunner::new().on("date +%z", "+0700").failing("probe"),
+                false,
+            ),
+            (
+                MockRunner::new().on("date +%z", "+0700").on("probe", "ok"),
+                true,
+            ),
+        ] {
+            let mut app = app_with(Vec::new());
+            app.cfg.usage.providers =
+                vec!["offline-fake".into(), "online-fake".into(), "nope".into()];
+            app.registry = fakes;
+            app.runner = Arc::new(runner);
+            app.refresh();
+            assert!(matches!(app.slots[0], Slot::Ready(_)));
+            assert!(matches!(app.slots[1], Slot::Loading { .. }));
+            assert_eq!(app.offset, 7 * 3600);
+
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while app.inbox.is_some() {
+                let _ = app.on_tick().unwrap();
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "the worker never answered"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            assert_eq!(matches!(app.slots[1], Slot::Ready(_)), ready);
+        }
+    }
+
+    /// The Claude provider end to end against a stubbed keychain and endpoint:
+    /// the token goes to curl on stdin and the body becomes the card.
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn claude_loads_through_the_keychain_and_the_endpoint() {
+        let runner = MockRunner::new()
+            .on(
+                "find-generic-password",
+                r#"{"claudeAiOauth":{"accessToken":"sk-test"}}"#,
+            )
+            .on(
+                "curl",
+                r#"{"five_hour":{"utilization":12.0,"resets_at":"2026-08-18T19:09:59+00:00"}}"#,
+            );
+        let report = Claude.load(&runner, &Config::default()).expect("loads");
+        assert_eq!(report.windows.len(), 1);
+        assert!(runner.stdins()[0].contains("sk-test"));
+        assert!(!runner
+            .calls()
+            .concat()
+            .iter()
+            .any(|arg| arg.contains("sk-test")));
+
+        let refused = MockRunner::new().failing("security");
+        assert!(Claude.load(&refused, &Config::default()).is_err());
+    }
+
+    /// Off macOS the token lives in a file; a machine without one is a stated
+    /// reason rather than a request.
+    #[test]
+    #[cfg(not(target_os = "macos"))]
+    fn claude_without_stored_credentials_is_a_reason_not_a_request() {
+        let runner = MockRunner::new();
+        let result = Claude.load(&runner, &Config::default());
+        if result.is_err() {
+            assert!(runner.calls().is_empty(), "no request without a token");
+        }
+    }
+
+    /// The provider's identity, as the registry and the cards read it.
+    #[test]
+    fn the_claude_provider_names_itself_and_goes_through_the_worker() {
+        assert_eq!(Claude.id(), "claude");
+        assert_eq!(Claude.name(), "Claude Code");
+        assert!(!Claude.offline());
     }
 }
