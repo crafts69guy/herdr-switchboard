@@ -573,7 +573,29 @@ impl<M: PickerMode> PickerSurface<'_, M> {
     }
 }
 
-pub fn run<M: PickerMode>(mut mode: M, mut theme: Theme, mut cfg: Config) -> Result<()> {
+pub fn run<M: PickerMode>(mode: M, theme: Theme, cfg: Config) -> Result<()> {
+    run_with(
+        mode,
+        theme,
+        cfg,
+        |surface| crate::surface::run(surface),
+        || {
+            crate::settings::main(Config::try_load()?, Theme::load())?;
+            Ok((Config::try_load()?, Theme::load()))
+        },
+    )
+}
+
+/// The picker's outer loop, with the terminal host and the settings form passed
+/// in: production hands it `surface::run` and the standalone settings pane, and
+/// a test hands it a scripted sequence of exits.
+fn run_with<M: PickerMode>(
+    mut mode: M,
+    mut theme: Theme,
+    mut cfg: Config,
+    mut host: impl FnMut(&mut PickerSurface<'_, M>) -> Result<PickerExit>,
+    mut settings: impl FnMut() -> Result<(Config, Theme)>,
+) -> Result<()> {
     let schema = mode.schema();
     let normal = cfg.common.keymode == crate::config::KeyMode::Normal;
     let mut state = State::new(mode.initial()?, normal);
@@ -583,7 +605,7 @@ pub fn run<M: PickerMode>(mut mode: M, mut theme: Theme, mut cfg: Config) -> Res
     loop {
         let mut actions = mode.actions();
         apply_bindings(&mut actions, &mode.key_bindings());
-        let outcome = crate::surface::run(&mut PickerSurface {
+        let outcome = host(&mut PickerSurface {
             mode: &mut mode,
             theme: &theme,
             background,
@@ -596,15 +618,13 @@ pub fn run<M: PickerMode>(mut mode: M, mut theme: Theme, mut cfg: Config) -> Res
             return Ok(());
         };
         if action == "__settings" {
-            crate::settings::main(Config::try_load()?, Theme::load())?;
-            cfg = Config::try_load()?;
+            (cfg, theme) = settings()?;
             mode.reload_config(&cfg)?;
             state.input_mode = if cfg.common.keymode == crate::config::KeyMode::Normal {
                 InputMode::Normal
             } else {
                 InputMode::Insert
             };
-            theme = Theme::load();
             background = tui::SurfaceBackground::resolve(&theme, cfg.common.transparency);
             // `title_color` is one of the settings the overlay writes, so re-resolve
             // it against the reloaded theme rather than keeping the stale colour.
@@ -1828,6 +1848,167 @@ mod tests {
         (0..count)
             .map(|i| test_item(&format!("item-{i}")))
             .collect()
+    }
+
+    /// What a [`ScriptedMode`] was asked, readable after the loop consumed it.
+    #[derive(Default)]
+    struct ScriptLog {
+        executed: Vec<(String, String)>,
+        initial_calls: usize,
+        reloads: usize,
+    }
+
+    /// A mode that answers `execute` from a script and logs what it was asked.
+    #[derive(Default)]
+    struct ScriptedMode {
+        outcomes: std::collections::VecDeque<Result<ActionOutcome>>,
+        log: std::rc::Rc<std::cell::RefCell<ScriptLog>>,
+    }
+
+    impl PickerMode for ScriptedMode {
+        fn title(&self) -> &str {
+            "Scripted"
+        }
+        fn accent_slot(&self) -> &'static str {
+            "accent"
+        }
+        fn schema(&self) -> FieldSchema {
+            FieldSchema::default()
+        }
+        fn actions(&self) -> Vec<ActionSpec> {
+            vec![ActionSpec {
+                id: "open",
+                key: KeyCode::Enter,
+                modifiers: KeyModifiers::NONE,
+                key_label: "↵".into(),
+                label: "open",
+                color_slot: "blue",
+            }]
+        }
+        fn key_bindings(&self) -> HashMap<String, String> {
+            HashMap::from([("open".to_string(), "ctrl-o".to_string())])
+        }
+        fn reload_config(&mut self, _config: &Config) -> Result<()> {
+            self.log.borrow_mut().reloads += 1;
+            Ok(())
+        }
+        fn initial(&mut self) -> Result<Vec<PickerItem>> {
+            self.log.borrow_mut().initial_calls += 1;
+            Ok(items(3))
+        }
+        fn execute(&mut self, item_id: &str, action: &str) -> Result<ActionOutcome> {
+            self.log
+                .borrow_mut()
+                .executed
+                .push((item_id.to_string(), action.to_string()));
+            self.outcomes
+                .pop_front()
+                .unwrap_or(Ok(ActionOutcome::Close))
+        }
+    }
+
+    /// The outer loop: an action that stays open reloads the rows, a failed
+    /// one is shown where the count goes, settings reload the mode, and a
+    /// closing action or a plain close ends the picker.
+    #[test]
+    fn the_picker_loop_executes_reloads_and_closes_as_the_mode_answers() {
+        let mut mode = ScriptedMode::default();
+        let log = mode.log.clone();
+        mode.outcomes.push_back(Ok(ActionOutcome::StayOpen));
+        mode.outcomes
+            .push_back(Err(anyhow::anyhow!("listener is stale")));
+        let mut exits = std::collections::VecDeque::from([
+            PickerExit::Invoke("item-1".into(), "open"),
+            PickerExit::Invoke("item-2".into(), "open"),
+            PickerExit::Invoke(String::new(), "__settings"),
+            PickerExit::Invoke("item-0".into(), "open"),
+        ]);
+        let mut seen_error = None;
+        let mut first_key_label = None;
+        let settings_opened = std::cell::Cell::new(0);
+        let mut insert_after_settings = None;
+        run_with(
+            mode,
+            Theme::default(),
+            Config::default(),
+            |surface| {
+                first_key_label.get_or_insert_with(|| surface.actions[0].key_label.clone());
+                if surface.state.runtime_error.is_some() {
+                    seen_error = surface.state.runtime_error.clone();
+                }
+                if settings_opened.get() == 1 && insert_after_settings.is_none() {
+                    insert_after_settings = Some(surface.state.input_mode == InputMode::Insert);
+                }
+                Ok(exits.pop_front().unwrap_or(PickerExit::Close))
+            },
+            || {
+                settings_opened.set(settings_opened.get() + 1);
+                let mut cfg = Config::default();
+                cfg.common.keymode = crate::config::KeyMode::Insert;
+                Ok((cfg, Theme::default()))
+            },
+        )
+        .expect("loop ends cleanly");
+
+        assert_eq!(first_key_label.as_deref(), Some("^o"), "bindings apply");
+        assert_eq!(seen_error.as_deref(), Some("listener is stale"));
+        assert_eq!(settings_opened.get(), 1);
+        assert_eq!(insert_after_settings, Some(true));
+        let log = log.borrow();
+        assert_eq!(log.reloads, 1);
+        assert_eq!(
+            log.executed,
+            vec![
+                ("item-1".to_string(), "open".to_string()),
+                ("item-2".to_string(), "open".to_string()),
+                ("item-0".to_string(), "open".to_string()),
+            ]
+        );
+        // Once at start, once after StayOpen, once after settings.
+        assert_eq!(log.initial_calls, 3);
+    }
+
+    /// The fixture modes the render tests use also run through the loop, which
+    /// is the only caller that reaches their `initial` and `execute`.
+    #[test]
+    fn every_fixture_mode_closes_through_the_loop() {
+        fn once<M: PickerMode>(mode: M) {
+            let mut invoked = false;
+            run_with(
+                mode,
+                Theme::default(),
+                Config::default(),
+                |surface| {
+                    if invoked {
+                        return Ok(PickerExit::Close);
+                    }
+                    invoked = true;
+                    let _ = surface.mode.title();
+                    let _ = surface.mode.accent_slot();
+                    let _ = surface.mode.empty_message();
+                    Ok(PickerExit::Invoke("keep".into(), "open"))
+                },
+                || unreachable!("no settings in this script"),
+            )
+            .expect("closes");
+        }
+        once(TestMode);
+        once(TabbedMode { active: "history" });
+        once(WrappedBarMode);
+    }
+
+    /// A host error ends the loop with that error rather than retrying.
+    #[test]
+    fn a_host_failure_ends_the_picker_with_its_error() {
+        let error = run_with(
+            TestMode,
+            Theme::default(),
+            Config::default(),
+            |_| Err(anyhow::anyhow!("terminal lost")),
+            || unreachable!(),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("terminal lost"));
     }
 
     /// The cursor used to keep its *index* while a query narrowed the list, so

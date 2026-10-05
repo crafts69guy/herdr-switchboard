@@ -692,37 +692,10 @@ mod tests {
         assert!(error.to_string().contains("no longer exists"), "{error}");
     }
 
-    /// A runner the test can still read after the mode owns it.
-    struct Shared(&'static MockRunner);
-
-    impl CommandRunner for Shared {
-        fn output(&self, program: &str, args: &[&str]) -> std::io::Result<std::process::Output> {
-            self.0.output(program, args)
-        }
-        fn status(
-            &self,
-            program: &str,
-            args: &[&str],
-        ) -> std::io::Result<std::process::ExitStatus> {
-            self.0.status(program, args)
-        }
-        fn spawn_detached(&self, program: &std::ffi::OsStr, args: &[&str]) -> std::io::Result<()> {
-            self.0.spawn_detached(program, args)
-        }
-        fn output_stdin(
-            &self,
-            program: &str,
-            args: &[&str],
-            stdin: &str,
-        ) -> std::io::Result<std::process::Output> {
-            self.0.output_stdin(program, args, stdin)
-        }
-    }
-
     fn mode_with(runner: MockRunner) -> (CommandMode, &'static MockRunner) {
-        let runner: &'static MockRunner = Box::leak(Box::new(runner));
+        let runner = runner.leak();
         let mut mode = command_mode();
-        mode.runner = Box::new(Shared(runner));
+        mode.runner = Box::new(runner);
         mode.origin_pane = "w1:p1".into();
         mode.origin_cwd = Some("/repo".into());
         (mode, runner)

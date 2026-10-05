@@ -1,7 +1,7 @@
 //! Native Port Monitor for local TCP listeners.
 
 use std::collections::{BTreeSet, HashMap};
-use std::io::Write;
+use std::io::{BufRead, Write};
 use std::net::IpAddr;
 use std::path::PathBuf;
 use std::process::Command;
@@ -17,6 +17,7 @@ use crate::data::Theme;
 use crate::notify::{Event as NotifyEvent, Notifier};
 use crate::picker::{self, ActionOutcome, ActionSpec, PickerItem, PickerMode};
 use crate::query::{Document, FieldSchema, MatchKind};
+use crate::runner::{CommandRunner, SystemRunner};
 use crossterm::event::{KeyCode, KeyModifiers};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -302,6 +303,13 @@ struct PortMode {
     entries: Vec<PortEntry>,
     notifier: Notifier,
     bindings: HashMap<String, String>,
+    /// The effect edge, swapped for doubles in tests: herdr, the clipboard, the
+    /// browser, the typed confirmation, and the revalidated signal.
+    runner: Box<dyn CommandRunner>,
+    copy: fn(&str) -> Result<()>,
+    open: fn(&str) -> Result<()>,
+    confirm: fn(&PortEntry, bool) -> Result<()>,
+    signal: fn(&PortIdentity, PortSignal) -> Result<()>,
 }
 
 impl PortMode {
@@ -315,6 +323,11 @@ impl PortMode {
             entries: Vec::new(),
             notifier,
             bindings,
+            runner: Box::new(SystemRunner),
+            copy: crate::clipboard::copy_text,
+            open: open_url,
+            confirm: confirm_signal,
+            signal: system_signal,
         }
     }
 
@@ -451,9 +464,9 @@ impl PickerMode for PortMode {
             .context("listener disappeared")?;
         let endpoint = format!("localhost:{}", entry.identity.port);
         match action {
-            "copy" => crate::clipboard::copy_text(&endpoint)?,
-            "http" => open_url(&format!("http://{endpoint}"))?,
-            "https" => open_url(&format!("https://{endpoint}"))?,
+            "copy" => (self.copy)(&endpoint)?,
+            "http" => (self.open)(&format!("http://{endpoint}"))?,
+            "https" => (self.open)(&format!("https://{endpoint}"))?,
             "workspace" => {
                 let cwd = entry.cwd.as_deref().context("process cwd is unavailable")?;
                 anyhow::ensure!(cwd.is_dir(), "process cwd no longer exists");
@@ -461,18 +474,24 @@ impl PickerMode for PortMode {
                     .file_name()
                     .and_then(|name| name.to_str())
                     .unwrap_or("port");
-                let status = Command::new("herdr")
-                    .args(["workspace", "create", "--cwd"])
-                    .arg(cwd)
-                    .args(["--label", label, "--focus"])
-                    .status()?;
+                let cwd = cwd.to_string_lossy();
+                let status = self.runner.status(
+                    "herdr",
+                    &[
+                        "workspace",
+                        "create",
+                        "--cwd",
+                        &cwd,
+                        "--label",
+                        label,
+                        "--focus",
+                    ],
+                )?;
                 anyhow::ensure!(status.success(), "herdr workspace create failed");
             }
             "term" => {
-                confirm_signal(&entry, false)?;
-                if let Err(error) =
-                    PortMonitor::new(SystemProbe::new()).signal(&entry.identity, PortSignal::Term)
-                {
+                (self.confirm)(&entry, false)?;
+                if let Err(error) = (self.signal)(&entry.identity, PortSignal::Term) {
                     let event = if error.to_string().contains("stale") {
                         NotifyEvent::ListenerStale
                     } else {
@@ -485,10 +504,8 @@ impl PickerMode for PortMode {
                     .send(NotifyEvent::TermSucceeded, Some(&endpoint));
             }
             "kill" => {
-                confirm_signal(&entry, true)?;
-                if let Err(error) =
-                    PortMonitor::new(SystemProbe::new()).signal(&entry.identity, PortSignal::Kill)
-                {
+                (self.confirm)(&entry, true)?;
+                if let Err(error) = (self.signal)(&entry.identity, PortSignal::Kill) {
                     let event = if error.to_string().contains("stale") {
                         NotifyEvent::ListenerStale
                     } else {
@@ -602,20 +619,40 @@ fn open_url(url: &str) -> Result<()> {
     Ok(())
 }
 
+/// Signal a listener through the live probe, which revalidates it first.
+fn system_signal(identity: &PortIdentity, signal: PortSignal) -> Result<()> {
+    PortMonitor::new(SystemProbe::new()).signal(identity, signal)
+}
+
 fn confirm_signal(entry: &PortEntry, force: bool) -> Result<()> {
+    confirm_signal_with(
+        entry,
+        force,
+        &mut std::io::stdin().lock(),
+        &mut std::io::stdout(),
+    )
+}
+
+/// The typed confirmation, over any reader and writer.
+fn confirm_signal_with(
+    entry: &PortEntry,
+    force: bool,
+    input: &mut dyn BufRead,
+    output: &mut dyn Write,
+) -> Result<()> {
     anyhow::ensure!(entry.can_signal, "listener belongs to another user");
     let word = if force { "kill" } else { "term" };
-    println!(
-        "\x1b[1m{} process on port {}?\x1b[0m\nPID {}\n{}\n",
+    write!(
+        output,
+        "\x1b[1m{} process on port {}?\x1b[0m\nPID {}\n{}\n\nType {word} to confirm: ",
         if force { "Force kill" } else { "Stop" },
         entry.identity.port,
         entry.identity.pid,
         entry.command
-    );
-    print!("Type {word} to confirm: ");
-    std::io::stdout().flush()?;
+    )?;
+    output.flush()?;
     let mut reply = String::new();
-    std::io::stdin().read_line(&mut reply)?;
+    input.read_line(&mut reply)?;
     anyhow::ensure!(reply.trim() == word, "signal cancelled");
     Ok(())
 }
@@ -623,6 +660,7 @@ fn confirm_signal(entry: &PortEntry, force: bool) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::runner::MockRunner;
 
     #[derive(Default)]
     struct FakeProbe {
@@ -774,6 +812,11 @@ mod tests {
             entries,
             notifier: Notifier::silent(),
             bindings: HashMap::new(),
+            runner: Box::new(MockRunner::new()),
+            copy: |_| Ok(()),
+            open: |_| Ok(()),
+            confirm: |_, _| Ok(()),
+            signal: |_, _| Ok(()),
         }
     }
 
@@ -947,5 +990,175 @@ mod tests {
     fn confirming_a_signal_refuses_a_listener_the_user_does_not_own() {
         let error = confirm_signal(&entry(3000, 10, None, false), false).unwrap_err();
         assert!(error.to_string().contains("another user"), "{error}");
+    }
+
+    fn mode_with(entries: Vec<PortEntry>, runner: MockRunner) -> (PortMode, &'static MockRunner) {
+        let runner = runner.leak();
+        let mut mode = mode(entries);
+        mode.runner = Box::new(runner);
+        (mode, runner)
+    }
+
+    #[test]
+    fn copy_and_open_hand_the_endpoint_to_their_effect() {
+        let item = entry(3000, 10, None, true);
+        let id = port_id(&item);
+        let (mut mode, runner) = mode_with(vec![item], MockRunner::new());
+        mode.copy = |text| {
+            anyhow::ensure!(text == "localhost:3000", "copied {text}");
+            Ok(())
+        };
+        mode.open = |url| {
+            anyhow::ensure!(url.ends_with("://localhost:3000"), "opened {url}");
+            Ok(())
+        };
+        for action in ["copy", "http", "https"] {
+            assert!(matches!(
+                mode.execute(&id, action).unwrap(),
+                ActionOutcome::Close
+            ));
+        }
+        assert!(runner.calls().is_empty());
+        assert!(mode.execute(&id, "teleport").is_err());
+        assert!(mode.execute("gone", "copy").is_err());
+    }
+
+    #[test]
+    fn a_workspace_opens_in_the_listeners_cwd_named_after_it() {
+        let dir = std::env::temp_dir();
+        let label = dir.file_name().unwrap().to_string_lossy().into_owned();
+        let item = entry(3000, 10, Some(dir.to_str().unwrap()), true);
+        let id = port_id(&item);
+        let (mut mode, runner) = mode_with(vec![item], MockRunner::new());
+        mode.execute(&id, "workspace").unwrap();
+        assert_eq!(
+            runner.calls(),
+            vec![vec![
+                "herdr".to_string(),
+                "workspace".into(),
+                "create".into(),
+                "--cwd".into(),
+                dir.to_string_lossy().into_owned(),
+                "--label".into(),
+                label,
+                "--focus".into(),
+            ]]
+        );
+
+        let (mut failing, _) = mode_with(
+            vec![entry(3000, 10, Some(dir.to_str().unwrap()), true)],
+            MockRunner::new().failing("herdr"),
+        );
+        assert!(failing.execute(&id, "workspace").is_err());
+
+        let gone = entry(4000, 11, Some("/definitely/gone"), true);
+        let gone_id = port_id(&gone);
+        let hidden = entry(5000, 12, None, true);
+        let hidden_id = port_id(&hidden);
+        let (mut mode, runner) = mode_with(vec![gone, hidden], MockRunner::new());
+        assert!(mode.execute(&gone_id, "workspace").is_err());
+        assert!(mode.execute(&hidden_id, "workspace").is_err());
+        assert!(runner.calls().is_empty(), "nothing opens without a cwd");
+    }
+
+    #[test]
+    fn term_and_kill_confirm_then_signal_and_report_failures() {
+        let item = entry(3000, 10, None, true);
+        let id = port_id(&item);
+        let (mut mode, _) = mode_with(vec![item], MockRunner::new());
+        mode.signal = |identity, _| {
+            anyhow::ensure!(identity.port == 3000, "wrong listener");
+            Ok(())
+        };
+        mode.execute(&id, "term").unwrap();
+        mode.execute(&id, "kill").unwrap();
+
+        mode.signal = |_, _| anyhow::bail!("listener is stale or no longer signalable");
+        assert!(mode.execute(&id, "term").is_err());
+        mode.signal = |_, _| anyhow::bail!("could not send signal");
+        assert!(mode.execute(&id, "kill").is_err());
+
+        // A refused confirmation never reaches the signal.
+        mode.confirm = |_, _| anyhow::bail!("signal cancelled");
+        mode.signal = |_, _| panic!("signalled without confirmation");
+        assert!(mode.execute(&id, "term").is_err());
+    }
+
+    #[test]
+    fn a_signal_is_confirmed_only_by_typing_its_own_word() {
+        let item = entry(3000, 10, None, true);
+        let mut shown = Vec::new();
+        confirm_signal_with(&item, false, &mut "term\n".as_bytes(), &mut shown).unwrap();
+        let shown = String::from_utf8(shown).unwrap();
+        assert!(shown.contains("Stop process on port 3000"), "{shown}");
+        assert!(shown.contains("node server.js"), "{shown}");
+
+        let mut out = Vec::new();
+        confirm_signal_with(&item, true, &mut "kill\n".as_bytes(), &mut out).unwrap();
+        assert!(String::from_utf8(out).unwrap().contains("Force kill"));
+        assert!(
+            confirm_signal_with(&item, true, &mut "term\n".as_bytes(), &mut Vec::new()).is_err()
+        );
+    }
+
+    /// The real probe, against a listener this test owns: it must be found
+    /// under this process, attributed to this user, and described.
+    #[test]
+    fn the_system_probe_sees_a_listener_this_process_opened() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().unwrap().port();
+        let pid = std::process::id();
+
+        let mut probe = SystemProbe::new();
+        let found = probe.listeners().expect("listeners readable");
+        assert!(
+            found.iter().any(|l| l.port == port && l.pid == pid),
+            "own listener on {port} not reported"
+        );
+        let meta = probe.process(pid).expect("own process is visible");
+        assert!(meta.owned_by_current_user);
+        assert!(meta.start_time > 0);
+        assert!(probe.process(u32::MAX).is_none());
+        assert!(probe.signal(u32::MAX, PortSignal::Term).is_err());
+    }
+
+    /// Signals reach a real child of this test, and only after revalidation.
+    #[test]
+    fn the_system_probe_signals_a_process_this_test_started() {
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("sleep");
+        let mut probe = SystemProbe::new();
+        probe
+            .signal(child.id(), PortSignal::Term)
+            .expect("own child accepts TERM");
+        let status = child.wait().expect("child exits");
+        assert!(!status.success(), "terminated by the signal");
+
+        // The revalidating path refuses an identity that is not listening.
+        let stale = PortIdentity {
+            pid: std::process::id(),
+            port: 1,
+            start_time: 0,
+            addresses: Vec::new(),
+        };
+        assert!(system_signal(&stale, PortSignal::Kill).is_err());
+    }
+
+    /// The live worker scans, delivers, and stops when dropped.
+    #[test]
+    fn the_live_worker_delivers_a_snapshot_and_stops_on_drop() {
+        let worker = PortWorker::start(Duration::from_millis(50));
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        let snapshot = loop {
+            if let Some(snapshot) = worker.latest() {
+                break snapshot;
+            }
+            assert!(std::time::Instant::now() < deadline, "no snapshot");
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        assert!(snapshot.is_ok(), "{snapshot:?}");
+        drop(worker);
     }
 }

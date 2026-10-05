@@ -138,6 +138,12 @@ mod mock {
             self
         }
 
+        /// A runner that outlives the test, so a mode can own it as a
+        /// `Box<dyn CommandRunner>` while the test still reads its calls.
+        pub fn leak(self) -> &'static MockRunner {
+            Box::leak(Box::new(self))
+        }
+
         /// Every argv this runner was handed, program first, in call order.
         pub fn calls(&self) -> Vec<Vec<String>> {
             self.calls.lock().expect("mock calls lock poisoned").clone()
@@ -180,6 +186,21 @@ mod mock {
     fn exit(success: bool) -> ExitStatus {
         // Unix wait-status: exit code n is n << 8; this plugin is unix-only.
         ExitStatus::from_raw(if success { 0 } else { 1 << 8 })
+    }
+
+    impl CommandRunner for &'static MockRunner {
+        fn output(&self, program: &str, args: &[&str]) -> io::Result<Output> {
+            (**self).output(program, args)
+        }
+        fn status(&self, program: &str, args: &[&str]) -> io::Result<ExitStatus> {
+            (**self).status(program, args)
+        }
+        fn output_stdin(&self, program: &str, args: &[&str], stdin: &str) -> io::Result<Output> {
+            (**self).output_stdin(program, args, stdin)
+        }
+        fn spawn_detached(&self, program: &OsStr, args: &[&str]) -> io::Result<()> {
+            (**self).spawn_detached(program, args)
+        }
     }
 
     impl CommandRunner for MockRunner {
