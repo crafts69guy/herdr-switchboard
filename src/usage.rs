@@ -1609,43 +1609,47 @@ mod tests {
         }
     }
 
-    /// The Claude provider end to end against a stubbed keychain and endpoint:
-    /// the token goes to curl on stdin and the body becomes the card.
+    /// The Claude provider end to end, on either platform's credential store:
+    /// the keychain (stubbed) or the credentials file under a home of the
+    /// test's own. The token reaches curl only on stdin, the account and plan
+    /// come from `.claude.json`, and a missing credential is a stated reason.
     #[test]
-    #[cfg(target_os = "macos")]
-    fn claude_loads_through_the_keychain_and_the_endpoint() {
-        let runner = MockRunner::new()
-            .on(
-                "find-generic-password",
-                r#"{"claudeAiOauth":{"accessToken":"sk-test"}}"#,
-            )
-            .on(
-                "curl",
-                r#"{"five_hour":{"utilization":12.0,"resets_at":"2026-08-18T19:09:59+00:00"}}"#,
-            );
-        let report = Claude.load(&runner, &Config::default()).expect("loads");
+    fn claude_loads_through_either_credential_store() {
+        let home = std::env::temp_dir().join(format!("swb-claude-home-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(home.join(".claude")).unwrap();
+        let credentials = r#"{"claudeAiOauth":{"accessToken":"sk-test"}}"#;
+        let body = r#"{"five_hour":{"utilization":12.0,"resets_at":"2026-08-18T19:09:59+00:00"}}"#;
+        let cfg = Config::default();
+
+        let keychain = MockRunner::new()
+            .on("find-generic-password", credentials)
+            .on("curl", body);
+        let report = load_with(&keychain, &cfg, true, &home).expect("keychain loads");
         assert_eq!(report.windows.len(), 1);
-        assert!(runner.stdins()[0].contains("sk-test"));
-        assert!(!runner
+        assert!(keychain.stdins()[0].contains("sk-test"));
+        assert!(!keychain
             .calls()
             .concat()
             .iter()
             .any(|arg| arg.contains("sk-test")));
+        assert!(load_with(&MockRunner::new().failing("security"), &cfg, true, &home).is_err());
 
-        let refused = MockRunner::new().failing("security");
-        assert!(Claude.load(&refused, &Config::default()).is_err());
-    }
-
-    /// Off macOS the token lives in a file; a machine without one is a stated
-    /// reason rather than a request.
-    #[test]
-    #[cfg(not(target_os = "macos"))]
-    fn claude_without_stored_credentials_is_a_reason_not_a_request() {
-        let runner = MockRunner::new();
-        let result = Claude.load(&runner, &Config::default());
-        if result.is_err() {
-            assert!(runner.calls().is_empty(), "no request without a token");
-        }
+        let file = MockRunner::new().on("curl", body);
+        assert!(
+            load_with(&file, &cfg, false, &home).is_err(),
+            "no credentials file yet"
+        );
+        std::fs::write(home.join(".claude/.credentials.json"), credentials).unwrap();
+        std::fs::write(
+            home.join(".claude.json"),
+            r#"{"oauthAccount":{"emailAddress":"ada@example.com","organizationType":"claude_max"}}"#,
+        )
+        .unwrap();
+        let report = load_with(&file, &cfg, false, &home).expect("file loads");
+        assert_eq!(report.facts[0].value, "ada@example.com");
+        assert_eq!(report.plan.as_deref(), Some("max"));
+        std::fs::remove_dir_all(&home).ok();
     }
 
     /// The provider's identity, as the registry and the cards read it.

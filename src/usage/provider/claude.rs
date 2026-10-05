@@ -1,6 +1,7 @@
 //! Claude credential and usage endpoint adapter.
 
 use std::fs;
+use std::path::Path;
 
 use anyhow::{anyhow, Context, Result};
 
@@ -30,19 +31,31 @@ impl Provider for Claude {
         false
     }
     fn load(&self, runner: &dyn CommandRunner, cfg: &Config) -> Result<Report> {
-        let token = claude_token(runner)?;
-        let body = Claude::fetch(runner, &token, cfg.usage.timeout_ms)?;
-        let mut report = parse_claude_usage(&body, now())?;
-        if let Some(profile) = claude_profile() {
-            if let Some(email) = profile.email {
-                report.facts.insert(0, Fact::new("account", email));
-            }
-            // The usage endpoint names no plan, so this is the only place the
-            // Claude card can learn it.
-            report.plan = report.plan.or(profile.plan);
-        }
-        Ok(report)
+        load_with(runner, cfg, cfg!(target_os = "macos"), &home()?)
     }
+}
+
+/// [`Claude::load`] with the platform and home directory explicit: the token is
+/// in the keychain on macOS and in a file under `home` elsewhere, and the
+/// account label always comes from `home`.
+pub(in crate::usage) fn load_with(
+    runner: &dyn CommandRunner,
+    cfg: &Config,
+    keychain: bool,
+    home: &Path,
+) -> Result<Report> {
+    let token = claude_token_with(runner, keychain, home)?;
+    let body = Claude::fetch(runner, &token, cfg.usage.timeout_ms)?;
+    let mut report = parse_claude_usage(&body, now())?;
+    if let Some(profile) = claude_profile_in(home) {
+        if let Some(email) = profile.email {
+            report.facts.insert(0, Fact::new("account", email));
+        }
+        // The usage endpoint names no plan, so this is the only place the
+        // Claude card can learn it.
+        report.plan = report.plan.or(profile.plan);
+    }
+    Ok(report)
 }
 
 impl Claude {
@@ -91,8 +104,12 @@ impl Claude {
 /// refusal is a plain error here, never a retry loop. Linux keeps it in a file.
 /// The token is returned, used, and dropped — it is never traced, drawn, or
 /// written anywhere.
-pub(in crate::usage) fn claude_token(runner: &dyn CommandRunner) -> Result<String> {
-    let raw = if cfg!(target_os = "macos") {
+pub(in crate::usage) fn claude_token_with(
+    runner: &dyn CommandRunner,
+    keychain: bool,
+    home: &Path,
+) -> Result<String> {
+    let raw = if keychain {
         runner
             .capture(
                 "security",
@@ -100,7 +117,7 @@ pub(in crate::usage) fn claude_token(runner: &dyn CommandRunner) -> Result<Strin
             )
             .ok_or_else(|| anyhow!("keychain access denied or no credentials stored"))?
     } else {
-        let path = home()?.join(".claude/.credentials.json");
+        let path = home.join(".claude/.credentials.json");
         fs::read_to_string(&path).map_err(|_| anyhow!("no credentials at ~/.claude"))?
     };
     parse_claude_token(&raw)
@@ -202,8 +219,8 @@ pub(in crate::usage) struct ClaudeProfile {
     pub(in crate::usage) plan: Option<String>,
 }
 
-pub(in crate::usage) fn claude_profile() -> Option<ClaudeProfile> {
-    let text = fs::read_to_string(home().ok()?.join(".claude.json")).ok()?;
+pub(in crate::usage) fn claude_profile_in(home: &Path) -> Option<ClaudeProfile> {
+    let text = fs::read_to_string(home.join(".claude.json")).ok()?;
     profile_from_claude_json(&text)
 }
 
