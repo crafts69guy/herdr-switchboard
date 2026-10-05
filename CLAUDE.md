@@ -27,7 +27,7 @@ cargo build --release                        # what bin/picker.sh actually launc
 cargo test                                   # unit tests (sorting, group filter, history parsing)
 cargo test recent_sort_puts_latest_opened_first   # single test by name
 bash bin/check.sh                            # complete local/CI/release gate
-bash bin/coverage.sh                         # line coverage, gated at 90% (CI runs this too)
+bash bin/coverage.sh                         # line coverage, gated at 98% (CI runs this too)
 bash bin/coverage.sh --open                  # ... and open the annotated HTML report
 bash bin/release.sh 0.5.0                    # cut a release (gates, bump, changelog, tag, gh release)
 
@@ -362,8 +362,9 @@ order so the list stays stable.
   `zen chrome-restore` can retry. The snapshot is its own state file (`zen.chrome.tsv`) rather
   than part of the session record precisely because it must outlive the session. `enter` never
   re-snapshots over a leftover snapshot: that would record zen's own values as the user's and
-  lose the way home for good. Default is `off`; tests must never use `Level::Full`, the same way
-  they never use the real `SessionStore` path.
+  lose the way home for good. Default is `off`. Tests may exercise every level, because the test
+  build points `chrome::config_path` at its scratch directory (see the coverage rule below); a
+  test that writes that scratch herdr config holds `CHROME_LOCK` in `zen.rs`.
 - **`socket.rs` is a deliberate exception to the `CommandRunner` rule, not a precedent.**
   `pane.graphics.*` is absent from `herdr pane --help` and reachable only over the socket, so the
   gutter scrim has no CLI path. Everything else must keep shelling out through `CommandRunner`,
@@ -377,15 +378,26 @@ order so the list stays stable.
   compile time is CI's and the run time is the installer's. Archives are packaged from
   `target/<triple>/dist/`; `bin/lib.sh` still builds and reads `target/release/`. Do not collapse
   them — either the local fallback gets eight times slower or every shipped binary gets slower.
-- **Nothing is excluded from the coverage denominator.** Some code genuinely cannot be reached by a
-  unit test — a mode's `main`, `surface::run` claiming a real terminal, `SystemProbe` reading real
-  sockets, a worker's thread body — and it still counts against the 90% in `bin/coverage.sh`. An
-  exclusion list is a second thing to argue about and a place for the number to quietly stop meaning
-  what it says; the answer to a low file is a test, or an honest seam. The seams that exist for this
-  are narrow and each replaces something a test has no business starting: `PortWorker::seeded` (a
-  real system scan), `CatalogWorker::disconnected` (a thread that died), `AgentsMode::initial_with`
-  and `SessionStore::at` (the machine's own state). A test that would fire a real notification uses
-  `Notifier::silent`.
+- **Nothing is excluded from the coverage denominator, and the gate is 98%.** Some code genuinely
+  cannot run under a unit test — `surface::run` and `preroll` claiming a real terminal, the
+  `exec` that replaces the process, a stdin prompt's wrapper — and it still counts against
+  `MINIMUM` in `bin/coverage.sh`. An exclusion list (or `#[cfg(not(test))]`, which is one in
+  disguise) is a second thing to argue about and a place for the number to quietly stop meaning
+  what it says; the answer to a low file is a test, or an honest seam. The seams that exist are
+  narrow and each replaces something a test has no business starting: `surface::Host`
+  (`TerminalHost` in production, `ScriptedHost` driving the real host loop on a `TestBackend`),
+  injected runners on every mode and background step, `fn` pointers for the clipboard, URL
+  opener, typed confirmations, process replacement, and Zen's chrome restore, prompts that read
+  any `BufRead`, `PortWorker::seeded`, and `CatalogWorker::disconnected`. A test that would fire a
+  real notification uses `Notifier::silent`.
+- **Tests never touch the developer's machine state.** In the test build, `state::state_dir`, the
+  plugin's `config::config_path`, `chrome::config_path` (herdr's config), and the herdr socket all
+  resolve under `state::test_scratch()`, one directory per test process, and `trace` always writes
+  to a scratch log. A background step once reached the real `review_archive::set` from a test and
+  left a fixture slug in the developer's archive; that class of leak is now structurally
+  impossible. The real path rules are pure `*_from` functions tested on their own. Never add a
+  test that reads or writes `$HOME` directly — take the directory as a parameter instead, as
+  `codex::load_from` and `claude::load_with` do.
 - **Version sync:** `Cargo.toml` and `herdr-plugin.toml` versions must match; `tests/manifest_spec.sh`
   enforces it. `bin/release.sh` bumps both, so bump through it rather than by hand.
 - **The changelog is the release notes.** Every user-facing change adds a line to

@@ -1780,4 +1780,30 @@ mod tests {
         assert!(report.renews_at.is_some());
         std::fs::remove_dir_all(&home).ok();
     }
+
+    /// A networked provider the worker can no longer find in the registry is
+    /// skipped: its card stays loading rather than the worker failing.
+    #[test]
+    fn a_provider_gone_from_the_registry_is_skipped_by_the_worker() {
+        static CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        fn shrinking() -> Vec<Box<dyn Provider>> {
+            if CALLS.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                fakes()
+            } else {
+                Vec::new()
+            }
+        }
+        let mut app = app_with(Vec::new());
+        app.cfg.usage.providers = vec!["online-fake".into()];
+        app.registry = shrinking;
+        app.runner = Arc::new(MockRunner::new());
+        app.refresh();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while app.inbox.is_some() {
+            let _ = app.on_tick().unwrap();
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(matches!(app.slots[0], Slot::Loading { .. }));
+    }
 }

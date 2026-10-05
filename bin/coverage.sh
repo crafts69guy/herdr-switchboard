@@ -18,8 +18,11 @@ set -euo pipefail
 # terminal, `SystemProbe` reading real sockets — and it still counts. An
 # exclusion list is a second thing to argue about and a place for the number to
 # quietly stop meaning what it says.
+#
+# CI measures on Linux. Platform branches (`cfg!(target_os = ...)`) mean a
+# macOS run can read a little higher; check against Linux before tightening.
 
-MINIMUM=90
+MINIMUM=98
 
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"

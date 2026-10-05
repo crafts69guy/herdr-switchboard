@@ -69,7 +69,7 @@ the module inventory.
 
 | Module | Interface | Implementation hides |
 | --- | --- | --- |
-| `surface` | `Surface`, `Transition`, `run` | Terminal lease, mouse capture, polling, ticks, input coalescing, redraw, teardown |
+| `surface` | `Surface`, `Transition`, `run`, `Host` (`TerminalHost`; `ScriptedHost` in tests) | Terminal lease, mouse capture, polling, ticks, input coalescing, redraw, teardown |
 | `tui` | `SurfaceBackground`, shared frames and pills | Transparent/opaque painting, clearing, frame and hit-zone vocabulary |
 | `config` | Typed section fields, `parse`, `try_load`, finite `value_for_cli` | Namespaced deserialization, defaults, validation |
 | `state` | XDG paths and clock; `write_private`, `update_private`, `replace_atomically` | Cross-process locking, unique tempfiles, atomic replacement, permission policy |
@@ -321,7 +321,7 @@ popups cannot be represented as several simultaneously active booleans.
 - `TestBackend` render tests cover supported widths, both background modes, live key labels, and
   hit zones for any changed surface.
 - Run the complete local/CI/release gate with `bash bin/check.sh`, and the coverage gate with
-  `bash bin/coverage.sh` (line coverage, 90%, nothing excluded from the denominator).
+  `bash bin/coverage.sh` (line coverage, 98%, nothing excluded from the denominator).
 - Manually exercise every affected Herdr pane. Attach a current screenshot when layout or
   interaction changes.
 - Any user-visible change receives an `[Unreleased]` changelog entry in the same implementation
