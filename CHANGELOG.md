@@ -12,6 +12,10 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **An agent's Inspector shows its recent output again.** herdr 0.9 answers `agent read` with the
   pane text itself rather than a JSON envelope, and the Inspector read only the envelope — so every
   agent row said `(no output available)`. Both shapes are now understood.
+- **Typing a query in Commands, Ports, AI Agents, Zen, Node Versions, or the Menu selects the best
+  match.** The cursor kept its old position while the list narrowed, so moving down and then
+  searching left `enter` on a different row than the one you searched for — and in Commands that
+  row runs. Projects already behaved this way. A refresh still keeps the row you were on.
 
 ## [3.0.1] - 2026-09-18
 

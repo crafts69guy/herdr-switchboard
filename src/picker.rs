@@ -277,17 +277,17 @@ impl State {
 
     fn replace(&mut self, items: Vec<PickerItem>, schema: &FieldSchema) {
         self.selected_id = self.selected_item().map(|item| item.id.clone());
+        let previous = self.selected;
         self.items = items;
         self.recompute(schema);
-        if let Some(id) = &self.selected_id {
-            if let Some(position) = self
-                .filtered
+        let kept = self.selected_id.as_ref().and_then(|id| {
+            self.filtered
                 .iter()
                 .position(|index| self.items[*index].id == *id)
-            {
-                self.selected = position;
-            }
-        }
+        });
+        // A row that is gone (forgotten, killed) leaves the cursor on its
+        // neighbour rather than sending it back to the top.
+        self.selected = kept.unwrap_or_else(|| previous.min(self.filtered.len().saturating_sub(1)));
     }
 
     fn recompute(&mut self, schema: &FieldSchema) {
@@ -312,7 +312,10 @@ impl State {
             }
             Err(diagnostic) => self.diagnostic = Some(diagnostic),
         }
-        self.selected = self.selected.min(self.filtered.len().saturating_sub(1));
+        // The best match, never the old index: an index means a different row
+        // once the list has been re-filtered and re-ranked, and Enter would run
+        // it. `replace` restores the row a refresh should keep by its ID.
+        self.selected = 0;
         self.preview_scroll = 0;
     }
 
@@ -1825,6 +1828,68 @@ mod tests {
         (0..count)
             .map(|i| test_item(&format!("item-{i}")))
             .collect()
+    }
+
+    /// The cursor used to keep its *index* while a query narrowed the list, so
+    /// moving down first and then filtering to a command left Enter on whatever
+    /// row now sat at that index — it ran `kubectl` for a query naming `git log`.
+    /// Editing the query puts the cursor on the best match, as Projects does.
+    #[test]
+    fn editing_the_query_puts_the_cursor_on_the_best_match() {
+        let rows = [
+            "make run",
+            "kubectl -n staging logs deploy/api-gateway -f",
+            "terraform plan",
+            "git log --graph",
+        ];
+        let mut h = Harness::new(rows.iter().map(|id| test_item(id)).collect(), true);
+        for _ in 0..3 {
+            h.press(KeyCode::Char('j'));
+        }
+        h.press(KeyCode::Char('/'));
+        for character in "git log".chars() {
+            h.press(KeyCode::Char(character));
+        }
+        assert!(
+            h.state.filtered.len() > 1,
+            "the query must leave several rows, or the old index is clamped to the top anyway"
+        );
+        assert_eq!(
+            invoked(h.press(KeyCode::Enter)),
+            Some(("git log --graph".to_string(), "open"))
+        );
+
+        // Widening the query again starts from the best match as well.
+        h.press(KeyCode::Down);
+        h.key(KeyCode::Backspace, KeyModifiers::ALT);
+        assert_eq!(h.state.selected, 0);
+    }
+
+    /// A refresh replaces the rows under an unchanged query; the cursor follows
+    /// the row it was on rather than jumping to the top.
+    #[test]
+    fn a_refresh_keeps_the_cursor_on_the_same_row() {
+        let mut h = Harness::new(items(4), true);
+        h.press(KeyCode::Char('j'));
+        h.press(KeyCode::Char('j'));
+        let mut rows = items(4);
+        rows.insert(0, test_item("new-arrival"));
+        h.state.replace(rows, &h.schema.clone());
+        assert_eq!(
+            h.state.selected_item().map(|item| item.id.as_str()),
+            Some("item-2")
+        );
+
+        // When the row itself is gone, its neighbour takes the cursor.
+        let remaining: Vec<PickerItem> = items(4)
+            .into_iter()
+            .filter(|item| item.id != "item-2")
+            .collect();
+        h.state.replace(remaining, &h.schema.clone());
+        assert_eq!(
+            h.state.selected_item().map(|item| item.id.as_str()),
+            Some("item-3")
+        );
     }
 
     fn invoked(transition: Transition<PickerExit>) -> Option<(String, &'static str)> {

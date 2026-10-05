@@ -1,8 +1,5 @@
 # The central menu routes to every surface; here it opens Usage.
-#
-# Walk to the row rather than filter to it: the shared picker keeps the cursor's
-# index while a query narrows the list, so a filter typed after any motion can
-# land Enter on a different row — once, on the plugin updater.
+# Walking to the row shows the menu's whole list on the way there.
 Output docs/media/menu.gif
 Source demo/tapes/common.tape
 

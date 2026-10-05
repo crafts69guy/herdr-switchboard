@@ -1,7 +1,7 @@
 # Commands: search history and presets, then fill the exact command and run it.
 #
-# The query must match exactly one row and nothing may move the cursor first:
-# whatever Enter fills is then run for real on the recording machine.
+# Whatever Enter fills is then run for real on the recording machine, so the
+# query names exactly one harmless row.
 Output docs/media/commands.gif
 Source demo/tapes/common.tape
 
