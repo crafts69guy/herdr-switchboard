@@ -1874,20 +1874,18 @@ mod tests {
         ));
 
         // Accept resolves the selection at the moment it leaves, not later.
-        match surface.apply_flow(Flow::Accept(Accept::Workspace)) {
-            SurfaceTransition::Exit(Some(ProjectOutcome::Accept(entry, accept))) => {
-                assert_eq!(entry.unwrap().id, selected.id);
-                assert_eq!(accept, Accept::Workspace);
-            }
-            _ => panic!("accept must leave with the selection"),
-        }
+        let accepted = surface.apply_flow(Flow::Accept(Accept::Workspace));
+        assert!(matches!(
+            accepted,
+            SurfaceTransition::Exit(Some(ProjectOutcome::Accept(Some(ref entry), Accept::Workspace)))
+                if entry.id == selected.id
+        ));
 
-        match surface.apply_flow(Flow::CopyPath(selected.clone())) {
-            SurfaceTransition::Exit(Some(ProjectOutcome::CopyPath(entry))) => {
-                assert_eq!(entry.id, selected.id)
-            }
-            _ => panic!("copy must leave with its entry"),
-        }
+        let copied = surface.apply_flow(Flow::CopyPath(selected.clone()));
+        assert!(matches!(
+            copied,
+            SurfaceTransition::Exit(Some(ProjectOutcome::CopyPath(ref entry))) if entry.id == selected.id
+        ));
     }
 
     /// The three flows that need a thread all start one and report the work as
@@ -1982,10 +1980,8 @@ mod tests {
         assert_eq!(app.handoff.selected, 1);
 
         // The same row again: deliver.
-        match app.on_handoff_click(Position::new(5, 2)) {
-            Flow::Deliver(request) => assert_eq!(request.target.pane_id, "w1:p2"),
-            _ => panic!("a click on the selected row must deliver"),
-        }
+        let flow = app.on_handoff_click(Position::new(5, 2));
+        assert!(matches!(flow, Flow::Deliver(ref request) if request.target.pane_id == "w1:p2"));
     }
 
     /// A click below the last agent, or outside the list, is not a row.
@@ -2469,15 +2465,11 @@ mod tests {
         );
         app.catalog = CatalogState::Ready;
 
-        match apply_action(&mut app, Action::CopyPath) {
-            Flow::CopyPath(entry) => assert_eq!(entry.id, with_dir.id),
-            _ => panic!("copy must carry its entry"),
-        }
+        let flow = apply_action(&mut app, Action::CopyPath);
+        assert!(matches!(flow, Flow::CopyPath(ref entry) if entry.id == with_dir.id));
 
-        match apply_action(&mut app, Action::SendToAgent) {
-            Flow::DiscoverTargets(entry) => assert_eq!(entry.id, with_dir.id),
-            _ => panic!("send must carry its entry"),
-        }
+        let flow = apply_action(&mut app, Action::SendToAgent);
+        assert!(matches!(flow, Flow::DiscoverTargets(ref entry) if entry.id == with_dir.id));
         assert_eq!(
             app.overlay,
             Overlay::Handoff,
@@ -2577,13 +2569,9 @@ mod tests {
         app.catalog = CatalogState::Ready;
         let selected = app.picker.selected_entry().unwrap().clone();
 
-        match apply_action(&mut app, Action::ToggleStar) {
-            Flow::SetStar(entry, starred) => {
-                assert_eq!(entry.id, selected.id);
-                assert!(starred, "an unstarred entry is being starred");
-            }
-            _ => panic!("star must request a write"),
-        }
+        // An unstarred entry is being starred.
+        let flow = apply_action(&mut app, Action::ToggleStar);
+        assert!(matches!(flow, Flow::SetStar(ref entry, true) if entry.id == selected.id));
         assert!(
             !app.picker.is_starred(&selected),
             "the marker only changes once the write returns"
@@ -2748,12 +2736,10 @@ mod tests {
 
         assert!(matches!(transition, SurfaceTransition::Redraw));
         assert!(!surface.catalog_pending);
-        match &surface.app.catalog {
-            CatalogState::Failed(message) => {
-                assert!(message.contains("stopped unexpectedly"), "{message}")
-            }
-            other => panic!("expected a stated failure, got {other:?}"),
-        }
+        let catalog = &surface.app.catalog;
+        assert!(
+            matches!(catalog, CatalogState::Failed(message) if message.contains("stopped unexpectedly"))
+        );
     }
 
     /// Nothing outstanding is a plain wait: no redraw, no state change.
@@ -3909,10 +3895,10 @@ mod tests {
         press(&mut app, KeyCode::Backspace);
         assert_eq!(app.handoff.query, "a");
         assert_eq!(app.handoff.filtered.len(), 3);
-        match press(&mut app, KeyCode::Enter) {
-            Flow::Deliver(request) => assert_eq!(request.item.absolute_path, "/work/api"),
-            _ => panic!("enter delivers to the selected agent"),
-        }
+        let flow = press(&mut app, KeyCode::Enter);
+        assert!(
+            matches!(flow, Flow::Deliver(ref request) if request.item.absolute_path == "/work/api")
+        );
 
         press(&mut app, KeyCode::Esc);
         assert!(app.handoff.query.is_empty(), "esc clears the filter first");
@@ -4048,28 +4034,28 @@ mod tests {
         cfg.projects.preview = "disabled".into();
         cfg.projects.preview_size = "95%".into();
         cfg.projects.default_tab = "repos".into();
-        match app.reconfigure_with(cfg) {
+        let intent = app.reconfigure_with(cfg);
+        assert!(matches!(
+            intent,
             CatalogIntent::Refresh {
-                requested_group,
-                preserve_selection,
-            } => {
-                assert_eq!(requested_group, GroupFilter::Only(Kind::Repo));
-                assert!(!preserve_selection);
+                requested_group: GroupFilter::Only(Kind::Repo),
+                preserve_selection: false,
             }
-            _ => panic!("reconfiguring refreshes"),
-        }
+        ));
         assert!(!app.preview.enabled);
         assert_eq!(app.preview.pct, 80, "clamped");
         assert_eq!(app.picker.sort, SortMode::Name);
 
         // An unchanged default group keeps the one the user is on.
         let same = app.cfg.clone();
-        match app.reconfigure_with(same) {
+        let intent = app.reconfigure_with(same);
+        assert!(matches!(
+            intent,
             CatalogIntent::Refresh {
-                preserve_selection, ..
-            } => assert!(preserve_selection),
-            _ => panic!("reconfiguring refreshes"),
-        }
+                preserve_selection: true,
+                ..
+            }
+        ));
     }
 
     /// The wheel goes to whichever popup is open before anything beneath it.
@@ -4207,11 +4193,9 @@ mod tests {
             Config::default(),
             ".".into(),
         );
-        let tabs = app.picker.tabs().len();
-        if tabs < 2 {
-            app.picker.cycle_group(1);
-            assert_eq!(app.picker.group, GroupFilter::All);
-        }
+        // All and Starred are always there, so cycling always has somewhere to go.
+        app.picker.cycle_group(1);
+        assert_ne!(app.picker.group, GroupFilter::All);
         app.picker.query = "zzzz".into();
         app.picker.recompute();
         app.picker.move_sel(1);

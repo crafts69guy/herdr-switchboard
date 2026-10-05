@@ -454,13 +454,11 @@ mod tests {
 
         sender.send((1, Err("no credential".to_string()))).unwrap();
         assert!(app.drain(), "an answer landed");
-        match &app.slots[1] {
-            Slot::Unavailable { name, reason } => {
-                assert_eq!(name, "Claude", "the card keeps its name");
-                assert_eq!(reason, "no credential");
-            }
-            other => panic!("expected a stated failure, got {other:?}"),
-        }
+        // The card keeps its name, and says why.
+        assert!(matches!(
+            &app.slots[1],
+            Slot::Unavailable { name, reason } if name == "Claude" && reason == "no credential"
+        ));
         // The other card is untouched and still waiting.
         assert!(matches!(app.slots[0], Slot::Loading { .. }));
     }
@@ -558,13 +556,11 @@ mod tests {
     /// limits" rather than "this could not be read".
     #[test]
     fn a_provider_result_is_always_a_card_or_a_stated_reason() {
-        match slot_of("Claude", Err(anyhow::anyhow!("token expired"))) {
-            Slot::Unavailable { name, reason } => {
-                assert_eq!(name, "Claude");
-                assert_eq!(reason, "token expired");
-            }
-            other => panic!("a failure must be stated, got {other:?}"),
-        }
+        let slot = slot_of("Claude", Err(anyhow::anyhow!("token expired")));
+        assert!(matches!(
+            slot,
+            Slot::Unavailable { ref name, ref reason } if name == "Claude" && reason == "token expired"
+        ));
     }
 
     /// The config names which providers appear and in what order. An unknown
