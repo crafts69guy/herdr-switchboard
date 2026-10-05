@@ -1107,4 +1107,31 @@ mod tests {
             &vec!["herdr", "workspace", "close", "w2"]
         );
     }
+
+    /// Every integration herdr ships has a human name; anything else is shown
+    /// as its id.
+    #[test]
+    fn every_known_integration_has_a_display_name() {
+        for id in [
+            "pi",
+            "omp",
+            "claude",
+            "codex",
+            "copilot",
+            "devin",
+            "droid",
+            "kimi",
+            "opencode",
+            "kilo",
+            "hermes",
+            "qodercli",
+            "cursor",
+            "mastracode",
+            "antigravity-cli",
+            "grok",
+        ] {
+            assert_ne!(display_name(id), id, "{id}");
+        }
+        assert_eq!(display_name("brand-new"), "brand-new");
+    }
 }

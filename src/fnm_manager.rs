@@ -5,8 +5,9 @@
 //! Mutations run only after the picker has restored the terminal.
 
 use std::collections::{HashMap, HashSet};
-use std::io::{self, Write};
+use std::io::{self, BufRead, Write};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use crossterm::event::{KeyCode, KeyModifiers};
@@ -53,6 +54,10 @@ struct FnmMode {
     remote_rx: Option<Receiver<RemoteResult>>,
     origin_pane: String,
     bindings: HashMap<String, String>,
+    /// fnm and herdr, for the lookup and every mutation; tests use `MockRunner`.
+    runner: Arc<dyn CommandRunner + Send + Sync>,
+    /// The typed uninstall confirmation; tests swap in an answer.
+    confirm: fn(&str) -> Result<()>,
 }
 
 pub fn main(cfg: Config, theme: Theme) -> Result<()> {
@@ -62,7 +67,13 @@ pub fn main(cfg: Config, theme: Theme) -> Result<()> {
 
 impl FnmMode {
     fn new(cfg: &Config) -> Self {
+        Self::with(cfg, Arc::new(SystemRunner))
+    }
+
+    fn with(cfg: &Config, runner: Arc<dyn CommandRunner + Send + Sync>) -> Self {
         Self {
+            runner,
+            confirm: confirm_uninstall,
             installed: Vec::new(),
             remote: Vec::new(),
             remote_error: None,
@@ -74,8 +85,9 @@ impl FnmMode {
 
     fn start_remote_load(&mut self) {
         let (sender, receiver) = mpsc::channel();
+        let runner = Arc::clone(&self.runner);
         std::thread::spawn(move || {
-            let result = load_remote(&SystemRunner)
+            let result = load_remote(runner.as_ref())
                 .map(RemoteResult::Loaded)
                 .unwrap_or_else(|error| RemoteResult::Failed(error.to_string()));
             let _ = sender.send(result);
@@ -231,7 +243,7 @@ impl PickerMode for FnmMode {
     }
 
     fn initial(&mut self) -> Result<Vec<PickerItem>> {
-        self.installed = load_installed(&SystemRunner)?;
+        self.installed = load_installed(self.runner.as_ref())?;
         self.remote.clear();
         self.remote_error = None;
         self.start_remote_load();
@@ -276,12 +288,17 @@ impl PickerMode for FnmMode {
             "install" => Operation::Install,
             "default" => Operation::Default,
             "uninstall" => {
-                confirm_uninstall(&version.value)?;
+                (self.confirm)(&version.value)?;
                 Operation::Uninstall
             }
             _ => anyhow::bail!("unsupported fnm action {action}"),
         };
-        perform(&SystemRunner, &self.origin_pane, &version.value, operation)
+        perform(
+            self.runner.as_ref(),
+            &self.origin_pane,
+            &version.value,
+            operation,
+        )
     }
 }
 
@@ -471,11 +488,22 @@ fn status_item(id: &str, title: &str, detail: &str) -> PickerItem {
 }
 
 fn confirm_uninstall(version: &str) -> Result<()> {
-    println!("\x1b[1mUninstall Node {version}?\x1b[0m\n");
-    print!("Type {version} to confirm: ");
-    io::stdout().flush()?;
+    confirm_uninstall_with(version, &mut io::stdin().lock(), &mut io::stdout())
+}
+
+/// The exact version typed back is the only confirmation an uninstall takes.
+fn confirm_uninstall_with(
+    version: &str,
+    input: &mut dyn BufRead,
+    output: &mut dyn Write,
+) -> Result<()> {
+    write!(
+        output,
+        "\x1b[1mUninstall Node {version}?\x1b[0m\n\nType {version} to confirm: "
+    )?;
+    output.flush()?;
     let mut reply = String::new();
-    io::stdin().read_line(&mut reply)?;
+    input.read_line(&mut reply)?;
     anyhow::ensure!(reply.trim() == version, "uninstall cancelled");
     Ok(())
 }
@@ -548,7 +576,7 @@ mod tests {
 
     #[test]
     fn installed_versions_are_not_duplicated_in_the_remote_rows() {
-        let mut mode = FnmMode::new(&Config::default());
+        let mut mode = FnmMode::with(&Config::default(), Arc::new(MockRunner::new()));
         mode.installed = parse_versions("v24.1.0\n", Source::Installed);
         mode.remote = parse_versions("v25.0.0\nv24.1.0\n", Source::Remote);
         let ids = mode
@@ -573,7 +601,7 @@ mod tests {
     /// `uninstall` on the system Node.
     #[test]
     fn each_action_is_disabled_for_the_versions_it_cannot_apply_to() {
-        let mut mode = FnmMode::new(&Config::default());
+        let mut mode = FnmMode::with(&Config::default(), Arc::new(MockRunner::new()));
         mode.installed = vec![
             version("v24.1.0", Source::Installed, true, false),
             version("system", Source::Installed, false, false),
@@ -624,7 +652,7 @@ mod tests {
     /// resolved to whatever version happens to be nearby.
     #[test]
     fn a_status_row_is_not_actionable() {
-        let mode = FnmMode::new(&Config::default());
+        let mode = FnmMode::with(&Config::default(), Arc::new(MockRunner::new()));
         let reason = mode
             .action_disabled_reason("status:remote-loading", "primary")
             .expect("a status row offers no operation");
@@ -658,7 +686,7 @@ mod tests {
     /// Every documented filter field has to resolve against a real row.
     #[test]
     fn every_advertised_filter_field_matches_the_row_it_describes() {
-        let mode = FnmMode::new(&Config::default());
+        let mode = FnmMode::with(&Config::default(), Arc::new(MockRunner::new()));
         let schema = mode.schema();
         let item = version_item(&version("v24.1.0", Source::Installed, true, false));
         let mut matcher = nucleo_matcher::Matcher::new(nucleo_matcher::Config::DEFAULT);
@@ -683,7 +711,7 @@ mod tests {
     #[test]
     fn the_remote_lookup_reports_itself_while_running_and_after_it_fails() {
         let (sender, receiver) = mpsc::channel();
-        let mut mode = FnmMode::new(&Config::default());
+        let mut mode = FnmMode::with(&Config::default(), Arc::new(MockRunner::new()));
         mode.installed = vec![version("v24.1.0", Source::Installed, false, false)];
         mode.remote_rx = Some(receiver);
 
@@ -707,7 +735,7 @@ mod tests {
     #[test]
     fn a_remote_worker_that_disappears_becomes_a_stated_failure() {
         let (sender, receiver) = mpsc::channel::<RemoteResult>();
-        let mut mode = FnmMode::new(&Config::default());
+        let mut mode = FnmMode::with(&Config::default(), Arc::new(MockRunner::new()));
         mode.remote_rx = Some(receiver);
         drop(sender);
 
@@ -728,7 +756,7 @@ mod tests {
     #[test]
     fn a_successful_remote_lookup_replaces_the_loading_row_with_versions() {
         let (sender, receiver) = mpsc::channel();
-        let mut mode = FnmMode::new(&Config::default());
+        let mut mode = FnmMode::with(&Config::default(), Arc::new(MockRunner::new()));
         mode.remote_rx = Some(receiver);
         sender
             .send(RemoteResult::Loaded(parse_versions(
@@ -746,7 +774,7 @@ mod tests {
     /// so it must keep the picker open and touch nothing.
     #[test]
     fn refresh_keeps_the_manager_open_without_running_anything() {
-        let mut mode = FnmMode::new(&Config::default());
+        let mut mode = FnmMode::with(&Config::default(), Arc::new(MockRunner::new()));
         assert_eq!(
             mode.execute("anything", "refresh").unwrap(),
             ActionOutcome::StayOpen
@@ -757,7 +785,7 @@ mod tests {
     /// than fall through to whichever version sorts first.
     #[test]
     fn acting_on_a_missing_version_fails_before_running_fnm() {
-        let mut mode = FnmMode::new(&Config::default());
+        let mut mode = FnmMode::with(&Config::default(), Arc::new(MockRunner::new()));
         let error = mode.execute("installed:v99.0.0", "use").unwrap_err();
         assert!(error.to_string().contains("no longer available"), "{error}");
 
@@ -772,7 +800,7 @@ mod tests {
     /// The chrome the shared picker renders comes from these.
     #[test]
     fn the_mode_declares_its_title_accent_and_every_action() {
-        let mode = FnmMode::new(&Config::default());
+        let mode = FnmMode::with(&Config::default(), Arc::new(MockRunner::new()));
         assert_eq!(mode.title(), "Node Versions");
         assert_eq!(mode.accent_slot(), "green");
         assert_eq!(mode.list_pct(), 52);
@@ -801,7 +829,7 @@ mod tests {
             .entry("fnm".into())
             .or_default()
             .insert("uninstall".into(), "alt-x".into());
-        let mode = FnmMode::new(&cfg);
+        let mode = FnmMode::with(&cfg, Arc::new(MockRunner::new()));
         assert_eq!(
             mode.key_bindings().get("uninstall").map(String::as_str),
             Some("alt-x")
@@ -826,5 +854,100 @@ mod tests {
                 .expect_err("a failing fnm must be reported");
             assert_eq!(error.to_string(), expected);
         }
+    }
+
+    fn managed(runner: MockRunner) -> FnmMode {
+        let mut mode = FnmMode::with(&Config::default(), Arc::new(runner));
+        mode.origin_pane = "w1:p1".into();
+        mode
+    }
+
+    fn settle(mode: &mut FnmMode) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while mode.is_polling() {
+            let _ = mode.poll();
+            assert!(
+                std::time::Instant::now() < deadline,
+                "remote lookup never landed"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    /// The manager loads installed versions, then remote ones in the
+    /// background, and every action runs through the runner it was given.
+    #[test]
+    fn the_manager_loads_both_lists_and_acts_through_its_runner() {
+        let mut mode = managed(
+            MockRunner::new()
+                .on("fnm list-remote", "v24.1.0\nv22.16.0\n")
+                .on("fnm list", "* v18.20.8\n")
+                .on("fnm current", "v18.20.8\n"),
+        );
+        mode.confirm = |_| Ok(());
+        assert!(!mode.initial().unwrap().is_empty());
+        settle(&mut mode);
+        assert_eq!(mode.remote.len(), 2);
+
+        let installed = mode.installed[0].id();
+        let remote = mode.remote[0].id();
+        assert!(matches!(
+            mode.execute(&installed, "primary").unwrap(),
+            ActionOutcome::Close
+        ));
+        assert!(matches!(
+            mode.execute(&remote, "primary").unwrap(),
+            ActionOutcome::StayOpen
+        ));
+        for action in ["use", "install", "default", "uninstall"] {
+            mode.execute(&installed, action).unwrap();
+        }
+        assert!(mode.execute(&installed, "teleport").is_err());
+        assert!(mode.execute("missing", "use").is_err());
+
+        mode.confirm = |_| anyhow::bail!("uninstall cancelled");
+        assert!(mode.execute(&installed, "uninstall").is_err());
+    }
+
+    /// A failed remote lookup is kept as a reason beside the installed list.
+    #[test]
+    fn a_failed_remote_lookup_is_kept_as_a_reason() {
+        let mut mode = managed(
+            MockRunner::new()
+                .on("fnm list", "* v18.20.8\n")
+                .failing("list-remote"),
+        );
+        mode.initial().unwrap();
+        settle(&mut mode);
+        assert!(mode.remote_error.is_some());
+    }
+
+    #[test]
+    fn the_manager_follows_its_key_table() {
+        let mut mode = managed(MockRunner::new());
+        assert!(mode.key_bindings().is_empty());
+        let mut cfg = Config::default();
+        cfg.keys.insert(
+            "fnm".into(),
+            HashMap::from([("default".into(), "ctrl-k".into())]),
+        );
+        mode.reload_config(&cfg).unwrap();
+        assert_eq!(
+            mode.key_bindings().get("default").map(String::as_str),
+            Some("ctrl-k")
+        );
+        let _ = FnmMode::new(&Config::default());
+    }
+
+    #[test]
+    fn uninstalling_needs_the_exact_version_typed_back() {
+        let mut shown = Vec::new();
+        confirm_uninstall_with("v18.20.8", &mut "v18.20.8\n".as_bytes(), &mut shown).unwrap();
+        assert!(String::from_utf8(shown)
+            .unwrap()
+            .contains("Uninstall Node v18.20.8?"));
+        assert!(
+            confirm_uninstall_with("v18.20.8", &mut "yes\n".as_bytes(), &mut Vec::new()).is_err()
+        );
     }
 }

@@ -2236,16 +2236,11 @@ mod tests {
     #[test]
     fn every_fixture_mode_closes_through_the_loop() {
         fn once<M: PickerMode>(mode: M) {
-            let mut invoked = false;
             run_with(
                 mode,
                 Theme::default(),
                 Config::default(),
                 |surface| {
-                    if invoked {
-                        return Ok(PickerExit::Close);
-                    }
-                    invoked = true;
                     let _ = surface.mode.title();
                     let _ = surface.mode.accent_slot();
                     let _ = surface.mode.empty_message();
@@ -2258,6 +2253,11 @@ mod tests {
         once(TestMode);
         once(TabbedMode { active: "history" });
         once(WrappedBarMode);
+        once(WideMode(false));
+        once(ScriptedMode::default());
+        once(GatedMode {
+            snapshots: std::collections::VecDeque::new(),
+        });
     }
 
     /// A host error ends the loop with that error rather than retrying.

@@ -1424,4 +1424,94 @@ mod tests {
         ])));
         assert!(!is_blank(&striped()));
     }
+
+    fn repo_at(dir: &std::path::Path) -> Entry {
+        Entry {
+            kind: Kind::Repo,
+            id: "o/r".into(),
+            dir: Some(dir.to_string_lossy().into_owned()),
+            label: "r".into(),
+            icon: String::new(),
+            icon_color: Color::Reset,
+            primary: String::new(),
+            secondary: String::new(),
+            search: String::new(),
+        }
+    }
+
+    /// A dirty detached checkout: the branch falls back to the short hash, the
+    /// state reads dirty, and the README's headings and bullets are styled.
+    #[test]
+    fn a_dirty_detached_repo_with_a_readme_renders_every_part() {
+        let dir = std::env::temp_dir().join(format!("swb-preview-readme-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("README.md"),
+            "# Title\n\n## Usage\n\n- one `code`\n* two\n\nplain ![badge](x) text\n",
+        )
+        .unwrap();
+        let runner = MockRunner::new()
+            .failing("symbolic-ref")
+            .on("rev-parse", "abc1234")
+            .on("status --porcelain", " M src/main.rs")
+            .on("log -1", "1 hour ago · wip");
+        let mut cfg = Config::default();
+        cfg.projects.preview_readme = true;
+        let out = flat(&repo_card(
+            &repo_at(&dir),
+            &runner,
+            ".",
+            &cfg,
+            60,
+            &ink(),
+            &Theme::default(),
+        ));
+        assert!(out.contains("abc1234"), "{out}");
+        assert!(out.contains("dirty"), "{out}");
+        assert!(out.contains("Title") && out.contains("Usage"), "{out}");
+        assert!(
+            out.contains('•') && out.contains("one") && out.contains("two"),
+            "{out}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A linked worktree names its branch through the `gitdir:` pointer, relative
+    /// or absolute, and a detached HEAD names none.
+    #[test]
+    fn the_branch_is_read_through_a_worktree_pointer() {
+        let root = std::env::temp_dir().join(format!("swb-preview-head-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let gitdir = root.join("main/.git/worktrees/wt");
+        std::fs::create_dir_all(&gitdir).unwrap();
+        std::fs::write(gitdir.join("HEAD"), "ref: refs/heads/feature/y\n").unwrap();
+        let wt = root.join("wt");
+        std::fs::create_dir_all(&wt).unwrap();
+
+        std::fs::write(wt.join(".git"), format!("gitdir: {}\n", gitdir.display())).unwrap();
+        assert_eq!(
+            branch_from_head(wt.to_str().unwrap()).as_deref(),
+            Some("feature/y")
+        );
+        std::fs::write(wt.join(".git"), "gitdir: ../main/.git/worktrees/wt\n").unwrap();
+        assert_eq!(
+            branch_from_head(wt.to_str().unwrap()).as_deref(),
+            Some("feature/y")
+        );
+
+        std::fs::write(gitdir.join("HEAD"), "0123456789abcdef\n").unwrap();
+        assert_eq!(branch_from_head(wt.to_str().unwrap()), None);
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// A tree script that fails prints nothing worth a row; one that answers
+    /// is clipped row by row.
+    #[test]
+    fn a_failed_tree_script_yields_no_rows() {
+        let runner = MockRunner::new().failing("bash");
+        assert!(tree(&runner, "/repo", "/nowhere", 40).iter().all(is_blank));
+        let runner = MockRunner::new().on("bash", "\u{1b}[1mdir\u{1b}[0m\nfile\n");
+        assert_eq!(tree(&runner, "/repo", "/nowhere", 40).len(), 2);
+    }
 }

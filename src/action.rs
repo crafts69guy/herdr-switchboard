@@ -1027,4 +1027,63 @@ mod tests {
         assert!(String::from_utf8(shown).unwrap().contains("Aborted."));
         assert!(runner.calls().is_empty());
     }
+
+    fn live_entry(kind: Kind, id: &str, dir: Option<&str>) -> Entry {
+        Entry {
+            kind,
+            id: id.into(),
+            dir: dir.map(str::to_string),
+            ..repo_entry("/unused")
+        }
+    }
+
+    /// Live rows focus what they are; an agent opened into a target lands in
+    /// its own cwd; worktrees refuse repo-only verbs; nothing selected is an error.
+    #[test]
+    fn dispatch_focuses_live_rows_and_refuses_what_does_not_apply() {
+        let cfg = Config::default();
+        let runner = MockRunner::new();
+        let go = |entry: Option<Entry>, accept: Accept| {
+            dispatch(&runner, entry, accept, "w1:p1", &cfg, "/bin", "workspace")
+        };
+        go(
+            Some(live_entry(Kind::Workspace, "w2", None)),
+            Accept::Default,
+        )
+        .unwrap();
+        go(
+            Some(live_entry(Kind::Agent, "w1:p3", None)),
+            Accept::Default,
+        )
+        .unwrap();
+        let dir = std::env::temp_dir();
+        go(
+            Some(live_entry(
+                Kind::Agent,
+                "w1:p3",
+                Some(dir.to_str().unwrap()),
+            )),
+            Accept::Tab,
+        )
+        .unwrap();
+        let calls = runner.calls();
+        assert_eq!(calls[0], ["herdr", "workspace", "focus", "w2"]);
+        assert_eq!(calls[1], ["herdr", "agent", "focus", "w1:p3"]);
+        assert_eq!(calls[2][..3], ["herdr", "tab", "create"]);
+
+        let worktree = live_entry(Kind::Worktree, "/wt", Some(dir.to_str().unwrap()));
+        assert!(go(Some(worktree.clone()), Accept::Update).is_err());
+        assert!(go(Some(worktree), Accept::Remove).is_err());
+        assert!(go(None, Accept::Default).is_err());
+    }
+
+    #[test]
+    fn opening_in_this_pane_needs_an_origin_and_a_known_target() {
+        let cfg = Config::default();
+        let runner = MockRunner::new();
+        let dir = std::env::temp_dir();
+        let dir = dir.to_str().unwrap();
+        assert!(open_target(&runner, "pane", dir, "", "r", &cfg).is_err());
+        assert!(open_target(&runner, "sideways", dir, "w1:p1", "r", &cfg).is_err());
+    }
 }

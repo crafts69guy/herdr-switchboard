@@ -1161,4 +1161,51 @@ mod tests {
         assert!(snapshot.is_ok(), "{snapshot:?}");
         drop(worker);
     }
+
+    /// Both failure shapes for both signals: a stale listener and a refused
+    /// signal each surface as an error.
+    #[test]
+    fn either_signal_reports_a_stale_listener_or_a_refusal() {
+        let item = entry(3000, 10, None, true);
+        let id = port_id(&item);
+        let (mut mode, _) = mode_with(vec![item], MockRunner::new());
+        for (stale, action) in [(true, "kill"), (false, "term")] {
+            mode.signal = if stale {
+                |_, _| anyhow::bail!("listener is stale or no longer signalable")
+            } else {
+                |_, _| anyhow::bail!("could not send signal")
+            };
+            assert!(mode.execute(&id, action).is_err());
+        }
+    }
+
+    /// The live mode starts its own scanner, reloads it with new settings, and
+    /// folds a snapshot into rows.
+    #[test]
+    fn the_live_mode_scans_reloads_and_lists() {
+        let mut mode = PortMode::new(50, Notifier::silent(), HashMap::new());
+        assert!(mode.initial().unwrap().is_empty());
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        loop {
+            if let Some(snapshot) = mode.poll() {
+                assert!(snapshot.is_ok());
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "no snapshot");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let mut cfg = Config::default();
+        cfg.ports.refresh_interval_ms = 250;
+        cfg.keys.insert(
+            "ports".into(),
+            HashMap::from([("copy".into(), "ctrl-k".into())]),
+        );
+        mode.reload_config(&cfg).unwrap();
+        assert!(mode.entries.is_empty());
+        assert_eq!(
+            mode.bindings.get("copy").map(String::as_str),
+            Some("ctrl-k")
+        );
+        let _ = mode.key_bindings();
+    }
 }
