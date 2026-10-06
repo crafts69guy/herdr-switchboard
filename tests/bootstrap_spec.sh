@@ -53,6 +53,31 @@ if linked_binary_is_current "$linked" "$linked/target/release/herdr-switchboard"
   fail "a linked binary older than its source must be rebuilt"
 fi
 
+# Managed-vs-linked comes from herdr, never from `.git`: `herdr plugin install`
+# keeps the clone's `.git`, which once sent every GitHub install down the Cargo path.
+cat >"$tmp/herdr" <<'STUB'
+#!/usr/bin/env bash
+[[ "${1:-} ${2:-}" == "plugin list" ]] || exit 1
+printf '%s' "$FAKE_JSON"
+STUB
+chmod 755 "$tmp/herdr"
+export HERDR_BIN_PATH="$tmp/herdr"
+source_json() {
+  printf '{"result":{"plugins":[{"plugin_root":"%s","source":{"installed_unix_ms":1,"kind":"%s","managed_path":"%s"}}]}}' "$2" "$1" "$2"
+}
+mkdir -p "$linked/.git" "$tmp/other"
+FAKE_JSON="$(source_json github "$linked")" managed_install "$linked" ||
+  fail "a GitHub install must be managed even though herdr kept its .git"
+if FAKE_JSON="$(source_json local "$linked")" managed_install "$linked"; then
+  fail "a linked checkout must build its own source"
+fi
+if FAKE_JSON="$(source_json github "$tmp/other")" managed_install "$linked"; then
+  fail "a checkout that is not herdr's managed path must stay linked"
+fi
+if FAKE_JSON="" managed_install "$linked"; then
+  fail "an unreadable herdr answer must fail toward linked"
+fi
+
 version="9.8.7"
 target="$(host_target)"
 asset="herdr-switchboard-v${version}-${target}.tar.gz"
@@ -80,7 +105,7 @@ fi
 # Cargo fallback. Stub Cargo writes the output contract without compiling Rust.
 fallback="$tmp/fallback"
 tools="$tmp/home/.cargo/bin"
-mkdir -p "$fallback" "$tools"
+mkdir -p "$fallback/.git" "$tools"
 printf 'version = "1.2.3"\n' >"$fallback/herdr-plugin.toml"
 printf '[package]\nname = "fixture"\nversion = "1.2.3"\n' >"$fallback/Cargo.toml"
 printf '%s\n' \
@@ -97,12 +122,14 @@ printf '%s\n' \
   'chmod 755 "$root/target/release/herdr-switchboard"' >"$tools/cargo"
 chmod 755 "$tools/cargo"
 fallback_bin="$(
-  HOME="$tmp/home" \
+  FAKE_JSON="$(source_json github "$fallback")" \
+    HOME="$tmp/home" \
     HERDR_PLUGIN_ROOT="$fallback" \
     SWITCHBOARD_RELEASE_URL="file://$tmp/missing" \
     ensure_built
 )"
 [[ -x "$fallback_bin" ]] || fail "Cargo fallback did not install a versioned binary"
 [[ "$($fallback_bin --version)" == "herdr-switchboard 1.2.3" ]] || fail "Cargo fallback binary is wrong"
+[[ "$fallback_bin" == *"-v1.2.3-"* ]] || fail "a managed install must resolve its versioned binary (got $fallback_bin)"
 
 printf 'bootstrap_spec: ok\n'

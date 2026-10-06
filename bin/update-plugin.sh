@@ -29,11 +29,7 @@ pause() {
 source_kind() {
   local json
   json="$("$(herdr_bin)" plugin list --plugin switchboard --json 2>/dev/null)" || return 1
-  # Anchored to the source object, so an unrelated "kind" elsewhere cannot answer for it.
-  printf '%s' "$json" |
-    grep -o '"source":{"kind":"[^"]*"' |
-    head -n 1 |
-    sed 's/.*"kind":"//; s/"$//'
+  printf '%s' "$json" | plugin_source_field kind
 }
 
 plugin_field() {

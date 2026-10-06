@@ -77,8 +77,9 @@ assert_refused "unrelated kind field first" \
 assert_refused "pretty-printed source" \
   '{"result": {"plugins": [{"source": {"kind": "github"}}]}}'
 
-# The one case that proceeds: an unambiguous managed install.
-github='{"result":{"plugins":[{"plugin_root":"'"$tmp/nocargo"'","version":"0.5.0","source":{"kind":"github","owner":"crafts69guy","repo":"herdr-switchboard","managed_path":"'"$tmp/nocargo"'"}}]}}'
+# The one case that proceeds: an unambiguous managed install, in the shape herdr
+# really prints — keys sorted, so `kind` is not the first key of `source`.
+github='{"result":{"plugins":[{"plugin_root":"'"$tmp/nocargo"'","source":{"installed_unix_ms":1,"kind":"github","managed_path":"'"$tmp/nocargo"'","owner":"crafts69guy","repo":"herdr-switchboard"},"version":"0.5.0"}]}}'
 result="$(run_with "$github")"
 [[ "$result" == "installed" ]] ||
   fail "github source: expected an install, but the guard refused"

@@ -223,20 +223,42 @@ download_prebuilt() (
   mv -f "$output.tmp.$$" "$output"
 )
 
+# One field of the `source` object in a `herdr plugin list --json` answer on stdin.
+# Scoped to that object, so an unrelated "kind" elsewhere cannot answer for it, and
+# indifferent to key order: herdr sorts keys, so `kind` is not the first one.
+plugin_source_field() {
+  grep -o '"source":{[^}]*}' | head -n 1 | json_string_value "$1"
+}
+
+
+# Whether herdr installed the checkout at $1 from GitHub. Only herdr can say:
+# `herdr plugin install` keeps the clone's `.git`, so a managed install and a
+# contributor's checkout look identical on disk. Fails toward "linked" — the
+# managed path must also be $1 itself, so running a dev checkout by hand while a
+# GitHub install is registered still builds the source being edited.
+managed_install() {
+  local root="$1" json managed
+  json="$("$(herdr_bin)" plugin list --plugin switchboard --json 2>/dev/null)" || return 1
+  [[ "$(printf '%s' "$json" | plugin_source_field kind)" == "github" ]] || return 1
+  managed="$(printf '%s' "$json" | plugin_source_field managed_path)"
+  [[ -n "$managed" && -d "$managed" && -d "$root" ]] || return 1
+  [[ "$(cd -- "$managed" && pwd -P)" == "$(cd -- "$root" && pwd -P)" ]]
+}
+
 # Resolve a version-matched prebuilt switcher, falling back to a local Cargo
 # build. A linked development checkout deliberately skips release downloads so
 # its binary always comes from the source the contributor is editing.
 ensure_built() (
   local root="${HERDR_PLUGIN_ROOT:-$(cd -- "$SCRIPT_DIR/.." && pwd)}"
-  local version target="" bin log managed="true"
+  local version target="" bin log managed="false"
   version="$(plugin_version "$root")"
   [[ -n "$version" ]] || die "Switchboard's plugin version is unreadable." "missing version in herdr-plugin.toml"
   target="$(host_target || true)"
-  if [[ -d "$root/.git" ]]; then
-    managed="false"
-    bin="$root/target/release/herdr-switchboard"
-  else
+  if managed_install "$root"; then
+    managed="true"
     bin="$root/target/release/herdr-switchboard-v${version}-${target:-local}"
+  else
+    bin="$root/target/release/herdr-switchboard"
   fi
   export PATH="$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
   if [[ -x "$bin" ]] && binary_version_matches "$bin" "$version"; then

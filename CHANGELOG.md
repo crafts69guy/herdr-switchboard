@@ -7,6 +7,17 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **A GitHub install runs the released binary again instead of compiling one.** `herdr plugin
+  install` keeps the clone's `.git`, and that was how a linked development checkout was told
+  apart — so every managed install skipped the checksummed release download and built a slower
+  local binary with Cargo, or failed outright without Rust. Switchboard now asks herdr where it
+  was installed from.
+- **Update works on a managed install.** herdr prints the `source` object with its keys sorted,
+  and the guard only recognised `kind` as the first key, so it refused every GitHub install as
+  "not managed".
+
 ## [3.0.2] - 2026-10-05
 
 ### Fixed
