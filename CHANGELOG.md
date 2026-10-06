@@ -7,6 +7,8 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [3.0.3] - 2026-10-06
+
 ### Fixed
 
 - **A GitHub install runs the released binary again instead of compiling one.** `herdr plugin
@@ -929,7 +931,8 @@ tuicr's own colours.
   open it in a new workspace, tab, split, or the current pane, plus clone (`ghq get`),
   update, remove, and a handoff to the git-hub menu.
 
-[Unreleased]: https://github.com/crafts69guy/herdr-switchboard/compare/v3.0.2...HEAD
+[Unreleased]: https://github.com/crafts69guy/herdr-switchboard/compare/v3.0.3...HEAD
+[3.0.3]: https://github.com/crafts69guy/herdr-switchboard/compare/v3.0.2...v3.0.3
 [3.0.2]: https://github.com/crafts69guy/herdr-switchboard/compare/v3.0.1...v3.0.2
 [3.0.1]: https://github.com/crafts69guy/herdr-switchboard/compare/v3.0.0...v3.0.1
 [3.0.0]: https://github.com/crafts69guy/herdr-switchboard/compare/v2.1.0...v3.0.0
