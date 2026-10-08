@@ -96,7 +96,7 @@ graphics enabled, the gutters are dimmed.
 | **Ports** | Inspect live TCP listeners; open them over HTTP(S), or TERM/KILL the owner after revalidating the process. |
 | **Node Versions** | Search local and remote Node.js versions and use, install, default, or remove them through fnm. |
 | **Settings** | Edit every option in a drafted form, inside Projects (`alt-,`) or as its own popup. |
-| **Clone** | `ghq get` from the clipboard or a prompt, then open the result. |
+| **Clone** | Add a Git URL in a TUI form, then select the cloned repository in Projects. |
 | **Changelog / Update** | Read release notes with your version marked; update a managed install in place. |
 
 > [!WARNING]
@@ -185,6 +185,17 @@ Projects at a glance:
 Every picker's keys are remappable under `[keys.<picker>]`. See [Keybindings](docs/keybindings.md)
 for the full map, the other pickers, and why `ctrl-b` is never bound.
 
+Press `alt-l` in Projects, or choose **Clone** in the menu, to add a repository. Paste an
+HTTPS/SSH clone URL, `owner/repo`, or `host/namespace/repo`; GitLab subgroups and self-hosted
+Git servers work too. `owner/repo` uses ghq's configured default host (GitHub by default).
+Enter starts the clone; Esc cancels it. Success refreshes Projects and selects the repo,
+including when it was already cloned. Set `clone.open_after = true` to open it immediately.
+
+Private repositories use your configured SSH agent or Git credential helper. Configure
+authentication outside Switchboard before cloning; passwords and tokens embedded in URLs,
+local paths, and file/branch/PR page links are not accepted. Cancelling can leave a partial
+directory; Switchboard does not delete it automatically.
+
 Removing a worktree opens a confirmation popup and keeps the picker open afterwards. Type its
 name to confirm; Force requires `force <name>` and discards local changes. Branch deletion is
 optional and uses Git's merged-branch check. Locked worktrees must be unlocked separately.
@@ -208,7 +219,7 @@ Bind the menu, or any surface directly, as a Herdr `plugin_action`:
 | `switchboard.zen` | A picker for the pane to put in Zen. |
 | `switchboard.zen-toggle` | Zen for the current pane, with no picker. |
 | `switchboard.settings` | Standalone settings. |
-| `switchboard.clone` | The ghq clone flow. |
+| `switchboard.clone` | Open Projects with the repository clone form. |
 | `switchboard.changelog` | Release notes with the installed version marked. |
 | `switchboard.update` | The guarded tagged-release updater. |
 

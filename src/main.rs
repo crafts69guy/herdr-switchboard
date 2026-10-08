@@ -43,7 +43,7 @@ use anyhow::Result;
 use data::{Config, Theme};
 
 /// `herdr-switchboard open --target T --path P --origin O --label L` — the
-/// clone flow (`bin/get.sh`) delegates here so the herdr open verbs live only in
+/// external callers delegate here so the herdr open verbs live only in
 /// Rust rather than being mirrored in bash.
 fn cli_open(args: &[String]) -> Result<()> {
     let open = OpenRequest::parse(args);
@@ -150,6 +150,7 @@ fn run(args: &[String]) -> Result<()> {
         Some("--changelog") => changelog::main(),
         Some("--update-check") => update::main(),
         Some("--git") => git::main(),
+        Some("--clone") => projects::clone_main(Config::try_load()?, Theme::load()),
         Some("--fnm") => fnm_manager::main(Config::try_load()?, Theme::load()),
         Some("--menu") => menu::main(Config::try_load()?, Theme::load()),
         Some("--agent-launch") => agents::launch_worker(&args[1..], &Config::try_load()?),

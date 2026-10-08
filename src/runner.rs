@@ -15,14 +15,30 @@
 
 use std::ffi::OsStr;
 use std::io;
+use std::io::Read;
 use std::io::Write;
 use std::os::unix::process::CommandExt;
-use std::process::{Command, ExitStatus, Output, Stdio};
+use std::process::{Child, Command, ExitStatus, Output, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 /// Runs external commands. [`output`](Self::output) captures stdout for parsing,
 /// [`status`](Self::status) inherits the terminal, and
 /// [`spawn_detached`](Self::spawn_detached) starts a background worker.
 pub trait CommandRunner: Sync {
+    /// Non-interactive, cancellable work with environment scoped to the child.
+    fn output_controlled(
+        &self,
+        _program: &str,
+        _args: &[&str],
+        _env: &[(&str, &str)],
+        _cancel: &AtomicBool,
+    ) -> io::Result<Output> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "controlled commands unavailable",
+        ))
+    }
     fn output(&self, program: &str, args: &[&str]) -> io::Result<Output>;
     fn status(&self, program: &str, args: &[&str]) -> io::Result<ExitStatus>;
     fn spawn_detached(&self, program: &OsStr, args: &[&str]) -> io::Result<()>;
@@ -56,6 +72,74 @@ pub trait CommandRunner: Sync {
 pub struct SystemRunner;
 
 impl CommandRunner for SystemRunner {
+    fn output_controlled(
+        &self,
+        program: &str,
+        args: &[&str],
+        env: &[(&str, &str)],
+        cancel: &AtomicBool,
+    ) -> io::Result<Output> {
+        if cancel.load(Ordering::Acquire) {
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "command cancelled",
+            ));
+        }
+        let mut child = Command::new(program)
+            .args(args)
+            .envs(env.iter().copied())
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .process_group(0)
+            .spawn()?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| io::Error::other("stdout unavailable"))?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| io::Error::other("stderr unavailable"))?;
+        std::thread::scope(|scope| {
+            let stdout = scope.spawn(move || drain_output(stdout));
+            let stderr = scope.spawn(move || drain_output(stderr));
+            let mut exited = None;
+            let status = loop {
+                if cancel.load(Ordering::Acquire) {
+                    stop_group(&mut child);
+                    return Err(io::Error::new(
+                        io::ErrorKind::Interrupted,
+                        "command cancelled",
+                    ));
+                }
+                if exited.is_none() {
+                    match child.try_wait() {
+                        Ok(status) => exited = status,
+                        Err(error) => {
+                            stop_group(&mut child);
+                            return Err(error);
+                        }
+                    }
+                }
+                if stdout.is_finished() && stderr.is_finished() {
+                    if let Some(status) = exited {
+                        break status;
+                    }
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            };
+            Ok(Output {
+                status,
+                stdout: stdout
+                    .join()
+                    .map_err(|_| io::Error::other("stdout reader stopped"))??,
+                stderr: stderr
+                    .join()
+                    .map_err(|_| io::Error::other("stderr reader stopped"))??,
+            })
+        })
+    }
     fn output(&self, program: &str, args: &[&str]) -> io::Result<Output> {
         Command::new(program).args(args).output()
     }
@@ -95,6 +179,37 @@ impl CommandRunner for SystemRunner {
     }
 }
 
+fn stop_group(child: &mut Child) {
+    // Signal descendants too: Git/SSH may hold output pipes after ghq exits.
+    let group = format!("-{}", child.id());
+    for signal in ["-TERM", "-KILL"] {
+        let _ = Command::new("kill")
+            .args([signal, "--", &group])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        if signal == "-TERM" {
+            std::thread::sleep(Duration::from_millis(200));
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+fn drain_output(mut pipe: impl Read) -> io::Result<Vec<u8>> {
+    let mut output = Vec::new();
+    let mut buffer = [0; 4096];
+    loop {
+        let count = pipe.read(&mut buffer)?;
+        if count == 0 {
+            return Ok(output);
+        }
+        // Retain a bounded diagnostic buffer, but always drain to prevent a blocked child.
+        let retained = count.min((64 * 1024usize).saturating_sub(output.len()));
+        output.extend_from_slice(&buffer[..retained]);
+    }
+}
+
 #[cfg(test)]
 pub use mock::MockRunner;
 
@@ -119,6 +234,7 @@ mod mock {
         stderrs: Vec<(String, String)>,
         pub calls: Mutex<Vec<Vec<String>>>,
         stdins: Mutex<Vec<String>>,
+        pub environments: Mutex<Vec<Vec<(String, String)>>>,
     }
 
     impl MockRunner {
@@ -197,6 +313,15 @@ mod mock {
     }
 
     impl CommandRunner for &'static MockRunner {
+        fn output_controlled(
+            &self,
+            program: &str,
+            args: &[&str],
+            env: &[(&str, &str)],
+            cancel: &std::sync::atomic::AtomicBool,
+        ) -> io::Result<Output> {
+            (**self).output_controlled(program, args, env, cancel)
+        }
         fn output(&self, program: &str, args: &[&str]) -> io::Result<Output> {
             (**self).output(program, args)
         }
@@ -212,6 +337,29 @@ mod mock {
     }
 
     impl CommandRunner for MockRunner {
+        fn output_controlled(
+            &self,
+            program: &str,
+            args: &[&str],
+            env: &[(&str, &str)],
+            cancel: &std::sync::atomic::AtomicBool,
+        ) -> io::Result<Output> {
+            if cancel.load(std::sync::atomic::Ordering::Acquire) {
+                return Err(io::Error::new(
+                    io::ErrorKind::Interrupted,
+                    "command cancelled",
+                ));
+            }
+            self.environments
+                .lock()
+                .expect("mock env lock poisoned")
+                .push(
+                    env.iter()
+                        .map(|(key, value)| ((*key).into(), (*value).into()))
+                        .collect(),
+                );
+            self.output(program, args)
+        }
         fn output(&self, program: &str, args: &[&str]) -> io::Result<Output> {
             let joined = self.record(program, args);
             let success = self.succeeds(&joined);
@@ -258,6 +406,58 @@ mod mock {
 #[cfg(test)]
 mod system_tests {
     use super::*;
+
+    #[test]
+    fn controlled_commands_scope_environment_close_stdin_and_bound_output() {
+        let cancel = AtomicBool::new(false);
+        let out = SystemRunner.output_controlled("sh", &["-c", "test x$SWITCHBOARD_TEST_CHILD = xscoped; test -z \"$(cat)\"; printf ok; printf err >&2"], &[("SWITCHBOARD_TEST_CHILD", "scoped")], &cancel).unwrap();
+        assert!(out.status.success());
+        assert_eq!(out.stdout, b"ok");
+        assert_eq!(out.stderr, b"err");
+        assert!(SystemRunner
+            .output_controlled("switchboard-missing-command", &[], &[], &cancel)
+            .is_err());
+        assert!(SystemRunner
+            .output_controlled("sh", &[], &[], &AtomicBool::new(true))
+            .is_err());
+        assert_eq!(
+            drain_output(&vec![b'x'; 100_000][..]).unwrap().len(),
+            64 * 1024
+        );
+    }
+
+    #[test]
+    fn cancellation_stops_descendants_even_after_the_parent_exits() {
+        let cancel = AtomicBool::new(false);
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                std::thread::sleep(Duration::from_millis(100));
+                cancel.store(true, Ordering::Release);
+            });
+            let started = std::time::Instant::now();
+            let error = SystemRunner
+                .output_controlled("sh", &["-c", "sleep 30 & exit 0"], &[], &cancel)
+                .unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+            assert!(started.elapsed() < Duration::from_secs(3));
+        });
+    }
+
+    #[test]
+    fn borrowed_mock_runners_keep_controlled_commands_mocked() {
+        let runner = MockRunner::new().on("ghq get", "mocked").leak();
+        let borrowed: &dyn CommandRunner = &runner;
+        let output = borrowed
+            .output_controlled(
+                "ghq",
+                &["get", "--", "o/r"],
+                &[("GIT_TERMINAL_PROMPT", "0")],
+                &AtomicBool::new(false),
+            )
+            .unwrap();
+        assert_eq!(output.stdout, b"mocked");
+        assert_eq!(runner.calls(), [vec!["ghq", "get", "--", "o/r"]]);
+    }
 
     /// The production runner against real, trivial programs. These are the four
     /// verbs every caller in the crate goes through, and `MockRunner` can only

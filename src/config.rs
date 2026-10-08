@@ -249,7 +249,7 @@ impl Default for CloneFlow {
     fn default() -> Self {
         Self {
             source: "clipboard".into(),
-            open_after: true,
+            open_after: false,
         }
     }
 }

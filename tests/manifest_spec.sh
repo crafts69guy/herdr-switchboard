@@ -41,6 +41,8 @@ grep -Fq 'exec bash \"$HERDR_PLUGIN_ROOT/bin/picker.sh\"' "$MANIFEST" ||
   fail "picker panes must be launched through HERDR_PLUGIN_ROOT"
 assert_rooted_pane_command git.sh
 assert_rooted_pane_command get.sh
+grep -Fq 'exec bash "$SCRIPT_DIR/picker.sh" --clone' "$ROOT/bin/get.sh" ||
+  fail "clone must use the shared picker bootstrap and --clone entrypoint"
 assert_rooted_pane_command changelog.sh
 assert_rooted_pane_command update-plugin.sh
 

@@ -100,6 +100,7 @@ pub(super) fn draw(f: &mut Frame, app: &mut App) {
     draw_footer(f, app, footer);
 
     match app.overlay {
+        super::Overlay::Clone => super::clone::draw(f, app, f.area()),
         super::Overlay::Changelog => draw_changelog(f, app, f.area()),
         super::Overlay::Settings => crate::settings::draw(
             f,

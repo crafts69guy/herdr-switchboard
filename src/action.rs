@@ -1,5 +1,5 @@
 //! Accept dispatch — runs AFTER the TUI is torn down, so interactive bits
-//! (clone prompt, remove confirm, update output) use the normal pane.
+//! (remove confirm, update output) use the normal pane.
 
 use std::env;
 use std::io::{self, BufRead, Write};
@@ -29,7 +29,7 @@ pub fn forced_target() -> Option<String> {
 
 /// Where Enter opens a repo: a forced target wins, then `default_target`.
 /// Unrecognised values on either side fall back to `workspace` rather than
-/// failing the open — the same leniency `bin/get.sh` applies.
+/// failing the open.
 pub fn resolve_default_target(forced: Option<&str>, configured: &str) -> String {
     forced
         .filter(|t| is_open_target(t))
@@ -100,7 +100,7 @@ fn dispatch_with(
     default_target: &str,
 ) -> Result<DispatchOutcome> {
     if accept == Accept::Clone {
-        // Hand the whole terminal to the bash clone flow.
+        // Compatibility for restored callers; Projects opens its clone form in place.
         let err = exec(Command::new("bash").arg(format!("{script_dir}/get.sh")));
         return Err(anyhow!("failed to exec get.sh: {err}"));
     }
@@ -174,7 +174,7 @@ fn herdr(runner: &dyn CommandRunner, args: &[&str]) -> Result<()> {
     }
 }
 
-/// The `open` subcommand's worker. `bin/get.sh` (the clone flow) calls
+/// The `open` subcommand's worker. External callers call
 /// `herdr-switchboard open …` instead of re-implementing the herdr verbs in
 /// bash, so a change to how a target opens lands in exactly one place. Split
 /// geometry comes from `cfg`, the same as the picker's own opens.
@@ -452,7 +452,7 @@ mod tests {
         dir
     }
 
-    /// `open_target` is the seam `bin/get.sh` calls after a clone, and it must
+    /// `open_target` is the CLI seam for opening repositories, and it must
     /// build the same herdr verbs the picker's own opens do — that is the whole
     /// point of it not being reimplemented in bash.
     #[test]

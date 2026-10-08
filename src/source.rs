@@ -19,7 +19,7 @@ pub struct LoadCtx<'a> {
     pub root: &'a str,
     /// A preloaded ghq snapshot when the effect runtime overlaps `ghq root`
     /// and `ghq list`; ordinary callers leave this as `None`.
-    pub repos: Option<&'a [String]>,
+    pub repos: Option<&'a data::RepoSnapshot>,
 }
 
 pub struct ProjectCatalog<'a> {
@@ -37,14 +37,15 @@ impl<'a> ProjectCatalog<'a> {
         let repos = match self.context.repos {
             Some(repos) => repos,
             None => {
-                loaded = data::load_repo_names(self.context.runner);
+                loaded = data::load_repo_snapshot(self.context.runner, self.context.root);
                 &loaded
             }
         };
         self.load_snapshot(repos)
     }
 
-    fn load_snapshot(&self, repos: &[String]) -> Vec<Entry> {
+    fn load_snapshot(&self, snapshot: &data::RepoSnapshot) -> Vec<Entry> {
+        let repos = &snapshot.names;
         let mut entries = Vec::new();
         // `herdr agent list` and `herdr workspace list` answer independent
         // questions, and each pays a full process start. Overlap them the way
@@ -69,17 +70,18 @@ impl<'a> ProjectCatalog<'a> {
         entries.extend(workspaces);
         // Repositories are the product's anchor and are always present. Take
         // one ghq snapshot and share it with bounded worktree discovery.
-        entries.extend(data::load_repos(
-            repos,
-            self.context.theme,
-            self.context.root,
-        ));
+        let mut repositories = data::load_repos(repos, self.context.theme, self.context.root);
+        for entry in &mut repositories {
+            entry.dir = snapshot.paths.get(&entry.id).cloned();
+        }
+        entries.extend(repositories);
         if self.config.projects.include_worktrees {
             entries.extend(data::load_worktrees(
                 self.context.runner,
                 repos,
                 self.context.theme,
                 self.context.root,
+                &snapshot.paths,
             ));
         }
         entries
@@ -113,7 +115,7 @@ mod tests {
 
     const AGENTS: &str = r#"{"result":{"agents":[{"pane_id":"w1:p1","terminal_id":"t1","agent":"claude","agent_status":"idle","foreground_cwd":"/p"}]}}"#;
     const WORKSPACES: &str = r#"{"result":{"workspaces":[{"workspace_id":"w1","label":"work","number":1,"pane_count":1}]}}"#;
-    const REPOS: &str = "github.com/o/a\ngithub.com/o/b\n";
+    const REPOS: &str = "/root/github.com/o/a\n/root/github.com/o/b\n";
 
     fn ctx<'a>(runner: &'a MockRunner, theme: &'a Theme) -> LoadCtx<'a> {
         LoadCtx {
@@ -141,7 +143,7 @@ mod tests {
             runner
                 .calls()
                 .iter()
-                .filter(|argv| argv.as_slice() == ["ghq", "list"])
+                .filter(|argv| argv.as_slice() == ["ghq", "list", "--full-path"])
                 .count(),
             1,
             "repositories and worktrees must share one ghq snapshot"

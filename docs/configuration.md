@@ -76,7 +76,10 @@ install, select, make default, and uninstall versions through fnm.
   history. Starred commands are retained in addition to the unstarred `history_limit` records.
 - `[[commands.presets]]` adds a `label`, exact `command`, and `cwd` (`origin` or an absolute path).
 - `ports.refresh_interval_ms` controls listener refresh and must be at least 250.
-- `clone.source` chooses `clipboard` or an empty prompt; `clone.open_after` controls handoff.
+- `clone.source` chooses clipboard prefill or an empty TUI input (`prompt`).
+- `clone.open_after` defaults to `false`: cloning refreshes Projects and selects the repo.
+  Set it to `true` to open immediately using `projects.default_target`; existing explicit `true`
+  configurations keep that behavior.
 - `git.base_branch` pins branch review; an empty value enables automatic detection.
 - `git.all_files_warn` is the tracked-file count over which *review all files* asks first (default
   `1500`; `0` never asks). `tuicr -A` reads every tracked file, so a large checkout spends minutes

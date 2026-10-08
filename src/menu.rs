@@ -140,7 +140,7 @@ const ROUTES: &[Route] = &[
         id: "clone",
         group: "Utilities",
         title: "Clone",
-        detail: "get a repository and open it",
+        detail: "add a repository from a Git URL",
         color: "mauve",
         mnemonic: 'l',
         key_label: "⌥l",

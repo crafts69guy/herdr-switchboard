@@ -157,7 +157,7 @@ pub(super) const SETTINGS: &[Setting] = &[
     Setting {
         group: "Clone",
         key: "open_after_clone",
-        default: "true",
+        default: "false",
         hint: "open a repo right after cloning",
         cycle: Cycle::Ring(BOOL),
     },

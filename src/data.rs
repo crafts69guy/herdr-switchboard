@@ -317,16 +317,48 @@ pub fn load_workspaces(runner: &dyn CommandRunner, theme: &Theme) -> Vec<Entry> 
 }
 
 /// Take one snapshot of the ghq catalogue for both repositories and worktrees.
-pub fn load_repo_names(runner: &dyn CommandRunner) -> Vec<String> {
-    runner
-        .capture("ghq", &["list"])
-        .map(|list| {
-            list.lines()
-                .filter(|line| !line.is_empty())
-                .map(str::to_string)
-                .collect()
-        })
-        .unwrap_or_default()
+#[derive(Default)]
+pub struct RepoSnapshot {
+    pub names: Vec<String>,
+    pub paths: HashMap<String, String>,
+}
+
+pub fn load_repo_snapshot(runner: &dyn CommandRunner, fallback_root: &str) -> RepoSnapshot {
+    let roots = runner
+        .capture("ghq", &["root", "--all"])
+        .filter(|roots| !roots.is_empty())
+        .unwrap_or_else(|| fallback_root.into());
+    let list = runner
+        .capture("ghq", &["list", "--full-path"])
+        .unwrap_or_default();
+    repo_snapshot(&list, &roots)
+}
+
+fn repo_snapshot(list: &str, roots: &str) -> RepoSnapshot {
+    let mut snapshot = RepoSnapshot::default();
+    for path in list
+        .lines()
+        .filter(|p| std::path::Path::new(p).is_absolute())
+    {
+        let relative = roots
+            .lines()
+            .filter_map(|root| {
+                std::path::Path::new(path)
+                    .strip_prefix(root)
+                    .ok()
+                    .and_then(|p| p.to_str())
+                    .filter(|p| !p.is_empty())
+            })
+            .min_by_key(|p| p.len());
+        if let Some(id) = relative {
+            if !snapshot.paths.contains_key(id) {
+                snapshot.names.push(id.into());
+                snapshot.paths.insert(id.into(), path.into());
+            }
+        }
+    }
+    snapshot.names.sort();
+    snapshot
 }
 
 /// Every repository in a ghq snapshot, rooted at `root`.
@@ -433,6 +465,7 @@ pub fn load_worktrees(
     repos: &[String],
     theme: &Theme,
     root: &str,
+    paths: &HashMap<String, String>,
 ) -> Vec<Entry> {
     let mut entries = Vec::new();
     let mut seen = HashSet::new();
@@ -449,7 +482,10 @@ pub fn load_worktrees(
                 let mut found = Vec::new();
                 for index in (worker..repos.len()).step_by(worker_count) {
                     let rel = &repos[index];
-                    let repo = format!("{}/{rel}", root.trim_end_matches('/'));
+                    let repo = paths
+                        .get(rel)
+                        .cloned()
+                        .unwrap_or_else(|| format!("{}/{rel}", root.trim_end_matches('/')));
                     if !may_have_worktrees(&repo) {
                         continue;
                     }
@@ -581,8 +617,7 @@ mod tests {
 
     #[test]
     fn load_repos_splits_host_and_roots_the_dir() {
-        let runner = MockRunner::new().on("ghq list", REPOS);
-        let repos = load_repo_names(&runner);
+        let repos = REPOS.lines().map(str::to_string).collect::<Vec<_>>();
         let e = load_repos(&repos, &Theme::default(), "/root");
         assert_eq!(e.len(), 2);
         assert_eq!(e[0].kind, Kind::Repo);
@@ -628,7 +663,13 @@ mod tests {
         );
         let runner = MockRunner::new().on("worktree list", &raw);
 
-        let e = load_worktrees(&runner, &repos, &Theme::default(), &root.to_string_lossy());
+        let e = load_worktrees(
+            &runner,
+            &repos,
+            &Theme::default(),
+            &root.to_string_lossy(),
+            &HashMap::new(),
+        );
         assert_eq!(e.len(), 2);
         assert!(e.iter().all(|entry| entry.kind == Kind::Worktree));
         assert_eq!(e[0].dir.as_deref(), linked.to_str());
@@ -651,7 +692,13 @@ mod tests {
         repos.push(bare);
         let runner = MockRunner::new();
 
-        load_worktrees(&runner, &repos, &Theme::default(), &root.to_string_lossy());
+        load_worktrees(
+            &runner,
+            &repos,
+            &Theme::default(),
+            &root.to_string_lossy(),
+            &HashMap::new(),
+        );
 
         let probed: Vec<String> = runner
             .calls()
@@ -747,7 +794,13 @@ mod tests {
         let runner = ProbeRunner::new();
         let (root, repos) = ghq_root_with_registered_worktrees("probes", 8);
 
-        let entries = load_worktrees(&runner, &repos, &Theme::default(), &root.to_string_lossy());
+        let entries = load_worktrees(
+            &runner,
+            &repos,
+            &Theme::default(),
+            &root.to_string_lossy(),
+            &HashMap::new(),
+        );
 
         assert!(entries.is_empty());
         let maximum = runner.maximum.load(Ordering::SeqCst);
@@ -756,6 +809,19 @@ mod tests {
             "maximum concurrency was {maximum}"
         );
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn a_runner_without_controlled_execution_refuses_it_instead_of_inheriting_the_terminal() {
+        let error = ProbeRunner::new()
+            .output_controlled(
+                "ghq",
+                &["get", "--", "o/r"],
+                &[],
+                &std::sync::atomic::AtomicBool::new(false),
+            )
+            .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::Unsupported);
     }
 
     #[test]
@@ -775,7 +841,14 @@ mod tests {
         assert!(load_agents(&MockRunner::new(), &Theme::default()).is_empty());
         assert!(load_workspaces(&MockRunner::new(), &Theme::default()).is_empty());
         assert!(load_repos(&[], &Theme::default(), "/root").is_empty());
-        assert!(load_worktrees(&MockRunner::new(), &[], &Theme::default(), "/root").is_empty());
+        assert!(load_worktrees(
+            &MockRunner::new(),
+            &[],
+            &Theme::default(),
+            "/root",
+            &HashMap::new()
+        )
+        .is_empty());
     }
 
     /// Only `[theme.custom]` hex values become slots.
@@ -852,9 +925,33 @@ mod tests {
             &["gitlab.com/o/r".to_string()],
             &Theme::default(),
             root.to_str().unwrap(),
+            &HashMap::new(),
         );
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].secondary, "detached");
         std::fs::remove_dir_all(&root).ok();
     }
+}
+#[test]
+fn repository_snapshot_keeps_full_paths_and_uses_the_longest_root() {
+    let snapshot = repo_snapshot(
+            "/secondary/gitlab.com/team/sub/repo\n/primary/github.com/o/repo\n/primary/nested/bitbucket.org/o/repo\nrelative/path\n/unlisted/github.com/o/nope",
+            "/primary\n/secondary\n/primary/nested\n",
+        );
+    assert_eq!(
+        snapshot.names,
+        [
+            "bitbucket.org/o/repo",
+            "github.com/o/repo",
+            "gitlab.com/team/sub/repo"
+        ]
+    );
+    assert_eq!(
+        snapshot.paths["gitlab.com/team/sub/repo"],
+        "/secondary/gitlab.com/team/sub/repo"
+    );
+    assert_eq!(
+        snapshot.paths["bitbucket.org/o/repo"],
+        "/primary/nested/bitbucket.org/o/repo"
+    );
 }

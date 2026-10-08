@@ -46,7 +46,7 @@ refresh_interval_ms = 2000 # minimum 250
 
 [clone]
 source = "clipboard"
-open_after = true
+open_after = false
 
 [git]
 base_branch = ""

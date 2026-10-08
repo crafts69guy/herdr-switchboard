@@ -54,7 +54,7 @@ impl CatalogWorker {
                 // resulting repository snapshot for both repo rows and probes.
                 let (root, repos) = thread::scope(|scope| {
                     let root = scope.spawn(|| data::ghq_root(runner));
-                    let repos = data::load_repo_names(runner);
+                    let repos = data::load_repo_snapshot(runner, "");
                     let root: String = root.join().unwrap_or_default();
                     (root, repos)
                 });

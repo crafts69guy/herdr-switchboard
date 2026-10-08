@@ -43,7 +43,8 @@ background effect. Startup accepts only Close until completion. Settings Apply k
 snapshot visible under `Refreshing…`, locks row actions, and restores selection by entry ID. One
 ghq snapshot feeds repositories and at most four concurrent worktree probes; results retain ghq
 order. Durable Repo and Worktree stars load from private local state; writes cross a typed effect
-and feed a complete snapshot back to the reducer. An empty initial result hands off to Clone after terminal restoration. Repository and
+and feed a complete snapshot back to the reducer. An empty initial result opens the Clone form
+inside Projects. The same form handles `alt-l` and the `--clone` entrypoint. Repository and
 worktree Inspectors include Git state, recent commits, a file tree, an optional README excerpt, and
 opt-in filesystem-only Node declaration inspection. fnm resolution runs only after selection;
 fresh targets receive its PATH at process launch and never receive post-create terminal input.
@@ -58,7 +59,11 @@ claim and its networked provider runs on a worker thread, so the first frame nev
 socket. It is the only credential-reading surface and the only in-process HTTP client. Git replaces
 its pane process with `bin/review.sh` after selection; on-demand pull-request/list and file-count
 effects run in the background while its surface remains responsive. The update check uses a
-detached child, and Clone remains an explicitly invoked Bash flow in `bin/get.sh`.
+detached child. Clone runs `ghq get` through a cancellable, non-interactive Projects effect;
+`bin/get.sh` only launches `--clone` through the picker bootstrap. Completion refreshes the
+catalogue and selects the repository, or returns a typed open outcome when configured.
+Repository/worktree discovery shares a full-path ghq snapshot and derives durable relative IDs
+from all configured roots, preserving the actual checkout paths.
 
 Node Versions loads the local fnm catalogue before claiming the terminal, then crosses a typed
 background effect seam for `fnm list-remote`. Install, default, uninstall, and origin-pane use run
@@ -73,20 +78,20 @@ the module inventory.
 
 | Module | Interface | Implementation hides |
 | --- | --- | --- |
-| `surface` | `Surface`, `Transition`, `run`, `Host` (`TerminalHost`; `ScriptedHost` in tests) | Terminal lease, mouse capture, polling, ticks, input coalescing, redraw, teardown |
+| `surface` | `Surface`, `Transition`, `run`, `Host` (`TerminalHost`; `ScriptedHost` in tests) | Terminal lease, mouse capture, opt-in bracketed paste, polling, ticks, input coalescing, redraw, teardown |
 | `tui` | `SurfaceBackground`, shared frames and pills | Transparent/opaque painting, clearing, frame and hit-zone vocabulary |
 | `config` | Typed section fields, `parse`, `try_load`, finite `value_for_cli` | Namespaced deserialization, defaults, validation |
 | `state` | XDG paths and clock; `write_private`, `update_private`, `replace_atomically` | Cross-process locking, unique tempfiles, atomic replacement, permission policy |
 | `source::ProjectCatalog` | `new`, `load`, canonical `kinds` | Source enablement and load order |
-| `data` | Source loaders, entry and browse types, `Theme` | Response parsing and presentation mapping |
+| `data` | Source loaders, `RepoSnapshot`, entry and browse types, `Theme` | Response parsing, ghq root/path mapping, and presentation mapping |
 | `fnm` | `inspect`, `prepare`, `Declaration`, `Preparation` | Version-file precedence, recursive lookup, engine parsing, installed PATH resolution |
 | `fnm_manager` | `main` | Local/remote version parsing, background remote lookup, safe fnm mutations, origin-pane activation |
 | `keymap` | `Chord`, `Action`, `Keymap`, canonical chord conversion | Mode tables, overrides, labels |
-| `projects` / `picker` / `git` | `Surface` adapters and typed outputs | Surface-specific reduction and composition; Projects star persistence, linked-worktree removal, and generation-tagged catalogue loading; Git saved-review visibility state |
+| `projects` / `picker` / `git` | `Surface` adapters and typed outputs | Surface-specific reduction and composition; Projects clone form/effect, star persistence, linked-worktree removal, and generation-tagged catalogue loading; Git saved-review visibility state |
 | `agent_handoff` | `discover_targets`, `deliver_prompt` | Promptable-agent parsing, worktree scoping, origin preference, non-waiting delivery |
 | `clipboard` | `copy_text` | macOS/Wayland/X11 command selection and stdin delivery |
 | `action` | `Accept`, `dispatch`, `open_target` | Restored-terminal effects and process replacement |
-| `runner` | `CommandRunner` | `SystemRunner` and `MockRunner` process adapters |
+| `runner` | `CommandRunner`, `output_controlled` | Process adapters, child-scoped environment, bounded output capture, process-group cancellation and reaping |
 | `usage` | `main`, feature-private `Provider` | Refresh runtime, quota adapters, time formatting, rendering |
 | `zen` | `main`, `cli` | Geometry, recoverable session state, herdr effects, picker adapter |
 | `settings` | `Settings`, `draw`, `main` | Catalogue, validated document persistence, draft model, rendering |

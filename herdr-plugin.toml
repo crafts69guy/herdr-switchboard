@@ -71,7 +71,7 @@ command = ["bash", "bin/action.sh"]
 [[actions]]
 id = "clone"
 title = "Clone Repository"
-description = "Clone a repository with ghq get (from clipboard or a prompt), then open it."
+description = "Add a repository from a Git URL in the Projects clone form."
 contexts = ["global", "pane"]
 command = ["bash", "bin/action.sh"]
 
@@ -198,7 +198,7 @@ command = ["bash", "-c", "exec bash \"$HERDR_PLUGIN_ROOT/bin/git.sh\""]
 
 [[panes]]
 id = "clone"
-title = "Clone Repository"
+title = "󰊢"
 placement = "overlay"
 command = ["bash", "-c", "exec bash \"$HERDR_PLUGIN_ROOT/bin/get.sh\""]
 

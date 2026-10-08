@@ -14,7 +14,7 @@ use crossterm::event::{self, Event};
 use ratatui::Frame;
 
 const MOUSE_ON: &str = "\x1b[?1000h\x1b[?1006h";
-const MOUSE_OFF: &str = "\x1b[?1006l\x1b[?1000l";
+const MOUSE_OFF: &str = "\x1b[?2004l\x1b[?1006l\x1b[?1000l";
 
 /// How many already-queued events one frame may absorb before it must repaint.
 ///
@@ -76,6 +76,10 @@ pub trait Surface {
 
     fn terminal_claimed(&mut self) {}
 
+    fn bracketed_paste(&self) -> bool {
+        false
+    }
+
     /// Called after geometry has been published by `draw`. Deferred work such
     /// as a width-aware preview request starts here, never before the frame.
     fn after_draw(&mut self) -> Result<()> {
@@ -107,7 +111,7 @@ impl Drop for RestoreGuard {
 pub(crate) fn run<S: Surface>(surface: &mut S) -> Result<S::Output> {
     let mut terminal = claim_terminal();
     let _restore = RestoreGuard;
-    host(surface, &mut terminal, &mut TerminalInput)
+    host(surface, &mut terminal, &mut TerminalInput(false))
 }
 
 /// Something that can host a surface to completion. Production uses
@@ -279,14 +283,25 @@ pub(crate) fn every_event(
 /// Where the host's events come from: the real terminal in production, a
 /// script in tests.
 trait Input {
+    fn set_bracketed_paste(&mut self, _enabled: bool) -> Result<()> {
+        Ok(())
+    }
     /// Whether an event is ready within `wait`.
     fn poll(&mut self, wait: Duration) -> Result<bool>;
     fn read(&mut self) -> Result<Event>;
 }
 
-struct TerminalInput;
+struct TerminalInput(bool);
 
 impl Input for TerminalInput {
+    fn set_bracketed_paste(&mut self, enabled: bool) -> Result<()> {
+        if self.0 != enabled {
+            print!("\x1b[?2004{}", if enabled { 'h' } else { 'l' });
+            io::stdout().flush()?;
+            self.0 = enabled;
+        }
+        Ok(())
+    }
     fn poll(&mut self, wait: Duration) -> Result<bool> {
         Ok(event::poll(wait)?)
     }
@@ -307,6 +322,7 @@ fn host<S: Surface, B: ratatui::backend::Backend>(
 
     loop {
         if dirty {
+            input.set_bracketed_paste(surface.bracketed_paste())?;
             terminal.draw(|frame| surface.draw(frame))?;
             surface.after_draw()?;
             dirty = false;

@@ -508,31 +508,3 @@ notify() {
     log "notification skipped before the typed config reader was available: $body"
   fi
 }
-
-# --- ghq helpers ------------------------------------------------------------
-
-ghq_root() {
-  ghq root 2>/dev/null
-}
-
-# Turn a ghq list entry (relative "host/owner/repo") into a workspace/tab label.
-repo_label() {
-  local rel="$1"
-  local mode="${2:-repo}"
-  case "$mode" in
-    owner-repo)
-      printf '%s\n' "$rel" | awk -F/ '{ if (NF>=2) printf "%s/%s\n", $(NF-1), $NF; else print $NF }'
-      ;;
-    path)
-      printf '%s\n' "$rel"
-      ;;
-    repo | *)
-      basename -- "$rel"
-      ;;
-  esac
-}
-
-# Focusing a workspace/agent and opening a repo at a target now live only in the
-# Rust switcher (src/action.rs). The picker calls them directly; the clone flow
-# reaches them through `herdr-switchboard open` (see ensure_built), so the herdr
-# verbs are no longer mirrored here.

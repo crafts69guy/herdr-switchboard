@@ -14,7 +14,7 @@ a credential and the only in-process HTTP client** — both fenced, see the cons
 can fetch pull requests through `gh` only when that row is activated, and update checks use a
 detached `git ls-remote` child. The **git menu is a herdr pane of its own** (`Prefix + g` →
 `bin/git.sh` → `--git`), not an overlay on the switcher, and its selection `exec`s a review tool
-over that pane. The clone flow and the review launcher (`bin/review.sh`, which runs
+over that pane. The review launcher (`bin/review.sh`, which runs
 `tuicr`/`lazygit`), the guarded updater, and `bin/picker.sh`'s one-time bootstrap feedback are the
 Bash terminal owners. The plugin needs no fzf.
 See `README.md` for user-facing keybindings and configuration.
@@ -61,9 +61,9 @@ first on PATH beside a perfectly good rustup toolchain and only the latter can i
    `--prepare` resolves the binary without launching it.
 3. The TUI (`src/`) claims the terminal and draws the final Projects chrome immediately with a
    static `Standing by…` state while a feature-local worker loads the catalogue. Completion returns
-   through a typed, generation-tagged effect; an empty initial result returns the same typed Clone
-   outcome as a user action. `surface::run` hosts the Projects surface and guarantees terminal
-   restoration before that outcome runs. Interactive accepts (clone prompt, repository remove
+   through a typed, generation-tagged effect; an empty initial result opens the Clone form.
+   `surface::run` hosts the Projects surface and guarantees terminal
+   restoration before an open outcome runs. Interactive accepts (repository remove
    confirmation, `ghq get -u` output) deliberately run on the restored terminal. Linked-worktree
    removal instead confirms in a modal TUI overlay and runs through a typed background effect.
 
@@ -106,7 +106,7 @@ order so the list stays stable.
   word (the switcher's tab strip); it does not build a `Block` itself.
 - **The git menu is a pane, and a review `exec`s over that pane.** There is a manifest pane for
   the *menu* (`[[panes]] id = "git"`), but **none for the review**: `git::main` `exec`s
-  `bin/review.sh` over itself the way the clone flow's `Accept::Clone` `exec`s `get.sh`, so tuicr
+  `bin/review.sh` over itself, so tuicr
   inherits the pane and quitting it returns to the pane `Prefix + g` was pressed in. The pane's
   placement must stay **full-frame `overlay`** — tuicr renders into whatever window it is handed,
   and a popup would hand it a tiny one. The picker knows nothing about git: there is no `⌥g`, no
@@ -127,10 +127,16 @@ order so the list stays stable.
   Search/Context/Navigator/Preview geometry first and shows static `Standing by…`; it accepts only
   Close until the generation-tagged completion arrives. Settings Apply keeps the old rows visible
   under `Refreshing…`, locks selection-dependent actions, and restores selection by entry ID.
-  There is no minimum-visible floor. Repository and worktree discovery share one `ghq list`
+  There is no minimum-visible floor. Repository and worktree discovery share one `ghq list --full-path`
   snapshot, and per-repository worktree probes use at most four threads while their results are
-  installed in snapshot order. An empty initial catalogue returns a typed Clone outcome so the
-  terminal is restored before `bin/get.sh` takes over.
+  installed in snapshot order. Full paths are retained across all ghq roots; durable IDs stay
+  relative to the longest matching root. An empty initial catalogue opens the Clone form in place.
+- **Clone never asks for credentials in the TUI.** Git/SSH use configured credential helpers
+  and agents with interactive prompts disabled. The URL form rejects embedded credentials;
+  external clone output is never drawn, traced, or logged. Cancellation stops and reaps the
+  entire child process group before allowing another clone, and never deletes partial directories.
+  Default completion refreshes/selects; explicit `clone.open_after = true` returns a typed open
+  outcome so Herdr work still runs after terminal restoration.
 - **Projects stars are durable-entry state, not another source.** Only Repo and Worktree identities
   can be starred; Agent and Workspace IDs are live and must never enter the persistent set. The
   final Starred group filters the already-loaded catalogue and keeps its search, sort, and actions.
@@ -152,11 +158,10 @@ order so the list stays stable.
   (`~/.config/tuicr/themes/hue-<mood>.toml`, 41 keys, none optional). tuicr **exits 2** on a theme
   it cannot fully resolve, and `--theme` on a mismatched name takes the whole review path down —
   so `bin/review.sh` never passes `--theme` and `ensure_tuicr` only checks the binary exists.
-- **Bash delegates open + config to the Rust binary.** The
-  clone flow (`bin/get.sh`) opens a repo with `herdr-switchboard open --target … --path … --origin …
-  --label …` and reads settings with `herdr-switchboard config get <key> [default]`, so the herdr
-  open verbs (`src/action.rs::open_target`) and typed config reader (`Config::load`) live in one
-  place. `bin/lib.sh` keeps `ensure_built` (build-on-demand, shared by the picker and clone flow),
+- **Open + config live in Rust.** The clone form uses the same restored open dispatch as Projects;
+  `bin/get.sh` only launches `--clone`. The `open` and `config get` CLI interfaces remain available,
+  so the Herdr open verbs (`src/action.rs::open_target`) and typed config reader (`Config::load`)
+  live in one place. `bin/lib.sh` keeps `ensure_built` (build-on-demand, shared by the picker entrypoints),
   `toml_get` (used only by `configure_notifications`, the pre-build notification path that must not
   depend on a cargo build), and the pane-context/JSON helpers. **A change to how a target opens
   lands only in `action.rs`.**

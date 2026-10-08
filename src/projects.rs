@@ -1,5 +1,6 @@
 //! Projects Picker model, reduction, terminal hosting, and restored effects.
 
+mod clone;
 mod effect;
 mod handoff;
 mod preview;
@@ -147,6 +148,7 @@ pub struct App {
     pub changelog: ChangelogState,
     handoff: HandoffState,
     removal: removal::State,
+    clone: clone::State,
     /// The settings form used when [`Overlay::Settings`] owns input.
     pub settings: settings::Settings,
     pub zones: HitZones,
@@ -163,6 +165,7 @@ pub(super) enum Overlay {
     Settings,
     Handoff,
     Removal,
+    Clone,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -193,6 +196,8 @@ enum Flow {
     ReloadCatalog(CatalogIntent),
     PrepareRemoval(Entry),
     RemoveWorktree(removal::Request),
+    OpenClone,
+    CloneRepository(String),
 }
 
 impl Picker {
@@ -553,6 +558,7 @@ impl App {
             changelog: ChangelogState::new(),
             handoff: HandoffState::new(),
             removal: removal::State::default(),
+            clone: clone::State::default(),
             settings,
             zones: HitZones::new(),
             feedback: None,
@@ -722,7 +728,7 @@ impl App {
     /// the preview, the selection anywhere else. Reports whether anything moved,
     /// so the caller can skip a redraw for a wheel over dead space.
     fn on_wheel(&mut self, at: Position, delta: i32) -> bool {
-        if self.overlay == Overlay::Removal {
+        if matches!(self.overlay, Overlay::Removal | Overlay::Clone) {
             return false;
         }
         // A modal popup takes the wheel first: it is what the pointer is over,
@@ -985,6 +991,7 @@ fn apply_action(app: &mut App, action: keymap::Action) -> Flow {
         }
         Action::EnterInsert => app.mode = keymap::Mode::Insert,
         Action::EnterNormal => app.mode = keymap::Mode::Normal,
+        Action::Accept(Accept::Clone) => return Flow::OpenClone,
         Action::Accept(Accept::Remove)
             if app
                 .picker
@@ -1152,6 +1159,8 @@ enum ProjectOutcome {
 }
 
 enum ProjectEffect {
+    CloneSeed(Option<String>),
+    Cloned(Result<(String, String), String>),
     Targets(Result<(ItemContext, TargetResolution), String>),
     Delivered(Result<(), String>),
     Stars(Result<stars::Stars, String>),
@@ -1167,6 +1176,10 @@ struct RemovedWorktree {
 
 impl HostedSurface for ProjectsSurface<'_> {
     type Output = Option<ProjectOutcome>;
+
+    fn bracketed_paste(&self) -> bool {
+        self.app.overlay == Overlay::Clone
+    }
 
     fn terminal_claimed(&mut self) {
         trace::mark("terminal.claimed");
@@ -1232,6 +1245,13 @@ impl HostedSurface for ProjectsSurface<'_> {
                 Err(TryRecvError::Empty) => return Ok(SurfaceTransition::Wait),
                 Err(TryRecvError::Disconnected) => {
                     self.effect = None;
+                    if self.app.overlay == Overlay::Clone {
+                        self.app.clone.finish();
+                        self.app.clone.error = Some(
+                            "Clone worker stopped unexpectedly. Check ghq before retrying.".into(),
+                        );
+                        return Ok(SurfaceTransition::Redraw);
+                    }
                     self.app.handoff.delivery_failed("");
                     self.app.removal.status = None;
                     self.app.removal.error = Some("Background action stopped unexpectedly. Cancel and reopen to check the worktree.".into());
@@ -1241,6 +1261,59 @@ impl HostedSurface for ProjectsSurface<'_> {
             };
             self.effect = None;
             return Ok(match effect {
+                ProjectEffect::CloneSeed(seed) => {
+                    if self.app.clone.finish() {
+                        self.close_clone()
+                    } else {
+                        if let Some(seed) = seed {
+                            self.app.clone.paste(&seed);
+                        }
+                        SurfaceTransition::Redraw
+                    }
+                }
+                ProjectEffect::Cloned(result) => {
+                    if self.app.clone.finish() {
+                        self.app.feedback =
+                            Some("Clone cancelled. A partial directory may remain.".into());
+                        self.close_clone()
+                    } else {
+                        match result {
+                            Ok((id, path)) => {
+                                let mut entry = crate::data::load_repos(
+                                    std::slice::from_ref(&id),
+                                    &self.app.theme,
+                                    "",
+                                )
+                                .remove(0);
+                                entry.dir = Some(path);
+                                entry.label = match self.app.cfg.projects.label.as_str() {
+                                    "path" => id,
+                                    "owner-repo" => entry
+                                        .primary
+                                        .rsplit('/')
+                                        .take(2)
+                                        .collect::<Vec<_>>()
+                                        .into_iter()
+                                        .rev()
+                                        .collect::<Vec<_>>()
+                                        .join("/"),
+                                    _ => entry.label,
+                                };
+                                self.app.clone.completed = Some(entry);
+                                self.app.clone.status = Some("Refreshing projects…");
+                                self.app.picker.query.clear();
+                                self.start_catalog(CatalogIntent::Refresh {
+                                    requested_group: GroupFilter::Only(Kind::Repo),
+                                    preserve_selection: false,
+                                })
+                            }
+                            Err(error) => {
+                                self.app.clone.error = Some(error);
+                                SurfaceTransition::Redraw
+                            }
+                        }
+                    }
+                }
                 ProjectEffect::Targets(Ok((item, targets))) => {
                     if let Some(request) = self.app.handoff.show_targets(item, targets) {
                         self.apply_flow(Flow::Deliver(request))
@@ -1296,6 +1369,48 @@ impl HostedSurface for ProjectsSurface<'_> {
     }
 
     fn on_event(&mut self, event: Event) -> Result<SurfaceTransition<Self::Output>> {
+        if self.app.overlay == Overlay::Clone {
+            let control = match event {
+                Event::Key(key) if key.kind == KeyEventKind::Press => self.app.clone.on_key(key),
+                Event::Paste(text) => {
+                    self.app.clone.paste(&text);
+                    None
+                }
+                Event::Mouse(mouse) if mouse.kind == MouseEventKind::Down(MouseButton::Left) => {
+                    let at = Position::new(mouse.column, mouse.row);
+                    self.app
+                        .clone
+                        .zones
+                        .iter()
+                        .find(|(zone, _)| zone.contains(at))
+                        .map(|(_, control)| *control)
+                }
+                _ => None,
+            };
+            return Ok(match control {
+                Some(clone::Control::Cancel) => {
+                    if let Some(cancel) = &self.app.clone.cancel {
+                        cancel.store(true, std::sync::atomic::Ordering::Release);
+                        self.app.clone.status = Some("Cancelling…");
+                        SurfaceTransition::Redraw
+                    } else {
+                        self.close_clone()
+                    }
+                }
+                Some(clone::Control::Submit)
+                    if self.app.clone.cancel.is_none() && self.app.clone.completed.is_none() =>
+                {
+                    match clone::reference(&self.app.clone.input) {
+                        Ok(input) => self.apply_flow(Flow::CloneRepository(input)),
+                        Err(error) => {
+                            self.app.clone.error = Some(error.to_string());
+                            SurfaceTransition::Redraw
+                        }
+                    }
+                }
+                _ => SurfaceTransition::Redraw,
+            });
+        }
         if matches!(
             self.app.catalog,
             CatalogState::Loading | CatalogState::Failed(_)
@@ -1398,6 +1513,15 @@ impl HostedSurface for ProjectsSurface<'_> {
 }
 
 impl ProjectsSurface<'_> {
+    fn close_clone(&mut self) -> SurfaceTransition<Option<ProjectOutcome>> {
+        self.app.overlay = Overlay::None;
+        self.app.clone.completed = None;
+        if self.app.clone.close_after_cancel {
+            SurfaceTransition::Exit(None)
+        } else {
+            SurfaceTransition::Redraw
+        }
+    }
     fn accept_catalog_completion(
         &mut self,
         completion: effect::CatalogCompletion,
@@ -1406,14 +1530,40 @@ impl ProjectsSurface<'_> {
             return None;
         }
         self.catalog_pending = false;
-        if self.catalog_intent == CatalogIntent::Initial && completion.entries.is_empty() {
-            return Some(SurfaceTransition::Exit(Some(ProjectOutcome::Accept(
-                None,
-                Accept::Clone,
-            ))));
-        }
+        let empty_initial =
+            self.catalog_intent == CatalogIntent::Initial && completion.entries.is_empty();
         self.app
             .install_catalog(completion.entries, self.catalog_intent);
+        if let Some(entry) = self.app.clone.completed.take() {
+            self.app.clone.status = None;
+            self.app.feedback = None;
+            self.app.overlay = Overlay::None;
+            if let Some(position) = self
+                .app
+                .picker
+                .filtered
+                .iter()
+                .position(|&i| self.app.picker.entries[i].dir == entry.dir)
+            {
+                self.app.picker.selected = position;
+            } else {
+                self.app.feedback = Some(
+                    "Repository cloned, but not found in the refreshed catalogue. Check ghq roots."
+                        .into(),
+                );
+            }
+            if self.app.cfg.clone.open_after {
+                return Some(SurfaceTransition::Exit(Some(ProjectOutcome::Accept(
+                    Some(entry),
+                    Accept::Default,
+                ))));
+            }
+            self.app
+                .feedback
+                .get_or_insert_with(|| "Repository ready. Press Enter to open it.".into());
+        } else if empty_initial && self.app.overlay != Overlay::Clone {
+            return Some(self.apply_flow(Flow::OpenClone));
+        }
         Some(SurfaceTransition::Redraw)
     }
 
@@ -1443,6 +1593,35 @@ impl ProjectsSurface<'_> {
 
     fn apply_flow(&mut self, flow: Flow) -> SurfaceTransition<Option<ProjectOutcome>> {
         match flow {
+            Flow::OpenClone => {
+                self.app.clone = clone::State::default();
+                self.app.overlay = Overlay::Clone;
+                if self.app.cfg.clone.source == "clipboard" {
+                    let cancel = self.app.clone.begin("Reading clipboard…");
+                    let runner = Arc::clone(&self.runner);
+                    let (sender, receiver) = mpsc::channel();
+                    self.app.clone.worker = Some(std::thread::spawn(move || {
+                        let _ = sender.send(ProjectEffect::CloneSeed(clone::seed(
+                            runner.as_ref(),
+                            &cancel,
+                        )));
+                    }));
+                    self.effect = Some(receiver);
+                }
+                SurfaceTransition::Redraw
+            }
+            Flow::CloneRepository(input) => {
+                let cancel = self.app.clone.begin("Cloning…");
+                let runner = Arc::clone(&self.runner);
+                let (sender, receiver) = mpsc::channel();
+                self.app.clone.worker = Some(std::thread::spawn(move || {
+                    let result = clone::run(runner.as_ref(), &input, &cancel)
+                        .map_err(|error| error.to_string());
+                    let _ = sender.send(ProjectEffect::Cloned(result));
+                }));
+                self.effect = Some(receiver);
+                SurfaceTransition::Redraw
+            }
             Flow::Continue => SurfaceTransition::Redraw,
             Flow::Quit => SurfaceTransition::Exit(None),
             Flow::Accept(accept) => SurfaceTransition::Exit(Some(ProjectOutcome::Accept(
@@ -1543,6 +1722,14 @@ impl ProjectsSurface<'_> {
 
 /// Run the Projects Picker after the composition root has selected this mode.
 pub(crate) fn main(cfg: Config, theme: Theme) -> Result<()> {
+    main_mode(cfg, theme, false)
+}
+
+pub(crate) fn clone_main(cfg: Config, theme: Theme) -> Result<()> {
+    main_mode(cfg, theme, true)
+}
+
+fn main_mode(cfg: Config, theme: Theme, clone_on_start: bool) -> Result<()> {
     let script_dir = env::var("HERDR_PLUGIN_ROOT")
         .map(|r| format!("{r}/bin"))
         .unwrap_or_else(|_| ".".into());
@@ -1553,7 +1740,7 @@ pub(crate) fn main(cfg: Config, theme: Theme) -> Result<()> {
     update::spawn_refresh_if_stale(&cfg);
 
     trace::mark("config+theme.loaded");
-    run_with(
+    run_mode_with(
         &mut crate::surface::TerminalHost,
         Arc::new(runner::SystemRunner),
         &AfterExit::LIVE,
@@ -1561,6 +1748,7 @@ pub(crate) fn main(cfg: Config, theme: Theme) -> Result<()> {
         theme,
         script_dir,
         origin,
+        clone_on_start,
     )
 }
 
@@ -1582,6 +1770,7 @@ impl AfterExit {
 
 /// The whole Projects lifecycle over any host and runner: discover, host the
 /// surface, then act on its outcome with the terminal restored.
+#[cfg(test)]
 fn run_with(
     host: &mut impl crate::surface::Host,
     runner: Arc<dyn CommandRunner + Send + Sync>,
@@ -1590,6 +1779,20 @@ fn run_with(
     theme: Theme,
     script_dir: String,
     origin: String,
+) -> Result<()> {
+    run_mode_with(host, runner, after, cfg, theme, script_dir, origin, false)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_mode_with(
+    host: &mut impl crate::surface::Host,
+    runner: Arc<dyn CommandRunner + Send + Sync>,
+    after: &AfterExit,
+    cfg: Config,
+    theme: Theme,
+    script_dir: String,
+    origin: String,
+    clone_on_start: bool,
 ) -> Result<()> {
     let mut app = App::new(Vec::new(), theme, cfg, script_dir.clone());
     app.catalog = CatalogState::Loading;
@@ -1610,6 +1813,9 @@ fn run_with(
         placeholder_frame: None,
     };
     surface.start_catalog(CatalogIntent::Initial);
+    if clone_on_start {
+        surface.apply_flow(Flow::OpenClone);
+    }
     let outcome = host.run(&mut surface);
     let runner = runner.as_ref();
 
@@ -2771,6 +2977,287 @@ mod tests {
         app
     }
 
+    #[test]
+    fn clone_form_owns_paste_and_cancel_without_changing_the_query() {
+        let mut app = ready_app();
+        app.cfg.clone.source = "prompt".into();
+        app.picker.query = "old filter".into();
+        let mut surface = surface(&mut app);
+        surface.apply_flow(Flow::OpenClone);
+        assert!(surface.bracketed_paste());
+        surface
+            .on_event(Event::Paste("gitlab.com/team/sub/repo".into()))
+            .unwrap();
+        assert_eq!(surface.app.clone.input, "gitlab.com/team/sub/repo");
+        assert_eq!(surface.app.picker.query, "old filter");
+        let cancel = surface.app.clone.begin("Cloning…");
+        surface
+            .on_event(ScriptedHost::key(KeyCode::Enter, KeyModifiers::NONE))
+            .unwrap();
+        assert!(
+            surface.effect.is_none(),
+            "duplicate submission must not start a worker"
+        );
+        surface
+            .on_event(ScriptedHost::key(KeyCode::Esc, KeyModifiers::NONE))
+            .unwrap();
+        assert!(cancel.load(std::sync::atomic::Ordering::Acquire));
+        assert_eq!(
+            surface.app.overlay,
+            Overlay::Clone,
+            "wait until the child is reaped"
+        );
+        let (sender, receiver) = mpsc::channel();
+        sender
+            .send(ProjectEffect::Cloned(Err("cancelled".into())))
+            .unwrap();
+        surface.effect = Some(receiver);
+        surface.on_tick().unwrap();
+        assert_eq!(surface.app.overlay, Overlay::None);
+        assert!(!surface.bracketed_paste());
+    }
+
+    #[test]
+    fn clone_completion_refreshes_selects_and_honors_explicit_auto_open() {
+        for open_after in [false, true] {
+            let mut app = ready_app();
+            app.cfg.clone.open_after = open_after;
+            app.overlay = Overlay::Clone;
+            app.feedback = Some("Clone cancelled. A partial directory may remain.".into());
+            let mut surface = surface(&mut app);
+            let (sender, receiver) = mpsc::channel();
+            sender
+                .send(ProjectEffect::Cloned(Ok((
+                    "gitlab.com/team/sub/repo".into(),
+                    "/secondary/gitlab.com/team/sub/repo".into(),
+                ))))
+                .unwrap();
+            surface.effect = Some(receiver);
+            assert!(matches!(
+                surface.on_tick().unwrap(),
+                SurfaceTransition::Redraw
+            ));
+            assert_eq!(surface.app.catalog, CatalogState::Refreshing);
+            assert!(surface.app.picker.query.is_empty());
+            let selected = surface.app.clone.completed.as_ref().unwrap().clone();
+            let transition = surface
+                .accept_catalog_completion(effect::CatalogCompletion {
+                    generation: surface.catalog_generation,
+                    entries: vec![selected.clone()],
+                })
+                .unwrap();
+            assert_eq!(surface.app.picker.selected_entry().unwrap().id, selected.id);
+            assert_eq!(surface.app.overlay, Overlay::None);
+            if open_after {
+                assert!(matches!(
+                    transition,
+                    SurfaceTransition::Exit(Some(ProjectOutcome::Accept(Some(_), Accept::Default)))
+                ));
+            } else {
+                assert!(matches!(transition, SurfaceTransition::Redraw));
+                assert_eq!(
+                    surface.app.feedback.as_deref(),
+                    Some("Repository ready. Press Enter to open it.")
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn clone_form_renders_and_clips_click_targets_in_small_panes() {
+        let mut app = ready_app();
+        app.overlay = Overlay::Clone;
+        app.clone.paste("https://gitlab.com/team/sub/repo.git");
+        assert!(rendered(&mut app, 120, 40).contains("Clone repository"));
+        assert!(rendered(&mut app, 120, 40).contains("https://gitlab.com/team/sub/repo.git"));
+        for (width, height) in [(80, 24), (30, 4), (8, 1)] {
+            rendered(&mut app, width, height);
+            assert!(app
+                .clone
+                .zones
+                .iter()
+                .all(|(zone, _)| zone.right() <= width && zone.bottom() <= height));
+        }
+    }
+
+    #[test]
+    fn clone_keyboard_and_pointer_report_errors_and_allow_back_or_quit() {
+        use crossterm::event::MouseEvent;
+        let mut app = ready_app();
+        app.cfg.clone.source = "prompt".into();
+        let mut surface = surface(&mut app);
+        let flow = handle_key(
+            surface.app,
+            crossterm::event::KeyEvent::new(KeyCode::Char('l'), KeyModifiers::ALT),
+        );
+        surface.apply_flow(flow);
+        surface
+            .on_event(ScriptedHost::key(KeyCode::Enter, KeyModifiers::NONE))
+            .unwrap();
+        assert!(surface.app.clone.error.as_deref().unwrap().contains("URL"));
+        assert!(surface.effect.is_none());
+        rendered(surface.app, 120, 40);
+        let zone = surface
+            .app
+            .clone
+            .zones
+            .iter()
+            .find(|(_, control)| *control == clone::Control::Cancel)
+            .unwrap()
+            .0;
+        surface
+            .on_event(Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: zone.x,
+                row: zone.y,
+                modifiers: KeyModifiers::NONE,
+            }))
+            .unwrap();
+        assert_eq!(surface.app.overlay, Overlay::None);
+        surface.apply_flow(Flow::OpenClone);
+        surface.on_event(Event::Resize(80, 24)).unwrap();
+        assert!(matches!(
+            surface
+                .on_event(ScriptedHost::key(KeyCode::Char('c'), KeyModifiers::CONTROL))
+                .unwrap(),
+            SurfaceTransition::Exit(None)
+        ));
+    }
+
+    #[test]
+    fn clone_worker_failures_and_clipboard_completion_keep_the_form_recoverable() {
+        let mut app = ready_app();
+        app.overlay = Overlay::Clone;
+        let mut surface = surface(&mut app);
+        let land = |surface: &mut ProjectsSurface<'_>, effect| {
+            let (sender, receiver) = mpsc::channel();
+            sender.send(effect).unwrap();
+            surface.effect = Some(receiver);
+            surface.on_tick().unwrap()
+        };
+        surface.app.clone.begin("Reading clipboard…");
+        land(
+            &mut surface,
+            ProjectEffect::CloneSeed(Some("owner/repo".into())),
+        );
+        assert_eq!(surface.app.clone.input, "owner/repo");
+        surface
+            .app
+            .clone
+            .begin("Reading clipboard…")
+            .store(true, std::sync::atomic::Ordering::Release);
+        land(&mut surface, ProjectEffect::CloneSeed(None));
+        assert_eq!(surface.app.overlay, Overlay::None);
+        surface.app.overlay = Overlay::Clone;
+        surface.app.clone.begin("Cloning…");
+        land(
+            &mut surface,
+            ProjectEffect::Cloned(Err("Authentication unavailable".into())),
+        );
+        assert!(surface.app.clone.error.is_some());
+        assert_eq!(surface.app.clone.input, "owner/repo");
+        assert!(surface.app.clone.cancel.is_none());
+        let (_, receiver) = mpsc::channel();
+        surface.effect = Some(receiver);
+        surface.on_tick().unwrap();
+        assert!(surface
+            .app
+            .clone
+            .error
+            .as_deref()
+            .unwrap()
+            .contains("worker"));
+        surface.app.cfg.projects.label = "owner-repo".into();
+        land(
+            &mut surface,
+            ProjectEffect::Cloned(Ok((
+                "gitlab.com/team/sub/repo".into(),
+                "/secondary/repo".into(),
+            ))),
+        );
+        assert_eq!(
+            surface.app.clone.completed.as_ref().unwrap().label,
+            "sub/repo"
+        );
+        surface.accept_catalog_completion(effect::CatalogCompletion {
+            generation: surface.catalog_generation,
+            entries: Vec::new(),
+        });
+        assert!(surface
+            .app
+            .feedback
+            .as_deref()
+            .unwrap()
+            .contains("not found"));
+        surface.app.overlay = Overlay::Clone;
+        surface.app.cfg.projects.label = "path".into();
+        land(
+            &mut surface,
+            ProjectEffect::Cloned(Ok((
+                "gitlab.com/team/sub/repo".into(),
+                "/secondary/repo".into(),
+            ))),
+        );
+        assert_eq!(
+            surface.app.clone.completed.as_ref().unwrap().label,
+            "gitlab.com/team/sub/repo"
+        );
+    }
+
+    #[test]
+    fn the_clone_entrypoint_runs_the_worker_refreshes_and_opens_the_selected_repo() {
+        let root = crate::state::test_scratch()
+            .unwrap()
+            .join("clone-lifecycle");
+        let path = root.join("gitlab.com/team/sub/clone-lifecycle");
+        std::fs::create_dir_all(&path).unwrap();
+        for open_after in [false, true] {
+            let runner = Arc::new(
+                crate::runner::MockRunner::new()
+                    .on("ghq root", root.to_str().unwrap())
+                    .on("ghq list --exact --full-path", path.to_str().unwrap())
+                    .on("ghq list --exact --", "gitlab.com/team/sub/clone-lifecycle")
+                    .on("ghq list --full-path", path.to_str().unwrap()),
+            );
+            let mut cfg = Config::default();
+            cfg.clone.source = "prompt".into();
+            cfg.clone.open_after = open_after;
+            cfg.projects.default_target = "tab".into();
+            cfg.projects.include_agents = false;
+            cfg.projects.include_workspaces = false;
+            let mut host = ScriptedHost::new([
+                ScriptedHost::PAUSE,
+                Event::Paste("gitlab.com/team/sub/clone-lifecycle".into()),
+                ScriptedHost::key(KeyCode::Enter, KeyModifiers::NONE),
+                ScriptedHost::PAUSE,
+                ScriptedHost::key(KeyCode::Enter, KeyModifiers::NONE),
+            ]);
+            run_mode_with(
+                &mut host,
+                runner.clone(),
+                &RECORDING,
+                cfg,
+                Theme::default(),
+                "/plugin/bin".into(),
+                "w1:p1".into(),
+                true,
+            )
+            .unwrap();
+            let calls = runner.calls();
+            assert_eq!(
+                calls
+                    .iter()
+                    .filter(|c| c.get(1).is_some_and(|s| s == "get"))
+                    .count(),
+                1
+            );
+            assert!(calls
+                .iter()
+                .any(|c| c.join(" ").contains("tab create --cwd")
+                    && c.contains(&path.to_string_lossy().into_owned())));
+        }
+    }
+
     /// The host is only allowed to spin fast while something is actually in
     /// flight; the rest of the time it must wait on input. A tick rate stuck at
     /// the fast value wakes the process sixty times a second forever.
@@ -2818,10 +3305,9 @@ mod tests {
     }
 
     /// An empty *first* catalogue means there is nothing to switch to, so the
-    /// picker hands off to the clone flow instead of showing an empty list. It
-    /// leaves through the typed outcome so the terminal is restored first.
+    /// picker opens the clone form without surrendering the terminal.
     #[test]
-    fn an_empty_initial_catalogue_hands_off_to_clone() {
+    fn an_empty_initial_catalogue_opens_the_clone_form() {
         let mut app = App::new(Vec::new(), Theme::default(), Config::default(), ".".into());
         app.catalog = CatalogState::Loading;
         let mut surface = surface(&mut app);
@@ -2834,10 +3320,8 @@ mod tests {
             })
             .expect("a live generation is applied");
 
-        assert!(matches!(
-            transition,
-            SurfaceTransition::Exit(Some(ProjectOutcome::Accept(None, Accept::Clone)))
-        ));
+        assert!(matches!(transition, SurfaceTransition::Redraw));
+        assert_eq!(surface.app.overlay, Overlay::Clone);
         assert!(!surface.catalog_pending);
     }
 
@@ -3235,7 +3719,7 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_initial_catalog_returns_the_typed_clone_outcome() {
+    fn an_empty_initial_catalog_keeps_the_host_and_opens_clone() {
         let mut app = App::new(Vec::new(), Theme::default(), Config::default(), ".".into());
         app.catalog = CatalogState::Loading;
         let notifier = Notifier::new(&app.cfg);
@@ -3261,10 +3745,8 @@ mod tests {
                 entries: Vec::new(),
             })
             .expect("current completion must be applied");
-        assert!(matches!(
-            transition,
-            SurfaceTransition::Exit(Some(ProjectOutcome::Accept(None, Accept::Clone)))
-        ));
+        assert!(matches!(transition, SurfaceTransition::Redraw));
+        assert_eq!(surface.app.overlay, Overlay::Clone);
     }
 
     #[test]
@@ -4910,7 +5392,7 @@ mod tests {
         let root = root.to_string_lossy().into_owned();
         let runner = crate::runner::MockRunner::new()
             .on("ghq root", &root)
-            .on("ghq list", &format!("github.com/o/{repo}"));
+            .on("ghq list", path.to_str().unwrap());
         (Arc::new(runner), path.to_string_lossy().into_owned())
     }
 
@@ -4994,7 +5476,7 @@ mod tests {
         let runner = Arc::new(
             crate::runner::MockRunner::new()
                 .on("ghq root", &root)
-                .on("ghq list", "github.com/o/failing-repo")
+                .on("ghq list", &path)
                 .failing("tab create"),
         );
         let result = lifecycle(

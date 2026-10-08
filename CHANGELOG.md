@@ -9,6 +9,11 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Add repositories without leaving Projects.** `alt-l` opens a clone form for GitHub,
+  GitLab (including subgroups), Bitbucket, and self-hosted Git URLs. Clone in the background,
+  cancel with Esc, then select the repo in the refreshed list. Automatic opening now defaults
+  off; an explicit `clone.open_after = true` still opens immediately.
+- **Repositories in multiple ghq roots open at their actual paths.**
 - **Remove linked worktrees with `ctrl-x`.** Confirm in a popup without leaving the Projects
   picker, optionally force removal of local changes or delete a merged branch. Main and locked
   worktrees remain protected.
