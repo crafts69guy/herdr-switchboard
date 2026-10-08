@@ -352,16 +352,17 @@ pub fn load_repos(repos: &[String], theme: &Theme, root: &str) -> Vec<Entry> {
 }
 
 #[derive(Default)]
-struct WorktreeRecord {
-    path: String,
-    head: String,
-    branch: Option<String>,
-    prunable: bool,
+pub(crate) struct WorktreeRecord {
+    pub path: String,
+    pub head: String,
+    pub branch: Option<String>,
+    pub prunable: bool,
+    pub locked: bool,
 }
 
 /// Parse `git worktree list --porcelain -z`. Git promises this format is stable;
 /// NUL fields also preserve paths and reasons containing whitespace or newlines.
-fn parse_worktree_list(raw: &str) -> Vec<WorktreeRecord> {
+pub(crate) fn parse_worktree_list(raw: &str) -> Vec<WorktreeRecord> {
     let mut records = Vec::new();
     let mut current = WorktreeRecord::default();
 
@@ -381,6 +382,8 @@ fn parse_worktree_list(raw: &str) -> Vec<WorktreeRecord> {
             current.branch = Some(branch.to_string());
         } else if field == "prunable" || field.starts_with("prunable ") {
             current.prunable = true;
+        } else if field == "locked" || field.starts_with("locked ") {
+            current.locked = true;
         }
     }
     if !current.path.is_empty() {

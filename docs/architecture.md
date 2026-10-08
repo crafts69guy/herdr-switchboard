@@ -48,6 +48,10 @@ worktree Inspectors include Git state, recent commits, a file tree, an optional 
 opt-in filesystem-only Node declaration inspection. fnm resolution runs only after selection;
 fresh targets receive its PATH at process launch and never receive post-create terminal input.
 Selection actions use the captured origin or an ID returned by Herdr; they never guess identifiers.
+Linked-worktree removal confirms in a Projects overlay, then crosses a typed background effect
+for fresh Git validation, removal, optional merged-branch deletion, and star/history cleanup.
+Completion updates the catalogue in place and keeps the picker open; repository removal still
+uses the restored-terminal confirmation.
 
 Usage keeps its specialized quota visualization. Its offline provider is read before terminal
 claim and its networked provider runs on a worker thread, so the first frame never waits on a
@@ -78,7 +82,7 @@ the module inventory.
 | `fnm` | `inspect`, `prepare`, `Declaration`, `Preparation` | Version-file precedence, recursive lookup, engine parsing, installed PATH resolution |
 | `fnm_manager` | `main` | Local/remote version parsing, background remote lookup, safe fnm mutations, origin-pane activation |
 | `keymap` | `Chord`, `Action`, `Keymap`, canonical chord conversion | Mode tables, overrides, labels |
-| `projects` / `picker` / `git` | `Surface` adapters and typed outputs | Surface-specific reduction and composition; Projects star persistence and generation-tagged catalogue loading; Git saved-review visibility state |
+| `projects` / `picker` / `git` | `Surface` adapters and typed outputs | Surface-specific reduction and composition; Projects star persistence, linked-worktree removal, and generation-tagged catalogue loading; Git saved-review visibility state |
 | `agent_handoff` | `discover_targets`, `deliver_prompt` | Promptable-agent parsing, worktree scoping, origin preference, non-waiting delivery |
 | `clipboard` | `copy_text` | macOS/Wayland/X11 command selection and stdin delivery |
 | `action` | `Accept`, `dispatch`, `open_target` | Restored-terminal effects and process replacement |

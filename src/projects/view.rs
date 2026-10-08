@@ -111,7 +111,120 @@ pub(super) fn draw(f: &mut Frame, app: &mut App) {
         ),
         super::Overlay::Help => draw_help(f, app, f.area()),
         super::Overlay::Handoff => draw_handoff(f, app, f.area()),
+        super::Overlay::Removal => draw_removal(f, app, f.area()),
         super::Overlay::None => {}
+    }
+}
+
+fn draw_removal(f: &mut Frame, app: &mut App, area: Rect) {
+    use super::removal::Control;
+
+    let title = app.title_color;
+    let border = app.theme.or("overlay0", Color::DarkGray);
+    let text = app.theme.or("text", Color::Reset);
+    let red = app.theme.or("red", Color::Red);
+    let sub = app.theme.or("subtext0", Color::DarkGray);
+    let popup = crate::tui::centered(area, 92, 21);
+    app.background.paint(f, popup);
+    let outer = crate::tui::boxed("Remove worktree", title, border);
+    let inner = outer.inner(popup);
+    f.render_widget(outer, popup);
+    let (body, bar) = crate::tui::reserve_bar(inner, 1);
+    let (body, feedback) = crate::tui::reserve_bar(body, 3);
+    let state = &mut app.removal;
+    state.zones.clear();
+    let entry = state.entry.as_ref();
+    let branch = state.snapshot.as_ref().and_then(|s| s.branch.as_deref());
+    let condition = match state.snapshot.as_ref() {
+        Some(snapshot) if snapshot.dirty => "Uncommitted or untracked changes",
+        Some(_) => "Clean worktree",
+        None => "Not yet checked",
+    };
+    let lines = vec![
+        Line::from(format!("Name: {}", entry.map_or("", |e| e.label.as_str()))),
+        Line::from(format!(
+            "Path: {}",
+            entry.and_then(|e| e.dir.as_deref()).unwrap_or("")
+        )),
+        Line::from(format!(
+            "Branch: {}",
+            branch.unwrap_or("detached / not yet checked")
+        )),
+        Line::from(condition),
+        Line::from(""),
+        Line::from("Deletes the checkout, including ignored files."),
+        Line::from("Running panes and agents may be affected; they stay open."),
+        Line::from(if state.force {
+            "WARNING: Force discards all local changes."
+        } else {
+            "Git refuses dirty worktrees unless Force is enabled."
+        }),
+        Line::from(""),
+        Line::from(format!("Type exactly: {}", state.expected())),
+        Line::from(format!(
+            "{} Confirm: {}▏",
+            if state.focus == 0 { "›" } else { " " },
+            state.confirmation
+        )),
+        Line::from(format!(
+            "{} [{}] Force removal",
+            if state.focus == 1 { "›" } else { " " },
+            if state.force { "x" } else { " " }
+        )),
+        Line::from(format!(
+            "{} [{}] Delete branch (merged only){}",
+            if state.focus == 2 { "›" } else { " " },
+            if state.delete_branch { "x" } else { " " },
+            if branch.is_none() {
+                " — unavailable"
+            } else {
+                ""
+            }
+        )),
+        Line::from("Tab: next field   Space: toggle checkbox"),
+    ];
+    f.render_widget(Paragraph::new(lines).style(Style::default().fg(text)), body);
+    for (row, control) in [
+        (10, Control::Input),
+        (11, Control::Force),
+        (12, Control::Branch),
+    ] {
+        if row < body.height {
+            state
+                .zones
+                .push((Rect::new(body.x, body.y + row, body.width, 1), control));
+        }
+    }
+    let message = state.error.as_deref().or(state.status).unwrap_or("");
+    f.render_widget(
+        Paragraph::new(message)
+            .style(Style::default().fg(if state.error.is_some() { red } else { sub }))
+            .wrap(ratatui::widgets::Wrap { trim: false }),
+        feedback,
+    );
+    let ink = app.theme.or("panel_bg", Color::Rgb(16, 18, 20));
+    let pills = [
+        crate::tui::Pill {
+            key: "enter",
+            label: "remove",
+            color: if state.confirmed() { red } else { border },
+        },
+        crate::tui::Pill {
+            key: "esc",
+            label: "cancel",
+            color: sub,
+        },
+    ];
+    let (spans, zones) = crate::tui::pill_row(&pills, ink, bar.x);
+    f.render_widget(Paragraph::new(Line::from(spans)), bar);
+    if bar.height > 0 {
+        for ((start, end), control) in zones.into_iter().zip([Control::Confirm, Control::Cancel]) {
+            let start = start.min(bar.right());
+            let end = end.min(bar.right());
+            state
+                .zones
+                .push((Rect::new(start, bar.y, end - start, 1), control));
+        }
     }
 }
 

@@ -63,8 +63,9 @@ first on PATH beside a perfectly good rustup toolchain and only the latter can i
    static `Standing by…` state while a feature-local worker loads the catalogue. Completion returns
    through a typed, generation-tagged effect; an empty initial result returns the same typed Clone
    outcome as a user action. `surface::run` hosts the Projects surface and guarantees terminal
-   restoration before that outcome runs. Interactive accepts (clone prompt, remove confirmation,
-   `ghq get -u` output) deliberately run on the restored terminal, not inside the TUI.
+   restoration before that outcome runs. Interactive accepts (clone prompt, repository remove
+   confirmation, `ghq get -u` output) deliberately run on the restored terminal. Linked-worktree
+   removal instead confirms in a modal TUI overlay and runs through a typed background effect.
 
 **Why the origin pane matters:** `split` and `pane` targets act on the captured `SWITCHBOARD_ORIGIN_PANE_ID`.
 The overlay pane is _not_ the user's pane. Never guess or infer a pane/workspace/agent id — every id
@@ -476,8 +477,12 @@ order so the list stays stable.
 - **An update must force a rebuild.** `target/` is gitignored, so re-fetching the source leaves
   the old binary in place and `bin/picker.sh` only builds when the binary is _missing_ — the new
   code would ship with the old switcher still running. `update-plugin.sh` removes it and rebuilds.
-- **`ctrl-x` (remove) is the only destructive path.** It requires typing the repo name to confirm.
-  Preserve that; test against disposable repos.
+- **Projects `ctrl-x` (remove) requires typed confirmation.** Repositories use their name on the
+  restored terminal; linked worktrees use their name in a modal overlay, or `force <name>` when
+  Force is explicitly selected. Git revalidates the linked worktree before removal; main and
+  locked worktrees refuse, branch deletion only uses `-d`, and partial branch failure still drops
+  the removed worktree from the list. Never cancel a pending removal or substitute `rm -rf` for
+  Git's metadata cleanup. Preserve these guards; test against disposable repos.
 - **Pane commands must launch through `$HERDR_PLUGIN_ROOT`** — `tests/manifest_spec.sh` asserts the
   exact manifest string, since herdr starts panes from the user's repo, not the plugin checkout.
 

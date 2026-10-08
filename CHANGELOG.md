@@ -7,6 +7,12 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Remove linked worktrees with `ctrl-x`.** Confirm in a popup without leaving the Projects
+  picker, optionally force removal of local changes or delete a merged branch. Main and locked
+  worktrees remain protected.
+
 ## [3.0.3] - 2026-10-06
 
 ### Fixed

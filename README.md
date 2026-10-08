@@ -176,6 +176,7 @@ Projects at a glance:
 | `ctrl-e` / `ctrl-v` / `ctrl-o` / `ctrl-w` | Open a repo or worktree in a tab / split / this pane / a workspace. | `e` `v` `o` `w` |
 | `ctrl-y` / `ctrl-a` | Copy its absolute path / send it to a running agent as context. | |
 | `ctrl-s` | Star or unstar a repo or worktree. | |
+| `ctrl-r` / `ctrl-x` | Update a repo / remove a repo or linked worktree. | |
 | `tab` / `shift-tab` | Move between All, Agents, Workspaces, Repos, Worktrees, and Starred. | `L` / `H` |
 | `alt-p` / `alt-s` | Toggle the preview / cycle the sort. | `p` |
 | `alt-l` / `alt-h` / `alt-,` | Clone / changelog / settings. | |
@@ -183,6 +184,12 @@ Projects at a glance:
 
 Every picker's keys are remappable under `[keys.<picker>]`. See [Keybindings](docs/keybindings.md)
 for the full map, the other pickers, and why `ctrl-b` is never bound.
+
+Removing a worktree opens a confirmation popup and keeps the picker open afterwards. Type its
+name to confirm; Force requires `force <name>` and discards local changes. Branch deletion is
+optional and uses Git's merged-branch check. Locked worktrees must be unlocked separately.
+Removal deletes the checkout, including ignored files; running panes and agents stay open and
+may be affected by the missing directory.
 
 ## Actions
 

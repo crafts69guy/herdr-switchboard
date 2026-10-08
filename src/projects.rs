@@ -3,6 +3,7 @@
 mod effect;
 mod handoff;
 mod preview;
+mod removal;
 mod stars;
 mod view;
 
@@ -145,6 +146,7 @@ pub struct App {
     pub preview: PreviewState,
     pub changelog: ChangelogState,
     handoff: HandoffState,
+    removal: removal::State,
     /// The settings form used when [`Overlay::Settings`] owns input.
     pub settings: settings::Settings,
     pub zones: HitZones,
@@ -160,6 +162,7 @@ pub(super) enum Overlay {
     Changelog,
     Settings,
     Handoff,
+    Removal,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -188,6 +191,8 @@ enum Flow {
     Deliver(HandoffRequest),
     SetStar(Entry, bool),
     ReloadCatalog(CatalogIntent),
+    PrepareRemoval(Entry),
+    RemoveWorktree(removal::Request),
 }
 
 impl Picker {
@@ -547,6 +552,7 @@ impl App {
             preview,
             changelog: ChangelogState::new(),
             handoff: HandoffState::new(),
+            removal: removal::State::default(),
             settings,
             zones: HitZones::new(),
             feedback: None,
@@ -642,6 +648,16 @@ impl App {
     /// A left click. Selects an entry, switches a group, or runs a command —
     /// whatever it landed on.
     fn on_click(&mut self, at: Position) -> Flow {
+        if self.overlay == Overlay::Removal {
+            let control = self
+                .removal
+                .zones
+                .iter()
+                .find(|(area, _)| area.contains(at))
+                .map(|(_, control)| *control);
+            let action = control.and_then(|control| self.removal.activate(control));
+            return self.removal_action(action);
+        }
         // A popup is modal: the click dismisses it and means nothing else, the
         // way any key does.
         if matches!(self.overlay, Overlay::Help | Overlay::Changelog) {
@@ -706,6 +722,9 @@ impl App {
     /// the preview, the selection anywhere else. Reports whether anything moved,
     /// so the caller can skip a redraw for a wheel over dead space.
     fn on_wheel(&mut self, at: Position, delta: i32) -> bool {
+        if self.overlay == Overlay::Removal {
+            return false;
+        }
         // A modal popup takes the wheel first: it is what the pointer is over,
         // whatever is drawn underneath.
         if self.overlay == Overlay::Settings {
@@ -782,8 +801,48 @@ impl App {
         Flow::Continue
     }
 
-    /// Worktrees are openable and reviewable, but repository update/removal has
-    /// different semantics and is intentionally unavailable for them.
+    fn removal_action(&mut self, control: Option<removal::Control>) -> Flow {
+        match control {
+            Some(removal::Control::Cancel) => {
+                self.overlay = Overlay::None;
+                self.removal = removal::State::default();
+                Flow::Continue
+            }
+            Some(removal::Control::Confirm) => self
+                .removal
+                .begin()
+                .map(Flow::RemoveWorktree)
+                .unwrap_or(Flow::Continue),
+            _ => Flow::Continue,
+        }
+    }
+
+    fn worktree_removed(&mut self, completed: RemovedWorktree) {
+        let rank = self.picker.selected;
+        let group = self.picker.group;
+        self.picker
+            .entries
+            .retain(|entry| entry.kind != completed.entry.kind || entry.id != completed.entry.id);
+        if let Some(stars) = completed.stars {
+            self.picker.stars = stars;
+        }
+        self.picker.recent.remove(&completed.entry.id);
+        let entries = std::mem::take(&mut self.picker.entries);
+        self.picker.replace_entries(entries, group, false);
+        self.picker.selected = rank.min(self.picker.filtered.len().saturating_sub(1));
+        self.preview.id.clear();
+        self.preview.text = Text::default();
+        self.preview.seq += 1;
+        self.preview.pending = false;
+        self.preview.since = None;
+        self.preview.scroll = 0;
+        self.preview.len = 0;
+        self.overlay = Overlay::None;
+        self.removal = removal::State::default();
+        self.feedback = Some(completed.feedback);
+    }
+
+    /// Worktrees remove through their confirmation overlay; update remains repo-only.
     pub fn action_available(&self, action: keymap::Action) -> bool {
         if action.needs_selection() && self.picker.selected_entry().is_none() {
             return false;
@@ -791,10 +850,7 @@ impl App {
         if self.catalog == CatalogState::Refreshing && action.needs_selection() {
             return false;
         }
-        let unsupported = matches!(
-            action,
-            keymap::Action::Accept(Accept::Update | Accept::Remove)
-        );
+        let unsupported = matches!(action, keymap::Action::Accept(Accept::Update));
         if unsupported
             && self
                 .picker
@@ -929,6 +985,18 @@ fn apply_action(app: &mut App, action: keymap::Action) -> Flow {
         }
         Action::EnterInsert => app.mode = keymap::Mode::Insert,
         Action::EnterNormal => app.mode = keymap::Mode::Normal,
+        Action::Accept(Accept::Remove)
+            if app
+                .picker
+                .selected_entry()
+                .is_some_and(|entry| entry.kind == Kind::Worktree) =>
+        {
+            if let Some(entry) = app.picker.selected_entry().cloned() {
+                app.removal.open(entry.clone());
+                app.overlay = Overlay::Removal;
+                return Flow::PrepareRemoval(entry);
+            }
+        }
         Action::Accept(a) => return Flow::Accept(a),
     }
     Flow::Continue
@@ -936,6 +1004,11 @@ fn apply_action(app: &mut App, action: keymap::Action) -> Flow {
 
 fn handle_key(app: &mut App, k: crossterm::event::KeyEvent) -> Flow {
     let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
+
+    if app.overlay == Overlay::Removal {
+        let action = app.removal.on_key(k);
+        return app.removal_action(action);
+    }
 
     if app.overlay == Overlay::Handoff {
         match k.code {
@@ -1082,6 +1155,14 @@ enum ProjectEffect {
     Targets(Result<(ItemContext, TargetResolution), String>),
     Delivered(Result<(), String>),
     Stars(Result<stars::Stars, String>),
+    RemovalPrepared(Result<removal::Snapshot, String>),
+    WorktreeRemoved(Result<RemovedWorktree, String>),
+}
+
+struct RemovedWorktree {
+    entry: Entry,
+    stars: Option<stars::Stars>,
+    feedback: String,
 }
 
 impl HostedSurface for ProjectsSurface<'_> {
@@ -1152,6 +1233,8 @@ impl HostedSurface for ProjectsSurface<'_> {
                 Err(TryRecvError::Disconnected) => {
                     self.effect = None;
                     self.app.handoff.delivery_failed("");
+                    self.app.removal.status = None;
+                    self.app.removal.error = Some("Background action stopped unexpectedly. Cancel and reopen to check the worktree.".into());
                     self.app.feedback = Some("Background action stopped unexpectedly.".into());
                     return Ok(SurfaceTransition::Redraw);
                 }
@@ -1184,6 +1267,19 @@ impl HostedSurface for ProjectsSurface<'_> {
                 }
                 ProjectEffect::Stars(Err(_error)) => {
                     self.app.feedback = Some("Could not update star.".into());
+                    SurfaceTransition::Redraw
+                }
+                ProjectEffect::RemovalPrepared(result) => {
+                    self.app.removal.prepared(result);
+                    SurfaceTransition::Redraw
+                }
+                ProjectEffect::WorktreeRemoved(Ok(completed)) => {
+                    self.app.worktree_removed(completed);
+                    SurfaceTransition::Redraw
+                }
+                ProjectEffect::WorktreeRemoved(Err(error)) => {
+                    self.app.removal.status = None;
+                    self.app.removal.error = Some(error);
                     SurfaceTransition::Redraw
                 }
             });
@@ -1231,6 +1327,31 @@ impl HostedSurface for ProjectsSurface<'_> {
             return Ok(SurfaceTransition::Wait);
         }
         if self.effect.is_some() {
+            if self.app.overlay == Overlay::Removal {
+                let cancel_preparation = self.app.removal.snapshot.is_none()
+                    && match event {
+                        Event::Key(key) if key.kind == KeyEventKind::Press => {
+                            key.code == crossterm::event::KeyCode::Esc
+                                || (key.modifiers.contains(KeyModifiers::CONTROL)
+                                    && key.code == crossterm::event::KeyCode::Char('c'))
+                        }
+                        Event::Mouse(mouse)
+                            if mouse.kind == MouseEventKind::Down(MouseButton::Left) =>
+                        {
+                            let at = Position::new(mouse.column, mouse.row);
+                            self.app.removal.zones.iter().any(|(area, control)| {
+                                *control == removal::Control::Cancel && area.contains(at)
+                            })
+                        }
+                        _ => false,
+                    };
+                if cancel_preparation {
+                    self.effect = None;
+                    self.app.removal_action(Some(removal::Control::Cancel));
+                    return Ok(SurfaceTransition::Redraw);
+                }
+                return Ok(SurfaceTransition::Wait);
+            }
             if let Event::Key(k) = event {
                 if k.kind == KeyEventKind::Press
                     && k.modifiers.contains(KeyModifiers::CONTROL)
@@ -1371,6 +1492,51 @@ impl ProjectsSurface<'_> {
                 SurfaceTransition::Redraw
             }
             Flow::ReloadCatalog(intent) => self.start_catalog(intent),
+            Flow::PrepareRemoval(entry) => {
+                let (sender, receiver) = mpsc::channel();
+                let runner = Arc::clone(&self.runner);
+                std::thread::spawn(move || {
+                    let result =
+                        removal::prepare(runner.as_ref(), entry).map_err(|error| error.to_string());
+                    let _ = sender.send(ProjectEffect::RemovalPrepared(result));
+                });
+                self.effect = Some(receiver);
+                SurfaceTransition::Redraw
+            }
+            Flow::RemoveWorktree(request) => {
+                let (sender, receiver) = mpsc::channel();
+                let runner = Arc::clone(&self.runner);
+                let stars = self.app.picker.stars.clone();
+                std::thread::spawn(move || {
+                    let result = removal::remove(runner.as_ref(), &request)
+                        .map(|warning| {
+                            let entry = request.snapshot.entry;
+                            history::forget(&entry.id);
+                            let mut feedback =
+                                warning.unwrap_or_else(|| format!("Removed {}.", entry.label));
+                            let stars = if stars.contains(&entry) {
+                                match stars.set(&entry, false) {
+                                    Ok(stars) => Some(stars),
+                                    Err(_) => {
+                                        feedback.push_str(" Its local star could not be cleared.");
+                                        None
+                                    }
+                                }
+                            } else {
+                                Some(stars)
+                            };
+                            RemovedWorktree {
+                                entry,
+                                stars,
+                                feedback,
+                            }
+                        })
+                        .map_err(|error| error.to_string());
+                    let _ = sender.send(ProjectEffect::WorktreeRemoved(result));
+                });
+                self.effect = Some(receiver);
+                SurfaceTransition::Redraw
+            }
         }
     }
 }
@@ -3614,7 +3780,7 @@ mod tests {
     }
 
     #[test]
-    fn worktree_selection_disables_repo_update_and_remove() {
+    fn worktree_selection_offers_remove_but_disables_repo_update() {
         let app = App::new(
             vec![entry(Kind::Worktree, "/tmp/repo.feature", "repo")],
             Theme::default(),
@@ -3622,9 +3788,344 @@ mod tests {
             ".".into(),
         );
         assert!(!app.action_available(keymap::Action::Accept(Accept::Update)));
-        assert!(!app.action_available(keymap::Action::Accept(Accept::Remove)));
+        assert!(app.action_available(keymap::Action::Accept(Accept::Remove)));
         assert!(app.action_available(keymap::Action::Accept(Accept::Tab)));
         assert!(app.action_available(keymap::Action::ToggleStar));
+    }
+
+    fn removal_app() -> App {
+        let mut row = entry(Kind::Worktree, "/linked", "linked");
+        row.dir = Some(row.id.clone());
+        row.label = "linked".into();
+        let mut app = App::new(
+            vec![row.clone()],
+            Theme::default(),
+            Config::default(),
+            ".".into(),
+        );
+        assert!(matches!(
+            apply_action(&mut app, keymap::Action::Accept(Accept::Remove)),
+            Flow::PrepareRemoval(_)
+        ));
+        app.removal.prepared(Ok(removal::Snapshot {
+            entry: row,
+            path: "/linked".into(),
+            common: "/main/.git".into(),
+            head: "abc".into(),
+            branch: Some("feature".into()),
+            dirty: true,
+        }));
+        app
+    }
+
+    #[test]
+    fn removal_popup_owns_keyboard_mouse_and_wheel_until_confirmed_or_cancelled() {
+        let mut app = removal_app();
+        let screen = rendered(&mut app, 120, 40);
+        for text in [
+            "Remove worktree",
+            "Uncommitted",
+            "Force removal",
+            "Delete branch",
+            "Running panes",
+        ] {
+            assert!(screen.contains(text), "{screen}");
+        }
+        let before = app.picker.selected;
+        assert!(!app.on_wheel(Position::new(0, 0), 1));
+        assert!(matches!(app.on_click(Position::new(0, 0)), Flow::Continue));
+        assert_eq!(app.picker.selected, before);
+        assert_eq!(app.overlay, Overlay::Removal);
+        assert!(matches!(
+            handle_key(&mut app, key(KeyCode::Enter, KeyModifiers::NONE)),
+            Flow::Continue
+        ));
+        let click = |app: &mut App, control| {
+            let area = app
+                .removal
+                .zones
+                .iter()
+                .find(|(_, action)| *action == control)
+                .unwrap()
+                .0;
+            app.on_click(Position::new(area.x, area.y))
+        };
+        click(&mut app, removal::Control::Force);
+        click(&mut app, removal::Control::Branch);
+        click(&mut app, removal::Control::Input);
+        for c in "force linked".chars() {
+            handle_key(&mut app, key(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        assert!(
+            matches!(click(&mut app, removal::Control::Confirm), Flow::RemoveWorktree(request) if request.force && request.delete_branch)
+        );
+        assert_eq!(
+            app.removal.status,
+            Some("Removing… please wait; this cannot be cancelled.")
+        );
+        assert!(matches!(
+            click(&mut app, removal::Control::Cancel),
+            Flow::Continue
+        ));
+        assert_eq!(app.overlay, Overlay::Removal);
+
+        let mut app = removal_app();
+        handle_key(&mut app, key(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(app.overlay, Overlay::None);
+        assert_eq!(app.picker.entries.len(), 1);
+        let mut app = removal_app();
+        rendered(&mut app, 120, 40);
+        click(&mut app, removal::Control::Cancel);
+        assert_eq!(app.overlay, Overlay::None);
+        let mut repo = ready_app();
+        assert!(matches!(
+            apply_action(&mut repo, keymap::Action::Accept(Accept::Remove)),
+            Flow::Accept(Accept::Remove)
+        ));
+    }
+
+    #[test]
+    fn removal_popup_handles_detached_loading_errors_and_small_transparent_surfaces() {
+        for transparency in [
+            crate::config::Transparency::Transparent,
+            crate::config::Transparency::Opaque,
+        ] {
+            let mut app = removal_app();
+            app.background = crate::tui::SurfaceBackground::resolve(&app.theme, transparency);
+            app.removal.snapshot.as_mut().unwrap().branch = None;
+            app.removal.error = Some("Git refused removal".into());
+            let screen = rendered(&mut app, 100, 28);
+            assert!(screen.contains("unavailable"), "{screen}");
+            assert!(screen.contains("Git refused"), "{screen}");
+            app.removal.status = Some("Checking worktree…");
+            app.removal.error = None;
+            let screen = rendered(&mut app, 100, 28);
+            assert!(screen.contains("Checking worktree"), "{screen}");
+            for size in [(20, 4), (0, 0), (60, 15)] {
+                rendered(&mut app, size.0, size.1);
+            }
+        }
+    }
+
+    #[test]
+    fn successful_worktree_removal_keeps_browse_state_and_drops_star_recency_and_preview() {
+        let mut app = removal_app();
+        let removed = app.picker.entries[0].clone();
+        let mut next = removed.clone();
+        next.id = "/next".into();
+        next.primary = "linked next".into();
+        app.picker.entries.push(next.clone());
+        app.picker
+            .replace_stars(stars::Stars::memory(std::slice::from_ref(&removed)));
+        app.picker.recent.insert(removed.id.clone(), 123);
+        app.picker.group = GroupFilter::Only(Kind::Worktree);
+        app.picker.query = "linked".into();
+        app.picker.recompute();
+        app.preview.text = Text::raw("stale preview");
+        app.preview.pending = true;
+        let old_preview_seq = app.preview.seq;
+        app.worktree_removed(RemovedWorktree {
+            entry: removed.clone(),
+            stars: Some(stars::Stars::default()),
+            feedback: "Removed linked.".into(),
+        });
+        assert_eq!(app.overlay, Overlay::None);
+        assert_eq!(app.picker.group, GroupFilter::Only(Kind::Worktree));
+        assert_eq!(app.picker.query, "linked");
+        assert_eq!(app.picker.selected_entry().unwrap().id, next.id);
+        assert_eq!(app.picker.group_count(GroupFilter::Only(Kind::Worktree)), 1);
+        assert_eq!(app.picker.group_count(GroupFilter::Starred), 0);
+        assert!(!app.picker.recent.contains_key(&removed.id));
+        assert!(app.preview.text.lines.is_empty());
+        assert!(!app.preview.pending);
+        assert_eq!(app.preview.seq, old_preview_seq + 1);
+        assert_eq!(app.feedback.as_deref(), Some("Removed linked."));
+        app.worktree_removed(RemovedWorktree {
+            entry: next,
+            stars: None,
+            feedback: "Branch was kept.".into(),
+        });
+        assert!(app.picker.entries.is_empty());
+        assert_eq!(app.picker.group, GroupFilter::All);
+        assert_eq!(app.picker.selected, 0);
+    }
+
+    #[test]
+    fn removal_effects_keep_the_picker_open_and_block_exit_during_mutation() {
+        let mut app = removal_app();
+        let snapshot = app.removal.snapshot.clone().unwrap();
+        let mut surface = surface(&mut app);
+        let land = |surface: &mut ProjectsSurface<'_>, effect| {
+            let (sender, receiver) = mpsc::channel();
+            sender.send(effect).unwrap();
+            surface.effect = Some(receiver);
+            surface.on_tick().unwrap()
+        };
+        land(
+            &mut surface,
+            ProjectEffect::RemovalPrepared(Err("locked".into())),
+        );
+        assert_eq!(surface.app.removal.error.as_deref(), Some("locked"));
+        land(&mut surface, ProjectEffect::RemovalPrepared(Ok(snapshot)));
+        assert!(surface.app.removal.snapshot.is_some());
+        land(
+            &mut surface,
+            ProjectEffect::WorktreeRemoved(Err("local changes".into())),
+        );
+        assert_eq!(surface.app.picker.entries.len(), 1);
+        assert_eq!(surface.app.overlay, Overlay::Removal);
+        let (sender, receiver) = mpsc::channel();
+        surface.effect = Some(receiver);
+        assert!(matches!(
+            surface
+                .on_event(Event::Key(key(KeyCode::Char('c'), KeyModifiers::CONTROL)))
+                .unwrap(),
+            SurfaceTransition::Wait
+        ));
+        assert!(matches!(
+            surface
+                .on_event(Event::Mouse(crossterm::event::MouseEvent {
+                    kind: MouseEventKind::Down(MouseButton::Left),
+                    column: 0,
+                    row: 0,
+                    modifiers: KeyModifiers::NONE
+                }))
+                .unwrap(),
+            SurfaceTransition::Wait
+        ));
+        drop(sender);
+        surface.on_tick().unwrap();
+        assert!(surface.app.removal.status.is_none());
+        assert!(surface
+            .app
+            .removal
+            .error
+            .as_deref()
+            .unwrap()
+            .contains("stopped unexpectedly"));
+        let removed = surface.app.picker.entries[0].clone();
+        assert!(matches!(
+            land(
+                &mut surface,
+                ProjectEffect::WorktreeRemoved(Ok(RemovedWorktree {
+                    entry: removed,
+                    stars: None,
+                    feedback: "removed".into()
+                }))
+            ),
+            SurfaceTransition::Redraw
+        ));
+        assert_eq!(surface.app.overlay, Overlay::None);
+        assert!(surface.app.picker.entries.is_empty());
+    }
+
+    #[test]
+    fn cancelling_preparation_drops_its_receiver_and_leaves_the_list_intact() {
+        for by_mouse in [false, true] {
+            let mut app = removal_app();
+            app.removal.snapshot = None;
+            app.removal.status = Some("Checking worktree…");
+            rendered(&mut app, 120, 40);
+            let cancel = app
+                .removal
+                .zones
+                .iter()
+                .find(|(_, action)| *action == removal::Control::Cancel)
+                .unwrap()
+                .0;
+            let mut surface = surface(&mut app);
+            let (sender, receiver) = mpsc::channel::<ProjectEffect>();
+            surface.effect = Some(receiver);
+            let event = if by_mouse {
+                Event::Mouse(crossterm::event::MouseEvent {
+                    kind: MouseEventKind::Down(MouseButton::Left),
+                    column: cancel.x,
+                    row: cancel.y,
+                    modifiers: KeyModifiers::NONE,
+                })
+            } else {
+                Event::Key(key(KeyCode::Esc, KeyModifiers::NONE))
+            };
+            assert!(matches!(
+                surface.on_event(event).unwrap(),
+                SurfaceTransition::Redraw
+            ));
+            assert!(surface.effect.is_none());
+            assert_eq!(surface.app.overlay, Overlay::None);
+            assert_eq!(surface.app.picker.entries.len(), 1);
+            assert!(sender
+                .send(ProjectEffect::RemovalPrepared(Err("late result".into())))
+                .is_err());
+        }
+    }
+
+    #[test]
+    fn worktree_workers_prepare_remove_and_clean_persisted_state_only_after_success() {
+        let root = crate::state::test_scratch().unwrap().join("removal-worker");
+        std::fs::create_dir_all(root.join("main/.git")).unwrap();
+        std::fs::create_dir_all(root.join("linked")).unwrap();
+        let root = root.canonicalize().unwrap();
+        let common = root.join("main/.git").to_str().unwrap().to_string();
+        let path = root.join("linked").to_str().unwrap().to_string();
+        let mut app = removal_app();
+        let row = Entry {
+            id: path.clone(),
+            dir: Some(path.clone()),
+            ..app.picker.entries[0].clone()
+        };
+        app.picker
+            .replace_entries(vec![row.clone()], GroupFilter::All, false);
+        app.removal.open(row.clone());
+        let records = format!(
+            "worktree {}\0HEAD main\0\0worktree {path}\0HEAD abc\0branch refs/heads/feature\0\0",
+            root.join("main").display()
+        );
+        let runner = Arc::new(
+            crate::runner::MockRunner::new()
+                .on("--git-common-dir", &common)
+                .on("worktree list", &records),
+        );
+        let mut surface = surface(&mut app);
+        surface.runner = runner.clone();
+        let wait = |surface: &mut ProjectsSurface<'_>| {
+            let effect = surface
+                .effect
+                .as_ref()
+                .unwrap()
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap();
+            let (sender, receiver) = mpsc::channel();
+            sender.send(effect).unwrap();
+            surface.effect = Some(receiver);
+            surface.on_tick().unwrap();
+        };
+        surface.apply_flow(Flow::PrepareRemoval(row.clone()));
+        wait(&mut surface);
+        assert!(surface.app.removal.snapshot.is_some());
+        surface.app.removal.confirmation = row.label.clone();
+        let request = surface.app.removal.begin().unwrap();
+        let stars_path = root.join("stars.json");
+        surface.app.picker.stars = stars::Stars::at(stars_path.clone())
+            .set(&row, true)
+            .unwrap();
+        surface.apply_flow(Flow::RemoveWorktree(request));
+        wait(&mut surface);
+        assert!(surface.app.picker.entries.is_empty());
+        assert!(!stars::Stars::at(stars_path).contains(&row));
+        assert!(runner
+            .calls()
+            .iter()
+            .any(|call| call.iter().any(|arg| arg == "remove")));
+
+        surface.app.removal.open(row.clone());
+        surface.app.overlay = Overlay::Removal;
+        surface.apply_flow(Flow::PrepareRemoval(Entry {
+            dir: None,
+            ..row.clone()
+        }));
+        wait(&mut surface);
+        assert!(surface.app.removal.error.is_some());
+        std::fs::remove_dir_all(root).ok();
     }
 
     #[test]

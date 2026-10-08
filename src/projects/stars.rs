@@ -161,7 +161,7 @@ impl Stars {
     }
 
     #[cfg(test)]
-    fn at(path: PathBuf) -> Self {
+    pub(super) fn at(path: PathBuf) -> Self {
         let keys = load_from(&path);
         Self {
             keys,

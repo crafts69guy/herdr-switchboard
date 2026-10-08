@@ -51,7 +51,7 @@ the same letter as the chord, one keystroke shorter.
 | --- | --- | --- |
 | `enter` | Open the selection with its default action. | |
 | `ctrl-e` / `ctrl-v` / `ctrl-o` / `ctrl-w` | Open in a tab / split / current pane / workspace. | `e` `v` `o` `w` |
-| `ctrl-r` / `ctrl-x` | Update / remove the selected repo. | |
+| `ctrl-r` / `ctrl-x` | Update a repo / remove a repo or linked worktree. | |
 | `ctrl-y` / `ctrl-a` / `ctrl-s` | Copy the absolute path / send it to an agent / star the row. | |
 | `alt-p` / `alt-j`, `alt-k` | Toggle / scroll the preview. | `p` |
 | `alt-s` | Cycle the sort order. | |
@@ -62,8 +62,13 @@ the same letter as the chord, one keystroke shorter.
 | `ctrl-u`, `alt-backspace`, `backspace` | Clear query / delete word / delete character. | Insert only |
 | `ctrl-j`, `ctrl-n` / `ctrl-k`, `ctrl-p` | Move down / up (Insert). | `j` `k` `g` `G` `ctrl-d` `ctrl-u` |
 
-Update and removal apply only to repository rows, not linked worktrees. Removal always requires the
-repository name as typed confirmation.
+Update applies only to repository rows. Repository removal requires its name on the restored
+terminal. Linked-worktree removal uses a popup inside the picker: type the worktree name to
+confirm, `tab` / `shift-tab` move between fields, and `space` toggles Force or Delete branch.
+Both options start off. Force requires `force <name>` and discards local changes; branch deletion
+uses `git branch -d`, keeping branches Git considers unmerged. Detached worktrees have no branch
+option. `esc` or Cancel returns to the list before removal; an in-progress removal cannot be
+cancelled. Main and locked worktrees cannot be removed. Running panes and agents stay open.
 
 ## Kind-aware Enter
 
