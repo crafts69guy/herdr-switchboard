@@ -7,6 +7,8 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [3.1.0] - 2026-10-09
+
 ### Added
 
 - **Add repositories without leaving Projects.** `alt-l` opens a clone form for GitHub,
@@ -942,7 +944,8 @@ tuicr's own colours.
   open it in a new workspace, tab, split, or the current pane, plus clone (`ghq get`),
   update, remove, and a handoff to the git-hub menu.
 
-[Unreleased]: https://github.com/crafts69guy/herdr-switchboard/compare/v3.0.3...HEAD
+[Unreleased]: https://github.com/crafts69guy/herdr-switchboard/compare/v3.1.0...HEAD
+[3.1.0]: https://github.com/crafts69guy/herdr-switchboard/compare/v3.0.3...v3.1.0
 [3.0.3]: https://github.com/crafts69guy/herdr-switchboard/compare/v3.0.2...v3.0.3
 [3.0.2]: https://github.com/crafts69guy/herdr-switchboard/compare/v3.0.1...v3.0.2
 [3.0.1]: https://github.com/crafts69guy/herdr-switchboard/compare/v3.0.0...v3.0.1
