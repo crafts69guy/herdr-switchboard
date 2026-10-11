@@ -64,6 +64,22 @@ _Avoid_: Limit, bucket
 
 ## Commands
 
+**Task**:
+A durable assignment in one Herdr session, with a pinned base commit, its own worktree, an assigned
+agent and explicit report. Herdr's agent activity is observation, not the Task's completion state.
+
+**Task Context**:
+The source agent's goal, scope, acceptance criteria, constraints, references and selected notes.
+This is distinct from the Projects Picker's Context rail.
+
+**Task Generation**:
+The assignment number incremented on handoff. A report from an older generation cannot update
+the current task.
+
+**Checkpoint**:
+Progress, decisions, attempts, remaining work, next step and verification recorded by the owner
+before releasing a Task. Handoff preserves that Task's worktree and unfinished changes.
+
 **Command**:
 The exact shell input recalled or declared as one searchable item; it may span multiple lines and
 includes arguments and shell syntax, not only the executable name.

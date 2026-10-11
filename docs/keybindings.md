@@ -145,7 +145,7 @@ copy = "ctrl-g"
 star = "alt-f"
 ```
 
-Every picker has a table: `projects`, `agents`, `commands`, `ports`, `zen`, `menu`, and `fnm`. The
+Every picker has a table: `projects`, `agents`, `tasks`, `commands`, `ports`, `zen`, `menu`, and `fnm`. The
 action ids are the ones printed on the command-bar pills.
 
 A chord is a key with optional `ctrl-`, `alt-`, or `shift-` prefixes. Projects accepts multiple

@@ -13,6 +13,14 @@ New targets inherit the origin pane's cwd. If startup fails, Switchboard closes 
 it created instead of leaving an empty target behind. Remap these actions under `[keys.agents]` as
 `pane`, `tab`, and `workspace`.
 
+## Tasks
+
+Tasks adds explicit assignments and reports to Herdr's agent activity view. Source agents prepare
+context and delegate through the CLI; each new task gets a worktree from a pinned commit. A
+checkpoint/release hands the existing worktree to another agent. The picker refreshes in the
+background and separates task status from Herdr activity. See [Tasks](tasks.md) for the protocol,
+recovery limits and review-before-integration workflow.
+
 ## Usage
 
 The Usage popup answers one question — how much of each AI subscription is spent, when the window

@@ -89,6 +89,8 @@ the module inventory.
 | `keymap` | `Chord`, `Action`, `Keymap`, canonical chord conversion | Mode tables, overrides, labels |
 | `projects` / `picker` / `git` | `Surface` adapters and typed outputs | Surface-specific reduction and composition; Projects clone form/effect, star persistence, linked-worktree removal, and generation-tagged catalogue loading; Git saved-review visibility state |
 | `agent_handoff` | `discover_targets`, `deliver_prompt` | Promptable-agent parsing, worktree scoping, origin preference, non-waiting delivery |
+| `tasks` | `entry`, `main` | CLI protocol and Tasks picker; private model, locked session registry, provisioning/ownership effects, background refresh and reports |
+| `agents` | `main`, `launch_worker`, `start_named` | Integration picker, detached launch, name allocation and starting a named agent in an existing shell pane |
 | `clipboard` | `copy_text` | macOS/Wayland/X11 command selection and stdin delivery |
 | `action` | `Accept`, `dispatch`, `open_target` | Restored-terminal effects and process replacement |
 | `runner` | `CommandRunner`, `output_controlled` | Process adapters, child-scoped environment, bounded output capture, process-group cancellation and reaping |
@@ -98,6 +100,16 @@ the module inventory.
 | `commands` | `main` | Privacy-aware catalogue, shell ingestion, terminal effects, picker adapter |
 
 ## Interaction model
+
+Tasks stores one schema-versioned registry per inherited Herdr socket endpoint beneath XDG state.
+Its private store uses `state::update_private` for complete transactions. Provisioning records intent
+before each external mutation and retains uncertain outcomes without resubmission or cleanup. The
+effect adapter uses `CommandRunner`, `agents::start_named` and `agent_handoff::deliver_prompt`;
+only task IDs and protocol instructions cross the prompt command line. Owner mutations validate
+the socket instance, named live agent, native session when available, cwd and caller pane, then
+fence updates by generation under the registry lock. The Tasks picker loads snapshots on a worker
+and refreshes two seconds after completion, with at most one worker in flight. Its actions run on
+the restored terminal. Task status is independent of observed Herdr agent status.
 
 Normal mode is the default. `i` or `/` enters Insert mode, and `esc` returns to Normal. Projects
 uses the same state at every width:

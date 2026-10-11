@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 A [herdr](https://herdr.dev) plugin providing a unified switcher over running herdr **agents**,
 open herdr **workspaces**, **ghq repos**, and linked Git **worktrees** in one fuzzy picker. It is a
 Rust TUI (ratatui + nucleo), not an fzf wrapper. Every surface is a mode of the same binary,
-selected by argv (`--menu`, `--agents`, `--usage`, `--commands`, `--ports`, `--zen`,
+selected by argv (`--menu`, `--agents`, `--tasks`, `--usage`, `--commands`, `--ports`, `--zen`,
 `--changelog`, `--settings`, `--git`; no flag is the switcher); the settings form is **also** a
 floating overlay inside the switcher (⌥,), not only a pane. **`--usage` is the only mode that reads
 a credential and the only in-process HTTP client** — both fenced, see the constraints below. Git
@@ -123,6 +123,11 @@ order so the list stays stable.
   neither Git nor Projects adds `--wait`. Projects sends only JSON-escaped item kind, label, and
   absolute path as data-only context. Paths and labels never enter notifications or traces, and a
   Workspace never pretends its several pane directories are one selectable path.
+- **Task delivery is not task completion.** Tasks sends only a task ID and protocol instructions
+  through the existing non-waiting handoff seam. Claim/report/release validate the assigned agent
+  and generation; the state transaction fences old reports. A timeout or uncertain provisioning
+  outcome never triggers automatic resubmission or deletion. Handoff requires release and keeps
+  the task's worktree, including dirty files. Herdr status is display-only for task completion.
 - **Projects catalogue discovery is a feature-local background effect.** Startup draws the final
   Search/Context/Navigator/Preview geometry first and shows static `Standing by…`; it accepts only
   Close until the generation-tagged completion arrives. Settings Apply keeps the old rows visible
@@ -185,7 +190,7 @@ order so the list stays stable.
   deliberately narrow compatibility seam for Bash's `config get` calls, not an internal
   lookup interface. `settings.rs` writes namespaced values through `toml_edit`, preserving comments
   and hand-added keys before validating the complete result. **Every picker has a `[keys.*]` table**
-  — `projects`, `agents`, `commands`, `ports`, `zen`, `menu`, `fnm` — reached through
+  — `projects`, `agents`, `tasks`, `commands`, `ports`, `zen`, `menu`, `fnm` — reached through
   `PickerMode::key_bindings` plus a `reload_config` that re-reads it; a mode that implements neither
   is one whose keys nobody can move, which is what Menu and the fnm manager silently were.
 - **A click zone is measured by the loop that draws the thing.** `tab_zones` and

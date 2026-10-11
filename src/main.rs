@@ -28,6 +28,7 @@ mod source;
 mod splash;
 mod state;
 mod surface;
+mod tasks;
 mod trace;
 mod tui;
 mod update;
@@ -137,7 +138,11 @@ fn main() -> Result<()> {
     // First statement on purpose: it fixes the zero point every other trace mark
     // is measured from. Inert unless SWITCHBOARD_TRACE is set.
     trace::init();
-    run(&collect_startup_args(env::args_os())?)
+    let args = collect_startup_args(env::args_os())?;
+    if args.first().map(String::as_str) == Some("task") {
+        std::process::exit(tasks::entry(&args[1..]));
+    }
+    run(&args)
 }
 
 /// Every mode, chosen by its first argument; no argument is the switcher.
@@ -155,6 +160,7 @@ fn run(args: &[String]) -> Result<()> {
         Some("--menu") => menu::main(Config::try_load()?, Theme::load()),
         Some("--agent-launch") => agents::launch_worker(&args[1..], &Config::try_load()?),
         Some("--agents") => agents::main(Config::try_load()?, Theme::load()),
+        Some("--tasks") => tasks::main(Config::try_load()?, Theme::load()),
         Some("--commands") => commands::main(Config::try_load()?, Theme::load()),
         Some("--ports") => ports::main(Config::try_load()?, Theme::load()),
         Some("--settings") => settings::main(Config::try_load()?, Theme::load()),

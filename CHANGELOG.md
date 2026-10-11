@@ -7,6 +7,12 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Coordinate agents with Tasks.** Delegate work into a separate worktree, hand it to another
+  agent with a checkpoint, and read task-specific results through the CLI or the Tasks picker.
+  Agent activity and task completion are shown separately; handoffs preserve unfinished changes.
+
 ## [3.1.0] - 2026-10-09
 
 ### Added

@@ -83,6 +83,15 @@ const ROUTES: &[Route] = &[
         key_label: "⌥a",
     },
     Route {
+        id: "tasks",
+        group: "Pickers",
+        title: "Tasks",
+        detail: "agent assignments, handoffs and results",
+        color: "mauve",
+        mnemonic: 't',
+        key_label: "⌥t",
+    },
+    Route {
         id: "commands",
         group: "Pickers",
         title: "Commands",

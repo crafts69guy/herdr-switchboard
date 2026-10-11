@@ -407,19 +407,24 @@ fn allocate_and_start(
 ) -> Result<()> {
     let _lock = lock_path.map(acquire_launch_lock).transpose()?;
     let name = next_agent_name(runner, &integration.kind);
+    start_named(runner, &name, &integration.kind, pane_id)
+}
+
+/// Start in an already-created shell pane; callers own topology and recovery.
+pub(crate) fn start_named(
+    runner: &dyn CommandRunner,
+    name: &str,
+    kind: &str,
+    pane_id: &str,
+) -> Result<()> {
     anyhow::ensure!(
-        runner.ok(
-            "herdr",
-            &[
-                "agent",
-                "start",
-                &name,
-                "--kind",
-                &integration.kind,
-                "--pane",
-                pane_id,
-            ],
-        ),
+        runner
+            .output(
+                "herdr",
+                &["agent", "start", name, "--kind", kind, "--pane", pane_id,],
+            )?
+            .status
+            .success(),
         "herdr agent start failed"
     );
     Ok(())
@@ -601,6 +606,9 @@ mod tests {
 
     impl CommandRunner for ConcurrentRunner {
         fn output(&self, _program: &str, args: &[&str]) -> io::Result<Output> {
+            if args.starts_with(&["agent", "start"]) {
+                self.state.lock().unwrap().agents.push(args[2].to_string());
+            }
             let stdout = if args == ["agent", "list"] {
                 let mut state = self.state.lock().unwrap();
                 let agents = state.agents.clone();
@@ -636,11 +644,8 @@ mod tests {
             })
         }
 
-        fn status(&self, _program: &str, args: &[&str]) -> io::Result<ExitStatus> {
-            if args.starts_with(&["agent", "start"]) {
-                self.state.lock().unwrap().agents.push(args[2].to_string());
-            }
-            Ok(ExitStatus::from_raw(0))
+        fn status(&self, program: &str, args: &[&str]) -> io::Result<ExitStatus> {
+            self.output(program, args).map(|output| output.status)
         }
 
         fn output_stdin(&self, program: &str, args: &[&str], _stdin: &str) -> io::Result<Output> {

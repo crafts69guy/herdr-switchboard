@@ -16,6 +16,7 @@ case "$ACTION_ID" in
   menu) entrypoint="menu" ;;
   projects) entrypoint="projects" ;;
   agents) entrypoint="agents" ;;
+  tasks) entrypoint="tasks" ;;
   commands) entrypoint="commands" ;;
   usage) entrypoint="usage" ;;
   ports) entrypoint="ports" ;;

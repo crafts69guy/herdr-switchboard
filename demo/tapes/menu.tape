@@ -8,7 +8,7 @@ Ctrl+B
 Sleep 200ms
 Space
 Sleep 2.2s
-Type@450ms "jjjjjj"
+Type@450ms "jjjjjjj"
 Sleep 1.2s
 Enter
 Sleep 4.5s

@@ -14,6 +14,7 @@ bash tests/manifest_spec.sh
 bash tests/update_guard_spec.sh
 bash tests/bootstrap_spec.sh
 bash tests/menu_handoff_spec.sh
+bash tests/tasks_spec.sh
 bash tests/docs_spec.sh
 
 printf 'check: ok\n'

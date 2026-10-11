@@ -27,6 +27,13 @@ contexts = ["global", "pane"]
 command = ["bash", "bin/action.sh"]
 
 [[actions]]
+id = "tasks"
+title = "Tasks"
+description = "Track agent tasks, context handoffs and verified task reports."
+contexts = ["global", "pane"]
+command = ["bash", "bin/action.sh"]
+
+[[actions]]
 id = "usage"
 title = "Usage"
 description = "Show subscription quota for the installed AI agents: how much of the plan is spent, when it resets, and when it renews."
@@ -149,6 +156,12 @@ placement = "popup"
 width = 100
 height = 26
 command = ["bash", "-c", "exec bash \"$HERDR_PLUGIN_ROOT/bin/picker.sh\" --agents"]
+
+[[panes]]
+id = "tasks"
+title = "󰚩"
+placement = "overlay"
+command = ["bash", "-c", "exec bash \"$HERDR_PLUGIN_ROOT/bin/picker.sh\" --tasks"]
 
 [[panes]]
 id = "usage"

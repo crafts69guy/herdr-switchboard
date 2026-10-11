@@ -101,6 +101,10 @@ alert_percent = 85
 # tab = "ctrl-e"
 # workspace = "ctrl-w"
 
+[keys.tasks]
+# focus = "enter"
+# task_worktree = "ctrl-enter"
+
 [keys.commands]
 # copy = "ctrl-y"
 # star = "ctrl-s"

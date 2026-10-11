@@ -214,6 +214,7 @@ done
 
 # Tapes dress each take from inside Herdr, where the repository path is gone.
 install -m 755 "$DEMO_DIR/stage.sh" "$SANDBOX/bin/stage"
+install -m 755 "$DEMO_DIR/tasks.py" "$SANDBOX/bin/stage-tasks"
 
 # Usage reads quota exactly where the real providers leave it. Codex's numbers
 # come off disk; Claude's come from the keychain plus one HTTPS request, so both

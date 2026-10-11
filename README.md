@@ -54,6 +54,16 @@ Inspector from 80; Navigator alone below that.
 Bind a single key to `switchboard.menu` and everything else is a search away. Every entry also has
 its own action if you would rather bind it directly.
 
+### Tasks — delegate, hand off, and follow results
+
+![Tasks: task progress and agent activity shown separately, with context in the preview](docs/media/tasks.png)
+
+Open **Tasks** from the menu to follow assignments across panes and workspaces in the same Herdr
+session. Agents use `task delegate` to create an isolated worktree and agent, `claim` before editing,
+and `report` to return a result. A checkpoint and `release` let another agent continue in that
+worktree. Context stays in private local state; a terminal's Done badge never completes a task.
+See the [Tasks protocol and examples](docs/tasks.md).
+
 ### Commands — shell history and presets, filled not retyped
 
 ![Commands: searching history for git log, filling it into the prompt, and running it](docs/media/commands.gif)
@@ -211,6 +221,7 @@ Bind the menu, or any surface directly, as a Herdr `plugin_action`:
 | `switchboard.menu` | The searchable central menu. |
 | `switchboard.projects` | Agents, workspaces, ghq repos, and linked worktrees. |
 | `switchboard.agents` | Installed AI integrations. |
+| `switchboard.tasks` | Task context, handoffs and reports across agents in this session. |
 | `switchboard.usage` | Subscription quota for your AI agents. |
 | `switchboard.commands` | Shell history and configured presets. |
 | `switchboard.ports` | Live TCP listeners and their owner processes. |

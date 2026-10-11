@@ -48,9 +48,12 @@ assert_rooted_pane_command update-plugin.sh
 
 # Every public surface has a direct action; the menu is an additional route, not
 # a replacement for the hot picker bindings.
-for action in menu projects agents usage commands ports fnm settings git zen zen-toggle clone changelog update open-workspace open-tab open-split; do
+for action in menu projects agents tasks usage commands ports fnm settings git zen zen-toggle clone changelog update open-workspace open-tab open-split; do
   grep -Fq "id = \"$action\"" "$MANIFEST" || fail "action '$action' is not declared"
 done
+
+grep -Fq 'picker.sh\" --tasks' "$MANIFEST" || fail 'Tasks must use the shared picker bootstrap'
+grep -Eq '^  tasks\) entrypoint="tasks" ;;$' "$ROOT/bin/action.sh" || fail 'Tasks must have a direct route'
 
 grep -Eq '^  fnm\) entrypoint="fnm" ;;$' "$ROOT/bin/action.sh" ||
   fail "the fnm action must open the dedicated fnm pane"
