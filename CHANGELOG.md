@@ -7,6 +7,8 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [3.4.0] - 2026-10-12
+
 ### Added
 
 - `alt-s` opens a Projects sort menu with Recent, Name A–Z/Z–A, Provider, Owner,
@@ -967,7 +969,8 @@ tuicr's own colours.
   open it in a new workspace, tab, split, or the current pane, plus clone (`ghq get`),
   update, remove, and a handoff to the git-hub menu.
 
-[Unreleased]: https://github.com/crafts69guy/herdr-switchboard/compare/v3.3.0...HEAD
+[Unreleased]: https://github.com/crafts69guy/herdr-switchboard/compare/v3.4.0...HEAD
+[3.4.0]: https://github.com/crafts69guy/herdr-switchboard/compare/v3.3.0...v3.4.0
 [3.3.0]: https://github.com/crafts69guy/herdr-switchboard/compare/v3.2.0...v3.3.0
 [3.2.0]: https://github.com/crafts69guy/herdr-switchboard/compare/v3.1.0...v3.2.0
 [3.1.0]: https://github.com/crafts69guy/herdr-switchboard/compare/v3.0.3...v3.1.0
