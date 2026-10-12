@@ -86,7 +86,7 @@ the module inventory.
 | `surface` | `Surface`, `Transition`, `run`, `Host` (`TerminalHost`; `ScriptedHost` in tests) | Terminal lease, mouse capture, opt-in bracketed paste, polling, ticks, input coalescing, redraw, teardown |
 | `tui` | `SurfaceBackground`, shared frames and pills | Transparent/opaque painting, clearing, frame and hit-zone vocabulary |
 | `config` | Typed section fields, `parse`, `try_load`, finite `value_for_cli` | Namespaced deserialization, defaults, validation |
-| `state` | XDG paths and clock; `write_private`, `update_private`, `replace_atomically`, `try_lock_private` | Cross-process locking, unique tempfiles, atomic replacement, permission policy |
+| `state` | XDG paths and clock; `write_private`, `update_private`, `replace_atomically`, `try_lock_private`, `PrivateLock` | Cross-process locking with explicit unlock on guard drop, unique tempfiles, atomic replacement, permission policy |
 | `self_update` | `main` (`--update`) | Managed-source guard, explicit stable-tag selection, install/preparation worker, bounded diagnostics and hosted progress/result card |
 | `update` | `available`, `spawn_refresh_if_stale`, `main`; shared `latest_release` and `parse_version` | Detached daily check, cache, numeric stable-tag parsing |
 | `source::ProjectCatalog` | `new`, `load`, canonical `kinds` | Source enablement and load order |

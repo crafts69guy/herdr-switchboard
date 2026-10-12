@@ -485,6 +485,8 @@ order so the list stays stable.
   A private state lock prevents concurrent Switchboard updaters; no tag lookup failure falls back
   to HEAD, and no invocation downgrades. Rust guard tests cover these boundaries; the shell spec
   checks only the thin entrypoint's handoff.
+  State lock guards explicitly unlock on drop: closing one file descriptor alone may leave
+  the lock held by a duplicate inherited during a concurrent fork.
 - **Update completion includes the new binary.** After Herdr replaces the managed checkout,
   invoke its new picker with `--version` to prepare and verify the version-matched binary.
   Do not duplicate the bootstrap's download/checksum/Cargo policy. A preparation failure after

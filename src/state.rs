@@ -101,18 +101,27 @@ pub fn update_private<T>(
     Ok(value)
 }
 
-fn acquire_private_lock(path: &Path) -> Result<File> {
+pub(crate) struct PrivateLock(File);
+
+impl Drop for PrivateLock {
+    fn drop(&mut self) {
+        // Close alone can retain the lock through descriptors inherited by a concurrent fork.
+        let _ = self.0.unlock();
+    }
+}
+
+fn acquire_private_lock(path: &Path) -> Result<PrivateLock> {
     let file = open_private_lock(path)?;
     file.lock()
         .with_context(|| format!("lock state file {}", path.display()))?;
-    Ok(file)
+    Ok(PrivateLock(file))
 }
 
 /// A long-running mutation must report contention rather than freeze its UI.
-pub(crate) fn try_lock_private(path: &Path) -> Result<Option<File>> {
+pub(crate) fn try_lock_private(path: &Path) -> Result<Option<PrivateLock>> {
     let file = open_private_lock(path)?;
     match file.try_lock() {
-        Ok(()) => Ok(Some(file)),
+        Ok(()) => Ok(Some(PrivateLock(file))),
         Err(std::fs::TryLockError::WouldBlock) => Ok(None),
         Err(error) => Err(anyhow!("lock state file {}: {error}", path.display())),
     }
@@ -265,6 +274,24 @@ mod tests {
                 NONCE.fetch_add(1, Ordering::Relaxed)
             ))
             .join(name)
+    }
+
+    #[test]
+    fn dropping_the_lock_owner_releases_it_while_a_duplicate_survives() {
+        let path = test_path("inherited");
+        let owner = try_lock_private(&path).unwrap().unwrap();
+        // Pin the same shared descriptor lifetime a concurrent fork can inherit.
+        let inherited = owner.0.try_clone().unwrap();
+        assert!(try_lock_private(&path).unwrap().is_none());
+        drop(owner);
+        let next = try_lock_private(&path).unwrap();
+        assert!(
+            next.is_some(),
+            "a duplicate must not extend the owner's lock lifetime"
+        );
+        drop(next);
+        drop(inherited);
+        fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 
     #[test]
