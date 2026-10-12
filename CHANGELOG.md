@@ -7,6 +7,8 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [3.2.0] - 2026-10-12
+
 ### Added
 
 - **Coordinate agents with Tasks.** Delegate work into a separate worktree, hand it to another
@@ -950,7 +952,8 @@ tuicr's own colours.
   open it in a new workspace, tab, split, or the current pane, plus clone (`ghq get`),
   update, remove, and a handoff to the git-hub menu.
 
-[Unreleased]: https://github.com/crafts69guy/herdr-switchboard/compare/v3.1.0...HEAD
+[Unreleased]: https://github.com/crafts69guy/herdr-switchboard/compare/v3.2.0...HEAD
+[3.2.0]: https://github.com/crafts69guy/herdr-switchboard/compare/v3.1.0...v3.2.0
 [3.1.0]: https://github.com/crafts69guy/herdr-switchboard/compare/v3.0.3...v3.1.0
 [3.0.3]: https://github.com/crafts69guy/herdr-switchboard/compare/v3.0.2...v3.0.3
 [3.0.2]: https://github.com/crafts69guy/herdr-switchboard/compare/v3.0.1...v3.0.2
