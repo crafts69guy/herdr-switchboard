@@ -27,7 +27,7 @@ pub(super) fn run(cfg: Config, theme: Theme) -> Result<()> {
 
 /// The star chord's cap, spelled once. The action bar prints it and the empty
 /// Starred tab names it; a second literal is how the two drift apart.
-const STAR_CAP: &str = "^s";
+const STAR_CAP: &str = "^·s";
 
 struct CommandMode {
     catalog: CommandCatalog,
@@ -175,7 +175,7 @@ impl PickerMode for CommandMode {
                 id: "sort",
                 key: KeyCode::Char('s'),
                 modifiers: KeyModifiers::ALT,
-                key_label: "⌥s".into(),
+                key_label: "⌥·s".into(),
                 label: "sort",
                 color_slot: "mauve",
             },
@@ -183,7 +183,7 @@ impl PickerMode for CommandMode {
                 id: "fill",
                 key: KeyCode::Enter,
                 modifiers: KeyModifiers::NONE,
-                key_label: "↵".into(),
+                key_label: "↩".into(),
                 label: "fill",
                 color_slot: "blue",
             },
@@ -191,7 +191,7 @@ impl PickerMode for CommandMode {
                 id: "run",
                 key: KeyCode::Enter,
                 modifiers: KeyModifiers::CONTROL,
-                key_label: "^↵".into(),
+                key_label: "^·↩".into(),
                 label: "run",
                 color_slot: "green",
             },
@@ -199,7 +199,7 @@ impl PickerMode for CommandMode {
                 id: "run_cwd",
                 key: KeyCode::Enter,
                 modifiers: KeyModifiers::ALT,
-                key_label: "⌥↵".into(),
+                key_label: "⌥·↩".into(),
                 label: "run cwd",
                 color_slot: "teal",
             },
@@ -207,7 +207,7 @@ impl PickerMode for CommandMode {
                 id: "copy",
                 key: KeyCode::Char('y'),
                 modifiers: KeyModifiers::CONTROL,
-                key_label: "^y".into(),
+                key_label: "^·y".into(),
                 label: "copy",
                 color_slot: "peach",
             },
@@ -223,7 +223,7 @@ impl PickerMode for CommandMode {
                 id: "forget",
                 key: KeyCode::Char('x'),
                 modifiers: KeyModifiers::CONTROL,
-                key_label: "^x".into(),
+                key_label: "^·x".into(),
                 label: "forget",
                 color_slot: "red",
             },
@@ -617,7 +617,7 @@ mod tests {
         mode.reload_config(&cfg).unwrap();
         mode.activate_tab("starred").unwrap();
         assert!(
-            mode.empty_message().contains("⌥f"),
+            mode.empty_message().contains("⌥·f"),
             "{}",
             mode.empty_message()
         );
@@ -894,6 +894,6 @@ mod tests {
         .unwrap();
         let mode = CommandMode::with_catalog(&cfg, catalog);
         assert_eq!(mode.items().len(), 1);
-        assert!(mode.starred_empty.contains("⌥y"), "{}", mode.starred_empty);
+        assert!(mode.starred_empty.contains("⌥·y"), "{}", mode.starred_empty);
     }
 }

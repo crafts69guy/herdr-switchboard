@@ -170,11 +170,38 @@ impl Settings {
         }
     }
 
+    /// Save one setting chosen outside the form — the Projects sort menu — and
+    /// keep the draft in step, so the form neither shows nor re-applies a stale
+    /// value.
+    pub(crate) fn save_one(&mut self, key: &str, value: &str) -> Result<()> {
+        let mut doc = load_document(&self.path)?;
+        set_document_value(&mut doc, key, value)?;
+        write_document(&self.path, doc)?;
+        if let Some(i) = SETTINGS.iter().position(|setting| setting.key == key) {
+            self.values[i] = value.into();
+            self.saved[i] = value.into();
+        }
+        Ok(())
+    }
+
     /// Point the form's writes at another file, so a test of a surface that
     /// embeds it never touches the user's config.
     #[cfg(test)]
     pub(crate) fn write_to(&mut self, path: PathBuf) {
         self.path = path;
+    }
+
+    /// The draft value of `key` and the file the form writes, for tests of a
+    /// surface that saves through the form.
+    #[cfg(test)]
+    pub(crate) fn value(&self, key: &str) -> Option<&str> {
+        let i = SETTINGS.iter().position(|setting| setting.key == key)?;
+        (self.values[i] == self.saved[i]).then_some(self.values[i].as_str())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn path(&self) -> &std::path::Path {
+        &self.path
     }
 
     /// Where the last draw put the command-bar pill for `code`, for tests of

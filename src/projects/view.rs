@@ -395,7 +395,7 @@ fn draw_handoff(f: &mut Frame, app: &mut App, area: Rect) {
     }
 
     let pills = [
-        crate::tui::Pill::new("↵", "send", t.or("green", Color::Green)),
+        crate::tui::Pill::new("↩", "send", t.or("green", Color::Green)),
         crate::tui::Pill::new("esc", "back", red),
     ];
     let (spans, zones) = crate::tui::pill_row(&pills, ink, bar_area.x);
@@ -830,7 +830,7 @@ fn draw_preview(f: &mut Frame, app: &App, area: Rect, title: Color, border: Colo
         let last = app.preview.scroll + app.preview.rows().min(app.preview.len);
         block = block.title(
             Line::from(Span::styled(
-                format!(" ⌥jk {last}/{} ", app.preview.len),
+                format!(" ⌥·jk {last}/{} ", app.preview.len),
                 Style::default().fg(sub),
             ))
             .right_aligned(),
@@ -1003,6 +1003,8 @@ fn draw_footer(f: &mut Frame, app: &mut App, area: Rect) {
         .into_iter()
         .zip(shown.iter().map(|(_, _, _, a)| *a))
         .map(|((a, b), act)| (a, b, act))
+        // A pill pushed past a narrow bar's edge was never drawn, so it claims nothing.
+        .filter(|&(a, _, _)| a < area.right())
         .collect();
     app.zones.footer_row = area.y;
     let pills_width: u16 = spans.iter().map(|s| s.content.chars().count() as u16).sum();

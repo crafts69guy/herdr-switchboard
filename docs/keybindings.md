@@ -84,8 +84,8 @@ Successful opens update `${XDG_STATE_HOME:-~/.local/state}/herdr-switchboard/rec
 
 `alt-s` opens the sort menu in either key mode. Use arrows or `j`/`k`, Home/End,
 or the wheel to choose; Enter or a click applies, and Esc or a click outside cancels.
-Recent, Name A–Z/Z–A, Provider, Owner, Starred first, and Kind apply across tabs for
-this session; Settings sets the next launch's default. Name uses the `owner/repo`
+Recent, Name A–Z/Z–A, Provider, Owner, Starred first, and Kind apply across tabs and
+are saved as `projects.sort`, so the next launch opens in the same order. Name uses the `owner/repo`
 column. Provider and Owner add non-selectable group dividers and order entries A–Z
 inside each group; All keeps Agents and Workspaces in separate groups before the
 repository hosts. Search hides dividers and retains fuzzy order.

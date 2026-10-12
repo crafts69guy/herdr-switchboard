@@ -314,7 +314,7 @@ fn draw_bar(f: &mut Frame, s: &mut Settings, area: Rect, theme: &Theme) {
     let caps: Vec<(Pill, Option<KeyCode>)> = if s.editing.is_some() {
         vec![
             (
-                Pill::new("↵", "set", theme.or("accent", Color::Cyan)),
+                Pill::new("↩", "set", theme.or("accent", Color::Cyan)),
                 Some(KeyCode::Enter),
             ),
             (
@@ -325,7 +325,7 @@ fn draw_bar(f: &mut Frame, s: &mut Settings, area: Rect, theme: &Theme) {
     } else if s.dirty() {
         vec![
             (
-                Pill::new("↵", "change", theme.or("accent", Color::Cyan)),
+                Pill::new("↩", "change", theme.or("accent", Color::Cyan)),
                 Some(KeyCode::Enter),
             ),
             (
@@ -344,7 +344,7 @@ fn draw_bar(f: &mut Frame, s: &mut Settings, area: Rect, theme: &Theme) {
     } else {
         vec![
             (
-                Pill::new("↵", "change", theme.or("accent", Color::Cyan)),
+                Pill::new("↩", "change", theme.or("accent", Color::Cyan)),
                 Some(KeyCode::Enter),
             ),
             (

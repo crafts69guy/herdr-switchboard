@@ -766,6 +766,11 @@ impl App {
             Some(sort::Choice::Apply(sort)) => {
                 self.picker.set_sort(sort);
                 self.overlay = Overlay::None;
+                // The choice is also the next launch's default.
+                match self.settings.save_one("sort", sort.label()) {
+                    Ok(()) => self.cfg.projects.sort = sort.label().into(),
+                    Err(_) => self.feedback = Some("Could not save sort.".into()),
+                }
             }
             Some(sort::Choice::Cancel) => self.overlay = Overlay::None,
             Some(sort::Choice::Quit) => return Flow::Quit,
@@ -2240,7 +2245,7 @@ mod tests {
 
         // A modified key is a command, not text.
         handle_key(&mut app, key(KeyCode::Char('z'), KeyModifiers::ALT));
-        assert_eq!(app.picker.query, "", "⌥z typed into the query");
+        assert_eq!(app.picker.query, "", "⌥·z typed into the query");
 
         let mut app = ready_app();
         app.mode = keymap::Mode::Normal;
@@ -2924,7 +2929,13 @@ mod tests {
         assert_eq!(surface.app.picker.sort, SortMode::Name);
         assert_eq!(surface.app.picker.query, "a");
         assert_eq!(surface.app.picker.filtered, expected);
-        assert_eq!(surface.app.cfg.projects.sort, "recent");
+        // The choice is the next launch's default, written through the form.
+        assert_eq!(surface.app.cfg.projects.sort, "name");
+        assert_eq!(surface.app.settings.value("sort"), Some("name"));
+        let path = surface.app.settings.path().to_path_buf();
+        let saved = Config::parse(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let _ = std::fs::remove_file(path);
+        assert_eq!(saved.projects.sort, "name");
     }
 
     fn provider_entries() -> Vec<Entry> {
@@ -3348,8 +3359,17 @@ mod tests {
     }
 
     fn ready_app() -> App {
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let mut app = App::new(sample(), Theme::default(), Config::default(), ".".into());
         app.catalog = CatalogState::Ready;
+        // The sort menu saves its choice; give each app its own file so
+        // parallel tests never read one another's sort back.
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        app.settings.write_to(
+            crate::state::test_scratch()
+                .unwrap()
+                .join(format!("projects-config-{n}.toml")),
+        );
         app
     }
 
@@ -4228,7 +4248,7 @@ mod tests {
             let screen = rendered(&mut app, w, h);
             let bar = screen.lines().last().unwrap();
             assert!(
-                bar.contains("↵ open"),
+                bar.contains("↩ open"),
                 "a {w}x{h} pane lost its command bar: {bar}"
             );
         }
@@ -4245,12 +4265,12 @@ mod tests {
         let screen = rendered(&mut app, 180, 40);
         let footer = screen.lines().last().unwrap();
         // Rendered in Normal mode, and every cap is the chord Insert shows too.
-        assert!(footer.contains("^y copy"), "{footer}");
-        assert!(footer.contains("^a send"), "{footer}");
-        assert!(footer.contains("^s star"), "{footer}");
-        assert!(footer.contains("^r update"), "{footer}");
-        assert!(footer.contains("^w workspace"), "{footer}");
-        assert!(footer.contains("⌥l clone"), "{footer}");
+        assert!(footer.contains("^·y copy"), "{footer}");
+        assert!(footer.contains("^·a send"), "{footer}");
+        assert!(footer.contains("^·s star"), "{footer}");
+        assert!(footer.contains("^·r update"), "{footer}");
+        assert!(footer.contains("^·w workspace"), "{footer}");
+        assert!(footer.contains("⌥·l clone"), "{footer}");
 
         app.overlay = Overlay::Help;
         let help = rendered(&mut app, 120, 40);
@@ -4350,7 +4370,7 @@ mod tests {
             .skip(a as usize)
             .take((b - a) as usize)
             .collect();
-        assert_eq!(first.trim(), "↵ open");
+        assert_eq!(first.trim(), "↩ open");
     }
 
     #[test]

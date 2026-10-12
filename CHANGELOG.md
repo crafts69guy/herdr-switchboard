@@ -7,6 +7,13 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- Key caps put a `·` between the modifier and its key (`^·e`, `⌥·l`, `⇧·⇥`), and Enter
+  reads `↩`, which more terminal fonts carry than `↵`.
+- The Projects sort menu saves its choice as `projects.sort`, so the order survives a
+  restart.
+
 ## [3.4.0] - 2026-10-12
 
 ### Added

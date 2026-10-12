@@ -1013,7 +1013,7 @@ fn draw<M: PickerMode>(
         block = block.title(
             Line::from(Span::styled(
                 format!(
-                    " ⌥jk {}/{len} ",
+                    " ⌥·jk {}/{len} ",
                     state.preview_scroll + rows_visible.min(len)
                 ),
                 Style::default().fg(muted),
@@ -1052,7 +1052,7 @@ fn draw<M: PickerMode>(
             )
         })
         .chain(std::iter::once((
-            Pill::new("⌥,", "settings", theme.or("yellow", Color::Yellow)),
+            Pill::new("⌥·,", "settings", theme.or("yellow", Color::Yellow)),
             PillAct::Settings,
         )))
         .chain(std::iter::once((
@@ -1157,7 +1157,7 @@ fn first_enabled<M: PickerMode>(
 #[cfg(test)]
 pub(crate) fn assert_follows_prefix_concept(surface: &str, actions: &[ActionSpec]) {
     /// Action ids whose chord is fixed project-wide. A spec carrying no modifier
-    /// is exempt: that is the `↵` ladder, where the surface's *primary* action
+    /// is exempt: that is the `↩` ladder, where the surface's *primary* action
     /// may well be one of these verbs (Ports opens by copying an address).
     const CANONICAL: &[(&str, KeyCode, KeyModifiers)] = &[
         ("tab", KeyCode::Char('e'), KeyModifiers::CONTROL),
@@ -1187,7 +1187,7 @@ pub(crate) fn assert_follows_prefix_concept(surface: &str, actions: &[ActionSpec
         // would never run and the pill would advertise a dead cap.
         assert!(
             !(ctrl && action.key == KeyCode::Char('b')),
-            "{surface}.{id} takes ^b, which herdr claims as its default prefix"
+            "{surface}.{id} takes ^·b, which herdr claims as its default prefix"
         );
 
         assert!(
@@ -1481,7 +1481,7 @@ mod tests {
         );
         assert!(
             matches!(&outcome, Transition::Exit(PickerExit::Invoke(_, "remove"))),
-            "^⇧x must still be ^x"
+            "^·⇧x must still be ^·x"
         );
 
         // And `shift-enter` runs the row, the way it already did in Projects.
@@ -1489,7 +1489,7 @@ mod tests {
         let outcome = h.key(KeyCode::Enter, KeyModifiers::SHIFT);
         assert!(
             matches!(&outcome, Transition::Exit(PickerExit::Invoke(_, "open"))),
-            "⇧↵ must mean ↵, as it does in Projects"
+            "⇧↩ must mean ↩, as it does in Projects"
         );
     }
 
@@ -1517,7 +1517,7 @@ mod tests {
         assert!(!rejected(vec![spec(
             KeyCode::Char('w'),
             KeyModifiers::CONTROL,
-            "^w",
+            "^·w",
             "workspace"
         )]));
 
@@ -1532,42 +1532,42 @@ mod tests {
         assert!(rejected(vec![spec(
             KeyCode::Char('u'),
             KeyModifiers::CONTROL,
-            "^u",
+            "^·u",
             "use"
         )]));
         // ⌥j is answered by the surface itself, so this action would never run.
         assert!(rejected(vec![spec(
             KeyCode::Char('j'),
             KeyModifiers::ALT,
-            "⌥j",
+            "⌥·j",
             "down"
         )]));
         // ^b never reaches the pane: it is herdr's default prefix.
         assert!(rejected(vec![spec(
             KeyCode::Char('b'),
             KeyModifiers::CONTROL,
-            "^b",
+            "^·b",
             "tab"
         )]));
         // A cap that is not the key it listens for.
         assert!(rejected(vec![spec(
             KeyCode::Char('y'),
             KeyModifiers::CONTROL,
-            "^c",
+            "^·c",
             "copy"
         )]));
         // The drift itself: a shared id on a chord it does not carry elsewhere.
         assert!(rejected(vec![spec(
             KeyCode::Char('w'),
             KeyModifiers::ALT,
-            "⌥w",
+            "⌥·w",
             "workspace"
         )]));
         // Two names for one chord: matching ignores SHIFT, so only the first
         // of these would ever run.
         assert!(rejected(vec![
-            spec(KeyCode::Enter, KeyModifiers::NONE, "↵", "open"),
-            spec(KeyCode::Enter, KeyModifiers::SHIFT, "↵", "open_other"),
+            spec(KeyCode::Enter, KeyModifiers::NONE, "↩", "open"),
+            spec(KeyCode::Enter, KeyModifiers::SHIFT, "↩", "open_other"),
         ]));
     }
 
@@ -1797,7 +1797,7 @@ mod tests {
                         id: "open",
                         key: KeyCode::Enter,
                         modifiers: KeyModifiers::NONE,
-                        key_label: "↵".into(),
+                        key_label: "↩".into(),
                         label: "open",
                         color_slot: "blue",
                     },
@@ -1805,7 +1805,7 @@ mod tests {
                         id: "remove",
                         key: KeyCode::Char('x'),
                         modifiers: KeyModifiers::CONTROL,
-                        key_label: "^x".into(),
+                        key_label: "^·x".into(),
                         label: "remove",
                         color_slot: "red",
                     },
@@ -2041,7 +2041,7 @@ mod tests {
             id: "open",
             key: KeyCode::Enter,
             modifiers: KeyModifiers::NONE,
-            key_label: "↵".into(),
+            key_label: "↩".into(),
             label: "open",
             color_slot: "blue",
         }];
@@ -2108,7 +2108,7 @@ mod tests {
             .collect();
         assert!(screen.contains('★'), "{screen}");
         assert!(
-            screen.contains("⌥jk"),
+            screen.contains("⌥·jk"),
             "the scroll position is shown: {screen}"
         );
 
@@ -2153,7 +2153,7 @@ mod tests {
                 id: "open",
                 key: KeyCode::Enter,
                 modifiers: KeyModifiers::NONE,
-                key_label: "↵".into(),
+                key_label: "↩".into(),
                 label: "open",
                 color_slot: "blue",
             }]
@@ -2223,7 +2223,7 @@ mod tests {
         )
         .expect("loop ends cleanly");
 
-        assert_eq!(first_key_label.as_deref(), Some("^o"), "bindings apply");
+        assert_eq!(first_key_label.as_deref(), Some("^·o"), "bindings apply");
         assert_eq!(seen_error.as_deref(), Some("listener is stale"));
         assert_eq!(settings_opened.get(), 1);
         assert_eq!(insert_after_settings, Some(true));
@@ -2371,13 +2371,13 @@ mod tests {
         assert_eq!(h.state.filtered.len(), 4);
 
         h.key(KeyCode::Backspace, KeyModifiers::ALT);
-        assert_eq!(h.state.query, "", "⌥⌫ deletes the word");
+        assert_eq!(h.state.query, "", "⌥·⌫ deletes the word");
 
         for character in "item".chars() {
             h.press(KeyCode::Char(character));
         }
         h.key(KeyCode::Char('u'), KeyModifiers::CONTROL);
-        assert_eq!(h.state.query, "", "^u clears the line");
+        assert_eq!(h.state.query, "", "^·u clears the line");
         assert_eq!(h.state.filtered.len(), 4);
     }
 
@@ -2449,7 +2449,7 @@ mod tests {
 
         let mut h = Harness::new(items(3), true);
         let (id, action) =
-            invoked(h.key(KeyCode::Char('x'), KeyModifiers::CONTROL)).expect("^x invokes");
+            invoked(h.key(KeyCode::Char('x'), KeyModifiers::CONTROL)).expect("^·x invokes");
         assert_eq!((id.as_str(), action), ("item-0", "remove"));
     }
 
@@ -2467,7 +2467,7 @@ mod tests {
     fn alt_keys_open_settings_and_scroll_the_preview() {
         let mut h = Harness::new(items(3), true);
         let (id, action) =
-            invoked(h.key(KeyCode::Char(','), KeyModifiers::ALT)).expect("⌥, invokes");
+            invoked(h.key(KeyCode::Char(','), KeyModifiers::ALT)).expect("⌥·, invokes");
         assert!(id.is_empty());
         assert_eq!(action, "__settings");
 
@@ -3109,7 +3109,7 @@ mod tests {
             id: "copy",
             key: KeyCode::Enter,
             modifiers: KeyModifiers::NONE,
-            key_label: "↵".into(),
+            key_label: "↩".into(),
             label: "copy",
             color_slot: "blue",
         }];
@@ -3119,7 +3119,7 @@ mod tests {
         );
         assert_eq!(actions[0].key, KeyCode::Char('y'));
         assert_eq!(actions[0].modifiers, KeyModifiers::CONTROL);
-        assert_eq!(actions[0].key_label, "^y");
+        assert_eq!(actions[0].key_label, "^·y");
     }
 
     /// Every key and pointer event, in both input modes and in a tabbed mode,

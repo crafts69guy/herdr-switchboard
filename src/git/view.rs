@@ -488,7 +488,7 @@ fn list_body_lines(
 fn bar_pills(g: &Git, theme: &Theme) -> Vec<crate::tui::Pill<'static>> {
     match g.view {
         View::Menu => vec![
-            crate::tui::Pill::new("↵", "run", theme.or("accent", Color::Cyan)),
+            crate::tui::Pill::new("↩", "run", theme.or("accent", Color::Cyan)),
             crate::tui::Pill::new("↑ ↓", "move", theme.or("blue", Color::Blue)),
             crate::tui::Pill::new("esc", "close", theme.or("red", Color::Red)),
         ],
@@ -499,15 +499,15 @@ fn bar_pills(g: &Git, theme: &Theme) -> Vec<crate::tui::Pill<'static>> {
                 "restore"
             };
             vec![
-                crate::tui::Pill::new("↵", "read comments", theme.or("accent", Color::Cyan)),
-                crate::tui::Pill::new("^a", "send to agent", theme.or("green", Color::Green)),
-                crate::tui::Pill::new("^d", archive_verb, theme.or("yellow", Color::Yellow)),
+                crate::tui::Pill::new("↩", "read comments", theme.or("accent", Color::Cyan)),
+                crate::tui::Pill::new("^·a", "send to agent", theme.or("green", Color::Green)),
+                crate::tui::Pill::new("^·d", archive_verb, theme.or("yellow", Color::Yellow)),
                 crate::tui::Pill::new("esc", "back", theme.or("red", Color::Red)),
             ]
         }
         View::List => vec![
             crate::tui::Pill::new(
-                "↵",
+                "↩",
                 g.kind.map(ListKind::verb).unwrap_or("open"),
                 theme.or("accent", Color::Cyan),
             ),
@@ -515,7 +515,7 @@ fn bar_pills(g: &Git, theme: &Theme) -> Vec<crate::tui::Pill<'static>> {
             crate::tui::Pill::new("esc", "back", theme.or("red", Color::Red)),
         ],
         View::Confirm => vec![
-            crate::tui::Pill::new("↵", "open anyway", theme.or("accent", Color::Cyan)),
+            crate::tui::Pill::new("↩", "open anyway", theme.or("accent", Color::Cyan)),
             crate::tui::Pill::new("esc", "back", theme.or("red", Color::Red)),
         ],
     }

@@ -209,7 +209,7 @@ preserving query, key mode, and selected entry; its legacy `cycle_sort` override
   test in `projects.rs` fires it.
 - **A prefix names the kind of work, never the mode.** `^<key>` acts on the selected row; `⌥<key>`
   changes the view or the app (or is the heavier form of the `^` verb on the same letter, as
-  Ports' `^x` TERM / `⌥x` KILL); `↵` runs the row's primary action with `^↵`/`⌥↵` as its variants.
+  Ports' `^x` TERM / `⌥x` KILL); `↩` runs the row's primary action with `^↩`/`⌥↩` as its variants.
   So **every modified chord appears in both `default_insert` and `default_normal` with the same
   action**, and Normal's bare letters are *aliases carrying the same letter*, never a respelling.
   Three tests in `keymap.rs` enforce exactly this and are the reason the layout stops drifting:
@@ -218,7 +218,7 @@ preserving query, key mode, and selected entry; its legacy `cycle_sort` override
   `a_bare_alias_carries_the_same_letter_as_its_chord`. Two vocabularies are carved out by name in
   `mode_idiomatic`: motion (readline in Insert, Vim in Normal) and query editing (`^u` clear,
   `⌥⌫` delete-word, Insert-only). `^u` and `^c` are reserved on every surface — no `ActionSpec`
-  may take them, which is why the fnm manager's `use`/`install` sit on the `↵` ladder.
+  may take them, which is why the fnm manager's `use`/`install` sit on the `↩` ladder.
   **A chord that is somebody's multiplexer prefix never reaches the pane at all**, so opening in a
   tab is the mnemonic-free `^e`: herdr's default prefix is `^b` and `^t` is the usual tmux-refugee
   alternative, so the open group avoids both. `^b` is refused by
@@ -245,7 +245,7 @@ preserving query, key mode, and selected entry; its legacy `cycle_sort` override
   CTRL and ALT, exactly as `keymap::chord_of` does: SHIFT is already baked into the character a
   terminal reports and terminals disagree about whether they set the bit too. `ActionSpec::matches`
   compared modifier bits with `==` while the keymap used `contains`, so the same press acted in
-  Projects and did nothing in every other picker — `⇧↵` ran the row in one and was inert in the
+  Projects and did nothing in every other picker — `⇧↩` ran the row in one and was inert in the
   other, and a `^⇧` chord missed its `^` action outright. Because SHIFT no longer separates two
   chords, `assert_follows_prefix_concept` also refuses two specs that normalise to the same chord;
   without that rule the second one would simply never run.

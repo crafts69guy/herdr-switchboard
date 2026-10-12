@@ -27,7 +27,8 @@ pub struct Chord {
 }
 
 impl Chord {
-    /// How the chord reads in the footer and cheatsheet: `^t`, `⌥p`, `⇧⇥`, `g`, `↵`.
+    /// How the chord reads in the footer and cheatsheet: `^·t`, `⌥·p`, `⇧·⇥`, `g`, `↩`.
+    /// A `·` parts the modifier from its key, so `⌥l` cannot read as one glyph.
     pub fn label(&self) -> String {
         let mut s = String::new();
         if self.ctrl {
@@ -35,6 +36,9 @@ impl Chord {
         }
         if self.alt {
             s.push('⌥');
+        }
+        if self.ctrl || self.alt {
+            s.push('·');
         }
         s.push_str(&key_label(self.key));
         s
@@ -93,10 +97,10 @@ fn key_label(k: Key) -> String {
     match k {
         Key::Char(' ') => "␣".into(),
         Key::Char(c) => c.to_string(),
-        Key::Enter => "↵".into(),
+        Key::Enter => "↩".into(),
         Key::Esc => "esc".into(),
         Key::Tab => "⇥".into(),
-        Key::BackTab => "⇧⇥".into(),
+        Key::BackTab => "⇧·⇥".into(),
         Key::Backspace => "⌫".into(),
         Key::Up => "↑".into(),
         Key::Down => "↓".into(),
@@ -312,15 +316,15 @@ fn alt(key: Key) -> Chord {
 /// are in, which is why [`default_normal`] repeats every modified chord below
 /// verbatim rather than respelling it:
 ///
-/// - `↵` runs the selected row's primary action; `^↵`/`⌥↵` are its variants on
+/// - `↩` runs the selected row's primary action; `^↩`/`⌥↩` are its variants on
 ///   the surfaces that have them (Commands, Ports, the fnm manager).
 /// - **`^<letter>` acts on the selected row** — open it, update it, remove it,
 ///   copy it, send it, star it.
 /// - **`⌥<letter>` changes the view or the app** — preview, sort, clone,
 ///   changelog, settings, plugin update. It touches no row. The one named
 ///   exception is that `⌥<letter>` is also the *heavier* form of the `^<letter>`
-///   verb on the same letter (Ports `^x` TERM → `⌥x` KILL), the same way `⌥↵`
-///   is a variant of `↵`.
+///   verb on the same letter (Ports `^x` TERM → `⌥x` KILL), the same way `⌥↩`
+///   is a variant of `↩`.
 ///
 /// A `␣` leader used to hold the manage verbs, and it is gone: space can only be
 /// a leader in Normal — in Insert it is a character the user is typing — so any
@@ -540,10 +544,10 @@ mod tests {
 
     #[test]
     fn chord_labels_read_the_way_the_footer_shows_them() {
-        assert_eq!(ctrl(Key::Char('t')).label(), "^t");
-        assert_eq!(alt(Key::Char('p')).label(), "⌥p");
-        assert_eq!(chord(Key::Enter).label(), "↵");
-        assert_eq!(chord(Key::BackTab).label(), "⇧⇥");
+        assert_eq!(ctrl(Key::Char('t')).label(), "^·t");
+        assert_eq!(alt(Key::Char('p')).label(), "⌥·p");
+        assert_eq!(chord(Key::Enter).label(), "↩");
+        assert_eq!(chord(Key::BackTab).label(), "⇧·⇥");
         assert_eq!(chord(Key::Char(' ')).label(), "␣");
     }
 
@@ -632,7 +636,7 @@ mod tests {
         );
         assert_eq!(
             km.label_for(Mode::Normal, Action::CycleSort).as_deref(),
-            Some("⌥s")
+            Some("⌥·s")
         );
         // A bare alias never displaces the chord: `e` and `^e` both open a tab,
         // and the footer shows the one Insert would show.
@@ -643,7 +647,7 @@ mod tests {
         assert_eq!(
             km.label_for(Mode::Normal, Action::Accept(AcceptKind::Tab))
                 .as_deref(),
-            Some("^e")
+            Some("^·e")
         );
         assert_eq!(
             km.action(Mode::Normal, ctrl(Key::Char('y'))),
@@ -659,11 +663,11 @@ mod tests {
         );
         assert_eq!(
             km.label_for(Mode::Normal, Action::CopyPath).as_deref(),
-            Some("^y")
+            Some("^·y")
         );
         assert_eq!(
             km.label_for(Mode::Normal, Action::ToggleStar).as_deref(),
-            Some("^s")
+            Some("^·s")
         );
     }
 
@@ -682,7 +686,7 @@ mod tests {
         );
         assert_eq!(
             km.label_for(Mode::Normal, Action::Settings).as_deref(),
-            Some("⌥,")
+            Some("⌥·,")
         );
     }
 
@@ -837,7 +841,7 @@ mod tests {
         assert_eq!(
             km.label_for(Mode::Insert, Action::Accept(AcceptKind::Tab))
                 .as_deref(),
-            Some("^y")
+            Some("^·y")
         );
     }
 
@@ -857,7 +861,7 @@ mod tests {
             );
             assert_eq!(
                 km.label_for(mode, Action::ToggleStar).as_deref(),
-                Some("⌥f")
+                Some("⌥·f")
             );
         }
         for mode in [Mode::Insert, Mode::Normal] {

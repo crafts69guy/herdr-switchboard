@@ -71,7 +71,7 @@ const ROUTES: &[Route] = &[
         detail: "repos, worktrees, agents and workspaces",
         color: "peach",
         mnemonic: 'p',
-        key_label: "⌥p",
+        key_label: "⌥·p",
     },
     Route {
         id: "agents",
@@ -80,7 +80,7 @@ const ROUTES: &[Route] = &[
         detail: "start an installed AI integration",
         color: "mauve",
         mnemonic: 'a',
-        key_label: "⌥a",
+        key_label: "⌥·a",
     },
     Route {
         id: "tasks",
@@ -89,7 +89,7 @@ const ROUTES: &[Route] = &[
         detail: "agent assignments, handoffs and results",
         color: "mauve",
         mnemonic: 't',
-        key_label: "⌥t",
+        key_label: "⌥·t",
     },
     Route {
         id: "commands",
@@ -98,7 +98,7 @@ const ROUTES: &[Route] = &[
         detail: "shell history and command presets",
         color: "blue",
         mnemonic: 'c',
-        key_label: "⌥c",
+        key_label: "⌥·c",
     },
     Route {
         id: "ports",
@@ -107,7 +107,7 @@ const ROUTES: &[Route] = &[
         detail: "live TCP listeners and owner processes",
         color: "teal",
         mnemonic: 'o',
-        key_label: "⌥o",
+        key_label: "⌥·o",
     },
     Route {
         id: "fnm",
@@ -116,7 +116,7 @@ const ROUTES: &[Route] = &[
         detail: "use, install and remove versions with fnm",
         color: "green",
         mnemonic: 'n',
-        key_label: "⌥n",
+        key_label: "⌥·n",
     },
     Route {
         id: "zen",
@@ -125,7 +125,7 @@ const ROUTES: &[Route] = &[
         detail: "give one pane the screen, centred and flanked",
         color: "mauve",
         mnemonic: 'z',
-        key_label: "⌥z",
+        key_label: "⌥·z",
     },
     Route {
         id: "usage",
@@ -134,7 +134,7 @@ const ROUTES: &[Route] = &[
         detail: "subscription quota for your AI agents",
         color: "teal",
         mnemonic: 'q',
-        key_label: "⌥q",
+        key_label: "⌥·q",
     },
     Route {
         id: "git",
@@ -143,7 +143,7 @@ const ROUTES: &[Route] = &[
         detail: "review or stage the current repository",
         color: "green",
         mnemonic: 'g',
-        key_label: "⌥g",
+        key_label: "⌥·g",
     },
     Route {
         id: "clone",
@@ -152,7 +152,7 @@ const ROUTES: &[Route] = &[
         detail: "add a repository from a Git URL",
         color: "mauve",
         mnemonic: 'l',
-        key_label: "⌥l",
+        key_label: "⌥·l",
     },
     Route {
         id: "settings",
@@ -161,7 +161,7 @@ const ROUTES: &[Route] = &[
         detail: "configure every Switchboard picker",
         color: "yellow",
         mnemonic: 's',
-        key_label: "⌥s",
+        key_label: "⌥·s",
     },
     Route {
         id: "changelog",
@@ -170,7 +170,7 @@ const ROUTES: &[Route] = &[
         detail: "read installed release notes",
         color: "blue",
         mnemonic: 'h',
-        key_label: "⌥h",
+        key_label: "⌥·h",
     },
     Route {
         id: "update",
@@ -179,7 +179,7 @@ const ROUTES: &[Route] = &[
         detail: "install the newest tagged release",
         color: "green",
         mnemonic: 'u',
-        key_label: "⌥u",
+        key_label: "⌥·u",
     },
 ];
 
@@ -208,7 +208,7 @@ impl PickerMode for MenuMode {
             id: "open",
             key: KeyCode::Enter,
             modifiers: KeyModifiers::NONE,
-            key_label: "↵".into(),
+            key_label: "↩".into(),
             label: "open",
             color_slot: "mauve",
         })
@@ -321,7 +321,7 @@ mod tests {
             .iter()
             .map(|action| crate::tui::Pill::new(&action.key_label, action.label, Color::Reset))
             .collect::<Vec<_>>();
-        pills.push(crate::tui::Pill::new("⌥,", "settings", Color::Reset));
+        pills.push(crate::tui::Pill::new("⌥·,", "settings", Color::Reset));
         pills.push(crate::tui::Pill::new("esc", "mode/close", Color::Reset));
         let (spans, _) = crate::tui::pill_row(&pills, Color::Reset, 0);
         let action_bar_width = spans
