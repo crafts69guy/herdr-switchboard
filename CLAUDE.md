@@ -15,7 +15,7 @@ can fetch pull requests through `gh` only when that row is activated, and update
 detached `git ls-remote` child. The **git menu is a herdr pane of its own** (`Prefix + g` →
 `bin/git.sh` → `--git`), not an overlay on the switcher, and its selection `exec`s a review tool
 over that pane. The review launcher (`bin/review.sh`, which runs
-`tuicr`/`lazygit`), the guarded updater, and `bin/picker.sh`'s one-time bootstrap feedback are the
+`tuicr`/`lazygit`) and `bin/picker.sh`'s one-time bootstrap feedback are the
 Bash terminal owners. The plugin needs no fzf.
 See `README.md` for user-facing keybindings and configuration.
 
@@ -478,15 +478,19 @@ order so the list stays stable.
   multiplied by 100 — which reads a genuine `0.8%`, the state of every plan just after its window
   rolls over, as `80%`. `clamp_percent` only clamps. Guessing a scale fails silently and in the
   alarming direction; do not reintroduce it.
-- **The update flow fails closed.** `bin/update-plugin.sh` installs only when herdr reports
-  an unambiguous `"source":{"kind":"github"…}`; local links, unreadable output, and shapes it
-  does not recognise all refuse. The failure it must never make is the permissive one —
-  `herdr plugin install` would overwrite a contributor's working tree. `tests/update_guard_spec.sh`
-  stubs `herdr` through `HERDR_BIN_PATH` and asserts every case. Never widen the guard without
-  extending that spec, and never name a real mutating command inside backticks in it.
-- **An update must force a rebuild.** `target/` is gitignored, so re-fetching the source leaves
-  the old binary in place and `bin/picker.sh` only builds when the binary is _missing_ — the new
-  code would ship with the old switcher still running. `update-plugin.sh` removes it and rebuilds.
+- **Explicit updates fail closed and install an exact stable tag.** Herdr must report exactly
+  Switchboard, its GitHub source, and a managed root matching the launching checkout. Local links,
+  missing metadata, and unknown sources never reach installation. The automatic badge's cache
+  is not an install target: the explicit worker resolves stable tags afresh and passes `--ref`.
+  A private state lock prevents concurrent Switchboard updaters; no tag lookup failure falls back
+  to HEAD, and no invocation downgrades. Rust guard tests cover these boundaries; the shell spec
+  checks only the thin entrypoint's handoff.
+- **Update completion includes the new binary.** After Herdr replaces the managed checkout,
+  invoke its new picker with `--version` to prepare and verify the version-matched binary.
+  Do not duplicate the bootstrap's download/checksum/Cargo policy. A preparation failure after
+  installation is a warning, never a success or a claim that installation was rolled back.
+  The old binary owns the hosted UI until completion; child output is captured, and close keys
+  wait while work is active. Controlled exits join the worker even when rendering fails.
 - **Projects `ctrl-x` (remove) requires typed confirmation.** Repositories use their name on the
   restored terminal; linked worktrees use their name in a modal overlay, or `force <name>` when
   Force is explicitly selected. Git revalidates the linked worktree before removal; main and

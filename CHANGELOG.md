@@ -7,6 +7,13 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **Update Switchboard stays in the TUI.** Watch each update step in the shared theme,
+  read errors with Details, and distinguish an installed release from a binary that still
+  needs preparation. Updates now install the latest stable tag explicitly and never downgrade;
+  linked checkouts stay protected, and closing waits until the update finishes.
+
 ## [3.2.0] - 2026-10-12
 
 ### Added

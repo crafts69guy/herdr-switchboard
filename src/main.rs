@@ -22,6 +22,7 @@ mod ports;
 mod projects;
 mod query;
 mod runner;
+mod self_update;
 mod settings;
 mod socket;
 mod source;
@@ -154,6 +155,7 @@ fn run(args: &[String]) -> Result<()> {
         }
         Some("--changelog") => changelog::main(),
         Some("--update-check") => update::main(),
+        Some("--update") => self_update::main(Config::try_load()?, Theme::load()),
         Some("--git") => git::main(),
         Some("--clone") => projects::clone_main(Config::try_load()?, Theme::load()),
         Some("--fnm") => fnm_manager::main(Config::try_load()?, Theme::load()),

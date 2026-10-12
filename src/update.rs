@@ -34,10 +34,11 @@ const TTL_SECS: u64 = 24 * 60 * 60;
 /// A semver triple. Compared as numbers, never as text: `"0.10.0" < "0.9.0"` is true for
 /// strings and false for versions, and this plugin will reach 0.10.0.
 #[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Debug)]
-struct Version(u64, u64, u64);
+pub(crate) struct Version(u64, u64, u64);
 
-fn parse_version(s: &str) -> Option<Version> {
-    let s = s.trim().trim_start_matches('v');
+pub(crate) fn parse_version(s: &str) -> Option<Version> {
+    let s = s.trim();
+    let s = s.strip_prefix('v').unwrap_or(s);
     let mut parts = s.split('.');
     let mut next = || parts.next()?.parse::<u64>().ok();
     let v = Version(next()?, next()?, next()?);
@@ -94,12 +95,26 @@ fn latest_from(command: &mut Command) -> Option<String> {
 /// The highest version among `git ls-remote --tags --refs` lines
 /// (`<sha>\trefs/tags/v0.5.0`), ignoring tags that are not versions.
 fn latest_tag(ls_remote: &str) -> Option<String> {
-    let latest = ls_remote
+    latest_release(ls_remote).map(|release| release.version)
+}
+
+pub(crate) struct ReleaseTag {
+    pub name: String,
+    pub version: String,
+}
+
+/// Keep the real ref: not every numeric tag necessarily carries a `v` prefix.
+pub(crate) fn latest_release(ls_remote: &str) -> Option<ReleaseTag> {
+    let (version, name) = ls_remote
         .lines()
-        .filter_map(|l| l.split("refs/tags/").nth(1))
-        .filter_map(parse_version)
+        .filter_map(|line| line.split_once('\t'))
+        .filter_map(|(_, reference)| reference.strip_prefix("refs/tags/"))
+        .filter_map(|name| parse_version(name).map(|version| (version, name)))
         .max()?;
-    Some(format!("{}.{}.{}", latest.0, latest.1, latest.2))
+    Some(ReleaseTag {
+        name: name.into(),
+        version: format!("{}.{}.{}", version.0, version.1, version.2),
+    })
 }
 
 /// A newer version than the one running, if the cache knows of one.
@@ -205,6 +220,15 @@ def456\trefs/tags/v0.10.0
 ";
         assert_eq!(latest_tag(out).as_deref(), Some("0.10.0"));
         assert_eq!(latest_tag("000000\trefs/tags/nightly\n"), None);
+    }
+
+    #[test]
+    fn release_selection_preserves_the_ref_and_ignores_prereleases() {
+        let tags = "a\trefs/tags/v1.9.0\nb\trefs/tags/1.10.0\nc\trefs/tags/v2.0.0-rc.1\nd\trefs/tags/vv3.0.0\ne\trefs/heads/v4.0.0\n";
+        let release = latest_release(tags).unwrap();
+        assert_eq!(release.name, "1.10.0");
+        assert_eq!(release.version, "1.10.0");
+        assert!(parse_version("vv3.0.0").is_none());
     }
 
     fn config(update_check: bool) -> Config {

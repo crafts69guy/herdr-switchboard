@@ -37,6 +37,11 @@ The standalone settings action persists the same namespaced values for subsequen
 The daily update check displays the available version in the command bar; it never installs an
 update. `switchboard.update` is the explicit installation action.
 
+The update action resolves the latest stable tag afresh and installs that exact ref. Disabling
+`update_check` disables the automatic badge check, not an update you explicitly invoke.
+The progress card uses `title_color`, `transparency`, and the existing theme. It keeps results
+visible until dismissed and reports binary-preparation failures separately from installation.
+
 `transparent` leaves ordinary pane and floating-card cells at the terminal's default background;
 coloured pills, badges, and selected rows keep their intentional fills. `opaque` fills every
 Switchboard pane, gutter, and nested card with the theme's `panel_bg`. The former

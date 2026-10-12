@@ -59,7 +59,12 @@ claim and its networked provider runs on a worker thread, so the first frame nev
 socket. It is the only credential-reading surface and the only in-process HTTP client. Git replaces
 its pane process with `bin/review.sh` after selection; on-demand pull-request/list and file-count
 effects run in the background while its surface remains responsive. The update check uses a
-detached child. Clone runs `ghq get` through a cancellable, non-interactive Projects effect;
+detached child. Explicit Update runs in a hosted progress card: a worker validates the managed
+source, holds a private cross-process lock, installs a freshly resolved stable tag, then uses
+the newly installed picker to prepare and verify the binary. Installation and preparation
+failures have distinct results; close waits for completion and child output never paints
+the terminal. `bin/update-plugin.sh` is only its launcher.
+Clone runs `ghq get` through a cancellable, non-interactive Projects effect;
 `bin/get.sh` only launches `--clone` through the picker bootstrap. Completion refreshes the
 catalogue and selects the repository, or returns a typed open outcome when configured.
 Repository/worktree discovery shares a full-path ghq snapshot and derives durable relative IDs
@@ -81,7 +86,9 @@ the module inventory.
 | `surface` | `Surface`, `Transition`, `run`, `Host` (`TerminalHost`; `ScriptedHost` in tests) | Terminal lease, mouse capture, opt-in bracketed paste, polling, ticks, input coalescing, redraw, teardown |
 | `tui` | `SurfaceBackground`, shared frames and pills | Transparent/opaque painting, clearing, frame and hit-zone vocabulary |
 | `config` | Typed section fields, `parse`, `try_load`, finite `value_for_cli` | Namespaced deserialization, defaults, validation |
-| `state` | XDG paths and clock; `write_private`, `update_private`, `replace_atomically` | Cross-process locking, unique tempfiles, atomic replacement, permission policy |
+| `state` | XDG paths and clock; `write_private`, `update_private`, `replace_atomically`, `try_lock_private` | Cross-process locking, unique tempfiles, atomic replacement, permission policy |
+| `self_update` | `main` (`--update`) | Managed-source guard, explicit stable-tag selection, install/preparation worker, bounded diagnostics and hosted progress/result card |
+| `update` | `available`, `spawn_refresh_if_stale`, `main`; shared `latest_release` and `parse_version` | Detached daily check, cache, numeric stable-tag parsing |
 | `source::ProjectCatalog` | `new`, `load`, canonical `kinds` | Source enablement and load order |
 | `data` | Source loaders, `RepoSnapshot`, entry and browse types, `Theme` | Response parsing, ghq root/path mapping, and presentation mapping |
 | `fnm` | `inspect`, `prepare`, `Declaration`, `Preparation` | Version-file precedence, recursive lookup, engine parsing, installed PATH resolution |

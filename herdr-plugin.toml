@@ -84,7 +84,7 @@ command = ["bash", "bin/action.sh"]
 
 [[actions]]
 id = "update"
-title = "Update Switchboard"
+title = "󰏔"
 description = "Install the newest tagged version of this plugin. Refuses to touch a linked checkout."
 contexts = ["global", "pane"]
 command = ["bash", "bin/action.sh"]

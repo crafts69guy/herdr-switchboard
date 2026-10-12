@@ -14,7 +14,7 @@ ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 # Tapes that exist for a Screenshot; the GIF vhs records alongside is dropped.
-STILLS=(usage tasks)
+STILLS=(usage tasks update)
 
 for tool in vhs ttyd ffmpeg cc; do
   command -v "$tool" >/dev/null 2>&1 || {

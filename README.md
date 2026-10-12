@@ -312,6 +312,11 @@ canned quota readings. Nothing from the recording machine can reach a frame. It 
 Run `switchboard.changelog` or read [`CHANGELOG.md`](CHANGELOG.md). Managed installs update through
 `switchboard.update`; linked development checkouts are deliberately left alone.
 
+Update runs immediately in a themed progress card and installs the latest stable tag.
+Keep the pane open until it finishes; Enter or Esc closes the result. Press `d` for Details
+on an error, warning, or linked-checkout result. If the release installs but binary preparation
+fails, the result says so; reopening Switchboard retries preparation.
+
 ## License
 
 MIT — see [`LICENSE`](LICENSE).

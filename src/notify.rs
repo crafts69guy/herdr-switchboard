@@ -1,7 +1,7 @@
 //! Semantic Herdr notifications. Callers describe an outcome; this module owns
 //! policy, redaction, position and sound assembly.
 
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use crate::config::Config;
 
@@ -49,14 +49,22 @@ impl Notifier {
         let Some(args) = self.args(event, subject) else {
             return;
         };
-        let _ = Command::new("herdr").args(args).status();
+        let _ = Command::new("herdr")
+            .args(args)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
     }
 
     pub fn send_message(&self, body: &str, event_sound: &str) {
         let Some(args) = self.message_args(body, event_sound) else {
             return;
         };
-        let _ = Command::new("herdr").args(args).status();
+        let _ = Command::new("herdr")
+            .args(args)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
     }
 
     /// The `herdr notification show` argv for a free-form message, or `None`

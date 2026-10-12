@@ -102,6 +102,23 @@ pub fn update_private<T>(
 }
 
 fn acquire_private_lock(path: &Path) -> Result<File> {
+    let file = open_private_lock(path)?;
+    file.lock()
+        .with_context(|| format!("lock state file {}", path.display()))?;
+    Ok(file)
+}
+
+/// A long-running mutation must report contention rather than freeze its UI.
+pub(crate) fn try_lock_private(path: &Path) -> Result<Option<File>> {
+    let file = open_private_lock(path)?;
+    match file.try_lock() {
+        Ok(()) => Ok(Some(file)),
+        Err(std::fs::TryLockError::WouldBlock) => Ok(None),
+        Err(error) => Err(anyhow!("lock state file {}: {error}", path.display())),
+    }
+}
+
+fn open_private_lock(path: &Path) -> Result<File> {
     create_parent(path)?;
     let file_name = path
         .file_name()
@@ -118,8 +135,6 @@ fn acquire_private_lock(path: &Path) -> Result<File> {
     let file = options
         .open(&lock_path)
         .with_context(|| format!("open state lock {}", lock_path.display()))?;
-    file.lock()
-        .with_context(|| format!("lock state file {}", path.display()))?;
     Ok(file)
 }
 
