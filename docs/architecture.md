@@ -67,6 +67,10 @@ the terminal. `bin/update-plugin.sh` is only its launcher.
 Clone runs `ghq get` through a cancellable, non-interactive Projects effect;
 `bin/get.sh` only launches `--clone` through the picker bootstrap. Completion refreshes the
 catalogue and selects the repository, or returns a typed open outcome when configured.
+Create (`alt-n` in All or Repos) shares Clone's one-line editor and modal rendering. Its private
+`projects/create.rs` effect resolves ghq's current root, exclusively creates `local/<name>`,
+and runs Git initialization on a worker. It refuses existing paths and a symlinked local parent,
+keeps failed directories, and returns a workspace-open outcome after terminal restoration.
 Repository/worktree discovery shares a full-path ghq snapshot and derives durable relative IDs
 from all configured roots, preserving the actual checkout paths.
 
@@ -94,7 +98,7 @@ the module inventory.
 | `fnm` | `inspect`, `prepare`, `Declaration`, `Preparation` | Version-file precedence, recursive lookup, engine parsing, installed PATH resolution |
 | `fnm_manager` | `main` | Local/remote version parsing, background remote lookup, safe fnm mutations, origin-pane activation |
 | `keymap` | `Chord`, `Action`, `Keymap`, canonical chord conversion | Mode tables, overrides, labels |
-| `projects` / `picker` / `git` | `Surface` adapters and typed outputs | Surface-specific reduction and composition; Projects clone form/effect, star persistence, linked-worktree removal, and generation-tagged catalogue loading; Git saved-review visibility state |
+| `projects` / `picker` / `git` | `Surface` adapters and typed outputs | Surface-specific reduction and composition; Projects shared Clone/Create form and their private effects, star persistence, linked-worktree removal, and generation-tagged catalogue loading; Git saved-review visibility state |
 | `agent_handoff` | `discover_targets`, `deliver_prompt` | Promptable-agent parsing, worktree scoping, origin preference, non-waiting delivery |
 | `tasks` | `entry`, `main` | CLI protocol and Tasks picker; private model, locked session registry, provisioning/ownership effects, background refresh and reports |
 | `agents` | `main`, `launch_worker`, `start_named` | Integration picker, detached launch, name allocation and starting a named agent in an existing shell pane |

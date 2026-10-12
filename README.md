@@ -190,6 +190,7 @@ Projects at a glance:
 | `tab` / `shift-tab` | Move between All, Agents, Workspaces, Repos, Worktrees, and Starred. | `L` / `H` |
 | `alt-p` / `alt-s` | Toggle the preview / choose the sort. | `p` |
 | `alt-l` / `alt-h` / `alt-,` | Clone / changelog / settings. | |
+| `alt-n` | Create a local Git repo and open a new workspace (All or Repos). | |
 | `?` | The live cheatsheet, drawn from your current bindings. | |
 
 Every picker's keys are remappable under `[keys.<picker>]`. See [Keybindings](docs/keybindings.md)
@@ -205,6 +206,15 @@ Private repositories use your configured SSH agent or Git credential helper. Con
 authentication outside Switchboard before cloning; passwords and tokens embedded in URLs,
 local paths, and file/branch/PR page links are not accepted. Cancelling can leave a partial
 directory; Switchboard does not delete it automatically.
+
+Press `alt-n` in All or Repos to create a **local repository**. Enter a name; the form shows
+`<ghq root>/local/<name>`. Enter creates a new Git repo and opens a focused Herdr workspace;
+Esc returns without creating anything. Git uses your configured initial branch, with no remote,
+initial commit, or template files added by Switchboard. The repo appears under provider `local`
+in Projects on subsequent opens. Existing paths and a symlinked `local` directory are refused.
+The ghq Update action is unavailable for local repos; use Git directly after adding a remote.
+If Git initialization fails, the new directory is kept for inspection. If opening the workspace
+fails, the created repo is kept and can be opened again from Projects.
 
 Removing a worktree opens a confirmation popup and keeps the picker open afterwards. Type its
 name to confirm; Force requires `force <name>` and discards local changes. Branch deletion is

@@ -343,6 +343,7 @@ notifications = false
 # VHS on macOS does not reliably deliver Option-letter chords; keep a demo alias.
 [keys.projects]
 cycle_sort = "alt-s,s"
+create_repo = "alt-n,n"
 
 [[commands.presets]]
 label = "Run the gateway locally"

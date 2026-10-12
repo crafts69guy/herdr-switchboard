@@ -56,6 +56,7 @@ the same letter as the chord, one keystroke shorter.
 | `alt-p` / `alt-j`, `alt-k` | Toggle / scroll the preview. | `p` |
 | `alt-s` | Open the sort menu. | |
 | `alt-l` / `alt-h` | Clone flow / changelog. | |
+| `alt-n` | Create a local repo and open a new workspace (All or Repos). | |
 | `alt-,` / `alt-u` | Settings / update Switchboard. | |
 | `tab` / `shift-tab` | Move through All, Agents, Workspaces, Repos, Worktrees, and Starred. | `L` / `H` |
 | `?` / `ctrl-c` | Help / close. | `q`, `esc` |
@@ -69,6 +70,9 @@ Both options start off. Force requires `force <name>` and discards local changes
 uses `git branch -d`, keeping branches Git considers unmerged. Detached worktrees have no branch
 option. `esc` or Cancel returns to the list before removal; an in-progress removal cannot be
 cancelled. Main and locked worktrees cannot be removed. Running panes and agents stay open.
+
+`create_repo` remaps `alt-n` under `[keys.projects]`. Creation needs no selected row and always
+opens a workspace, regardless of `projects.default_target` and `clone.open_after`.
 
 ## Kind-aware Enter
 

@@ -1,4 +1,4 @@
-//! URL entry and the non-interactive ghq clone effect, private to Projects.
+//! Shared repository form editor/rendering and the non-interactive ghq clone effect.
 
 use std::path::Path;
 use std::sync::{
@@ -65,7 +65,7 @@ impl State {
             self.cursor += text.len();
             self.error = None;
         } else if self.cancel.is_none() {
-            self.error = Some("Paste a single repository URL without control characters.".into());
+            self.error = Some("Paste a single line without control characters.".into());
         }
     }
 
@@ -288,16 +288,36 @@ pub(super) fn run(
 }
 
 pub(super) fn draw(f: &mut Frame, app: &mut super::App, area: Rect) {
+    let creating = app.overlay == super::Overlay::Create;
     let popup = crate::tui::centered(area, 86, 12);
     app.background.paint(f, popup);
     let text = app.theme.or("text", Color::Reset);
     let sub = app.theme.or("subtext0", Color::DarkGray);
     let border = app.theme.or("overlay0", Color::DarkGray);
-    let frame = crate::tui::boxed("Clone repository", app.title_color, border);
+    let frame = crate::tui::boxed(
+        if creating {
+            "Create local repository"
+        } else {
+            "Clone repository"
+        },
+        app.title_color,
+        border,
+    );
     let inner = frame.inner(popup);
     f.render_widget(frame, popup);
     let (body, bar) = crate::tui::reserve_bar(inner, 1);
     let (body, feedback) = crate::tui::reserve_bar(body, 3);
+    let destination = if creating {
+        app.create_root.as_ref().map(|root| {
+            format!(
+                "{}/local/{}",
+                root.trim_end_matches('/'),
+                super::create::name(&app.clone.input).unwrap_or("<name>")
+            )
+        })
+    } else {
+        None
+    };
     let state = &mut app.clone;
     let input = format!(
         "{}▏{}",
@@ -312,8 +332,16 @@ pub(super) fn draw(f: &mut Frame, app: &mut super::App, area: Rect) {
     let input: String = input.chars().skip(offset).collect();
     f.render_widget(
         Paragraph::new(vec![
-            Line::from("GitHub · GitLab · Bitbucket · self-hosted Git"),
-            Line::from("owner/repo · host/namespace/repo · HTTPS / SSH URL"),
+            Line::from(if creating {
+                "New Git repository · opens a new workspace"
+            } else {
+                "GitHub · GitLab · Bitbucket · self-hosted Git"
+            }),
+            Line::from(if creating {
+                destination.as_deref().unwrap_or("Reading ghq root…")
+            } else {
+                "owner/repo · host/namespace/repo · HTTPS / SSH URL"
+            }),
             Line::from(""),
             Line::from(input),
             Line::from(""),
@@ -326,7 +354,11 @@ pub(super) fn draw(f: &mut Frame, app: &mut super::App, area: Rect) {
             state
                 .status
                 .or(state.error.as_deref())
-                .unwrap_or("Uses your configured Git credentials or SSH agent."),
+                .unwrap_or(if creating {
+                    "Enter a name. No remote or initial commit is created."
+                } else {
+                    "Uses your configured Git credentials or SSH agent."
+                }),
         )
         .style(Style::default().fg(if state.error.is_some() {
             app.theme.or("red", Color::Red)
@@ -339,12 +371,14 @@ pub(super) fn draw(f: &mut Frame, app: &mut super::App, area: Rect) {
     let pills = [
         crate::tui::Pill {
             key: "enter",
-            label: "clone",
+            label: if creating { "create" } else { "clone" },
             color: app.theme.or("green", Color::Green),
         },
         crate::tui::Pill {
             key: "esc",
-            label: if state.cancel.is_some() {
+            label: if creating && state.cancel.is_some() {
+                "wait"
+            } else if state.cancel.is_some() {
                 "cancel"
             } else {
                 "back"

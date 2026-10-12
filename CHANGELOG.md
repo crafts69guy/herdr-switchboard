@@ -7,6 +7,11 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- `alt-n` in All or Repos creates a local Git repository under ghq's `local/` directory
+  and opens it in a new focused workspace.
+
 ## [3.5.0] - 2026-10-12
 
 ### Changed

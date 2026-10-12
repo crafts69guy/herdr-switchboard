@@ -93,6 +93,7 @@ alert_percent = 85
 # send_to_agent = "ctrl-a"
 # star = "ctrl-s"
 # clone = "alt-l"
+# create_repo = "alt-n"
 # changelog = "alt-h"
 # delete_word = "alt-backspace"
 

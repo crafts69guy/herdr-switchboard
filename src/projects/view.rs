@@ -100,7 +100,7 @@ pub(super) fn draw(f: &mut Frame, app: &mut App) {
     draw_footer(f, app, footer);
 
     match app.overlay {
-        super::Overlay::Clone => super::clone::draw(f, app, f.area()),
+        super::Overlay::Clone | super::Overlay::Create => super::clone::draw(f, app, f.area()),
         super::Overlay::Changelog => draw_changelog(f, app, f.area()),
         super::Overlay::Settings => crate::settings::draw(
             f,
@@ -943,6 +943,8 @@ fn draw_footer(f: &mut Frame, app: &mut App, area: Rect) {
             "open",
             t.or("accent", Color::Cyan),
         ),
+        (Action::CreateRepo, "create", t.or("green", Color::Green)),
+        (Action::Settings, "settings", t.or("teal", Color::Cyan)),
         (
             Action::Accept(Accept::Tab),
             "tab",
@@ -981,7 +983,6 @@ fn draw_footer(f: &mut Frame, app: &mut App, area: Rect) {
             "clone",
             t.or("lavender", Color::Magenta),
         ),
-        (Action::Settings, "settings", t.or("teal", Color::Cyan)),
         (Action::Help, "help", t.or("lavender", Color::White)),
     ];
     // Own the caps so the `Pill`s can borrow them for `pill_row`.
@@ -1003,8 +1004,8 @@ fn draw_footer(f: &mut Frame, app: &mut App, area: Rect) {
         .into_iter()
         .zip(shown.iter().map(|(_, _, _, a)| *a))
         .map(|((a, b), act)| (a, b, act))
-        // A pill pushed past a narrow bar's edge was never drawn, so it claims nothing.
-        .filter(|&(a, _, _)| a < area.right())
+        // A clipped pill cannot advertise its complete action or claim a click.
+        .filter(|&(_, b, _)| b <= area.right())
         .collect();
     app.zones.footer_row = area.y;
     let pills_width: u16 = spans.iter().map(|s| s.content.chars().count() as u16).sum();
@@ -1137,6 +1138,7 @@ fn draw_help(f: &mut Frame, app: &App, area: Rect) {
         vec![
             opt(Action::Accept(Accept::Default), border, "Open"),
             opt(Action::Accept(Accept::Clone), blue, "Clone repo"),
+            opt(Action::CreateRepo, green, "Create local repo"),
             opt(Action::Accept(Accept::Tab), green, "Open in tab"),
             opt(Action::Accept(Accept::Split), yellow, "Open in split"),
             opt(Action::Accept(Accept::Pane), blue, "cd pane here"),

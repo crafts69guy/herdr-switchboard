@@ -142,6 +142,12 @@ fn dispatch_with(
                 Accept::Pane => open_repo(runner, "pane", &dir, origin_pane, &e.label, cfg)
                     .map(|_| DispatchOutcome::Completed),
                 Accept::Update if e.kind == Kind::Repo => {
+                    if e.repository
+                        .as_ref()
+                        .is_some_and(|repo| repo.host == "local")
+                    {
+                        return Err(anyhow!("Local repositories have no ghq clone URL. Update them with Git directly."));
+                    }
                     update(runner, &e.id, &e.label).map(|_| DispatchOutcome::Completed)
                 }
                 Accept::Remove if e.kind == Kind::Repo => remove(runner, &dir, &e.label),
@@ -628,6 +634,29 @@ mod tests {
         ] {
             assert_eq!(open_kind(accept), None, "{accept:?} is not an open");
         }
+    }
+
+    #[test]
+    fn local_repo_update_refuses_before_running_ghq_or_reading_input() {
+        let entry = crate::data::load_repos(
+            &["local/project".into()],
+            &crate::data::Theme::default(),
+            "/scratch",
+        )
+        .remove(0);
+        let runner = MockRunner::new();
+        let error = dispatch(
+            &runner,
+            Some(entry),
+            Accept::Update,
+            "",
+            &Config::default(),
+            ".",
+            "workspace",
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("no ghq clone URL"));
+        assert!(runner.calls().is_empty());
     }
 
     #[test]
