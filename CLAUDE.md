@@ -76,9 +76,12 @@ must come from `herdr agent list`, `herdr workspace list`, or the captured origi
 splitting code, update the architecture document in the same commit and run
 `bash tests/docs_spec.sh`.
 
-**Sort vs. search:** fuzzy score always wins while a query is present; `SortMode` (recent/name/kind)
-only orders the resting, no-query list. Both paths honour the `GroupFilter`. Ties break on load
-order so the list stays stable.
+**Sort vs. search:** fuzzy score always wins while a query is present; `SortMode` only orders
+the resting, no-query list. Provider and Owner dividers exist only in that resting list.
+Selection and group counts refer to real entries; the cached Navigator rows map entries to
+visual rows for rendering and mouse hit-testing through `ListState`'s visual scroll offset.
+Both paths honour the `GroupFilter`; ties break on load order. `alt-s` opens a modal chooser,
+preserving query, key mode, and selected entry; its legacy `cycle_sort` override ID stays valid.
 
 ## Non-obvious constraints
 

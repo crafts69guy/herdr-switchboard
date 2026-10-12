@@ -940,6 +940,7 @@ mod tests {
                 icon_color: Color::Reset,
                 primary: String::new(),
                 secondary: String::new(),
+                repository: None,
                 search: String::new(),
             };
             let text = render(
@@ -973,6 +974,7 @@ mod tests {
             icon_color: Color::Reset,
             primary: String::new(),
             secondary: String::new(),
+            repository: None,
             search: String::new(),
         };
         for width in [0, 1, 8, 24] {
@@ -1001,6 +1003,7 @@ mod tests {
             icon_color: Color::Reset,
             primary: String::new(),
             secondary: String::new(),
+            repository: None,
             search: String::new(),
         };
         let runner = MockRunner::new();
@@ -1035,6 +1038,7 @@ mod tests {
             icon_color: Color::Reset,
             primary: String::new(),
             secondary: String::new(),
+            repository: None,
             search: String::new(),
         };
         let out = flat(&repo_card(
@@ -1063,6 +1067,7 @@ mod tests {
             icon_color: Color::Reset,
             primary: String::new(),
             secondary: String::new(),
+            repository: None,
             search: String::new(),
         };
 
@@ -1101,6 +1106,7 @@ mod tests {
             icon_color: Color::Reset,
             primary: String::new(),
             secondary: String::new(),
+            repository: None,
             search: String::new(),
         };
         let out = flat(&agent_card(&entry, &runner, 60, &ink(), &Theme::default()));
@@ -1157,6 +1163,7 @@ mod tests {
             icon_color: Color::Reset,
             primary: String::new(),
             secondary: String::new(),
+            repository: None,
             search: String::new(),
         };
         let out = flat(&workspace_card(
@@ -1197,6 +1204,7 @@ mod tests {
             icon_color: Color::Reset,
             primary: String::new(),
             secondary: String::new(),
+            repository: None,
             search: String::new(),
         };
         let out = flat(&repo_card(
@@ -1228,6 +1236,7 @@ mod tests {
             icon_color: Color::Reset,
             primary: String::new(),
             secondary: String::new(),
+            repository: None,
             search: String::new(),
         };
         let runner = MockRunner::new();
@@ -1435,6 +1444,7 @@ mod tests {
             icon_color: Color::Reset,
             primary: String::new(),
             secondary: String::new(),
+            repository: None,
             search: String::new(),
         }
     }
@@ -1547,6 +1557,7 @@ mod tests {
             icon_color: Color::Reset,
             primary: String::new(),
             secondary: String::new(),
+            repository: None,
             search: String::new(),
         };
         let out = flat(&workspace_card(

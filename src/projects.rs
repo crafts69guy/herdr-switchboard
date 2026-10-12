@@ -5,6 +5,7 @@ mod effect;
 mod handoff;
 mod preview;
 mod removal;
+mod sort;
 mod stars;
 mod view;
 
@@ -45,6 +46,7 @@ use view as ui;
 pub struct Picker {
     pub entries: Vec<Entry>,
     pub filtered: Vec<usize>,
+    rows: Vec<sort::Row>,
     pub selected: usize,
     pub query: String,
     matcher: Matcher,
@@ -149,6 +151,7 @@ pub struct App {
     handoff: HandoffState,
     removal: removal::State,
     clone: clone::State,
+    sort_menu: sort::Menu,
     /// The settings form used when [`Overlay::Settings`] owns input.
     pub settings: settings::Settings,
     pub zones: HitZones,
@@ -166,6 +169,7 @@ pub(super) enum Overlay {
     Handoff,
     Removal,
     Clone,
+    Sort,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -209,6 +213,7 @@ impl Picker {
         let mut picker = Picker {
             entries,
             filtered: Vec::new(),
+            rows: Vec::new(),
             selected: 0,
             query: String::new(),
             matcher: Matcher::new(NucleoConfig::DEFAULT),
@@ -267,7 +272,25 @@ impl Picker {
             scored.sort_by_key(|&(score, _)| Reverse(score));
             self.filtered = scored.into_iter().map(|(_, i)| i).collect();
         }
+        self.rows = sort::rows(&self.entries, &self.filtered, self.sort, &self.query);
         self.selected = 0;
+    }
+
+    fn set_sort(&mut self, sort: SortMode) {
+        let selected = self.selected_index();
+        self.sort = sort;
+        self.recompute();
+        if let Some(rank) =
+            selected.and_then(|index| self.filtered.iter().position(|&i| i == index))
+        {
+            self.selected = rank;
+        }
+    }
+
+    fn selected_row(&self) -> Option<usize> {
+        self.rows
+            .iter()
+            .position(|row| matches!(row, sort::Row::Entry(rank) if *rank == self.selected))
     }
 
     /// The tab strip in order: All, each present kind, then Starred.
@@ -559,6 +582,7 @@ impl App {
             handoff: HandoffState::new(),
             removal: removal::State::default(),
             clone: clone::State::default(),
+            sort_menu: sort::Menu::default(),
             settings,
             zones: HitZones::new(),
             feedback: None,
@@ -647,13 +671,23 @@ impl App {
         // The block's top border is the tab strip, not a row of the list.
         let first = self.zones.list_area.y + 1;
         let row = y.checked_sub(first)? as usize;
+        if row >= self.zones.list_area.height.saturating_sub(2) as usize {
+            return None;
+        }
         let idx = self.zones.list_state.offset() + row;
-        (idx < self.picker.filtered.len()).then_some(idx)
+        match self.picker.rows.get(idx) {
+            Some(sort::Row::Entry(rank)) => Some(*rank),
+            _ => None,
+        }
     }
 
     /// A left click. Selects an entry, switches a group, or runs a command —
     /// whatever it landed on.
     fn on_click(&mut self, at: Position) -> Flow {
+        if self.overlay == Overlay::Sort {
+            let choice = self.sort_menu.on_click(at);
+            return self.sort_choice(choice);
+        }
         if self.overlay == Overlay::Removal {
             let control = self
                 .removal
@@ -716,10 +750,26 @@ impl App {
             }
             return Flow::Continue;
         }
-        if self.zones.list_area.contains(at) {
+        if self.zones.list_area.contains(at)
+            && at.x > self.zones.list_area.x
+            && at.x < self.zones.list_area.right().saturating_sub(1)
+        {
             if let Some(idx) = self.entry_at(at.y) {
                 self.picker.selected = idx;
             }
+        }
+        Flow::Continue
+    }
+
+    fn sort_choice(&mut self, choice: Option<sort::Choice>) -> Flow {
+        match choice {
+            Some(sort::Choice::Apply(sort)) => {
+                self.picker.set_sort(sort);
+                self.overlay = Overlay::None;
+            }
+            Some(sort::Choice::Cancel) => self.overlay = Overlay::None,
+            Some(sort::Choice::Quit) => return Flow::Quit,
+            None => {}
         }
         Flow::Continue
     }
@@ -910,6 +960,28 @@ fn browse_order(
             (Reverse(recent.get(&entries[i].id).copied().unwrap_or(0)), i)
         }),
         SortMode::Name => idx.sort_by_cached_key(|&i| (entries[i].primary.to_lowercase(), i)),
+        SortMode::NameDesc => {
+            idx.sort_by_cached_key(|&i| (Reverse(entries[i].primary.to_lowercase()), i))
+        }
+        SortMode::Provider | SortMode::Owner => idx.sort_by_cached_key(|&i| {
+            let (kind, host, owner) = sort::group_key(&entries[i], sort);
+            (
+                kind,
+                host.to_lowercase(),
+                host,
+                owner.to_lowercase(),
+                owner,
+                entries[i].primary.to_lowercase(),
+                i,
+            )
+        }),
+        SortMode::Starred => idx.sort_by_cached_key(|&i| {
+            (
+                !stars.contains(&entries[i]),
+                entries[i].primary.to_lowercase(),
+                i,
+            )
+        }),
         SortMode::Kind => idx.sort_by_cached_key(|&i| (entries[i].kind.order(), i)),
     }
     idx
@@ -956,8 +1028,8 @@ fn apply_action(app: &mut App, action: keymap::Action) -> Flow {
         Action::PreviewDown => app.preview.scroll_by(1),
         Action::PreviewUp => app.preview.scroll_by(-1),
         Action::CycleSort => {
-            app.picker.sort = app.picker.sort.next();
-            app.picker.recompute();
+            app.sort_menu.open(app.picker.sort);
+            app.overlay = Overlay::Sort;
         }
         Action::CopyPath => {
             if let Some(entry) = app.picker.selected_entry().cloned() {
@@ -1011,6 +1083,11 @@ fn apply_action(app: &mut App, action: keymap::Action) -> Flow {
 
 fn handle_key(app: &mut App, k: crossterm::event::KeyEvent) -> Flow {
     let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
+
+    if app.overlay == Overlay::Sort {
+        let choice = app.sort_menu.on_key(k);
+        return app.sort_choice(choice);
+    }
 
     if app.overlay == Overlay::Removal {
         let action = app.removal.on_key(k);
@@ -1369,6 +1446,27 @@ impl HostedSurface for ProjectsSurface<'_> {
     }
 
     fn on_event(&mut self, event: Event) -> Result<SurfaceTransition<Self::Output>> {
+        if self.app.overlay == Overlay::Sort {
+            let flow = match event {
+                Event::Key(key) if key.kind == KeyEventKind::Press => handle_key(self.app, key),
+                Event::Mouse(mouse) => match mouse.kind {
+                    MouseEventKind::Down(MouseButton::Left) => {
+                        self.app.on_click(Position::new(mouse.column, mouse.row))
+                    }
+                    MouseEventKind::ScrollDown => {
+                        self.app.sort_menu.move_selection(1);
+                        Flow::Continue
+                    }
+                    MouseEventKind::ScrollUp => {
+                        self.app.sort_menu.move_selection(-1);
+                        Flow::Continue
+                    }
+                    _ => return Ok(SurfaceTransition::Wait),
+                },
+                _ => return Ok(SurfaceTransition::Wait),
+            };
+            return Ok(self.apply_flow(flow));
+        }
         if self.app.overlay == Overlay::Clone {
             let control = match event {
                 Event::Key(key) if key.kind == KeyEventKind::Press => self.app.clone.on_key(key),
@@ -1893,6 +1991,7 @@ mod tests {
             icon_color: Color::Reset,
             primary: primary.into(),
             secondary: String::new(),
+            repository: None,
             search: primary.into(),
         }
     }
@@ -2637,7 +2736,12 @@ mod tests {
     /// the one key that works from anywhere.
     #[test]
     fn ctrl_c_quits_from_every_overlay() {
-        for overlay in [Overlay::Help, Overlay::Handoff, Overlay::None] {
+        for overlay in [
+            Overlay::Help,
+            Overlay::Handoff,
+            Overlay::Sort,
+            Overlay::None,
+        ] {
             let mut app = app_with_layout();
             app.overlay = overlay;
             assert!(
@@ -2726,20 +2830,292 @@ mod tests {
         );
     }
 
-    /// Sorting cycles through all three orders and returns to where it started,
-    /// re-ordering the resting list each time.
     #[test]
-    fn cycling_the_sort_visits_every_order_and_returns() {
+    fn the_sort_menu_selects_every_order_without_changing_the_key_mode() {
         use keymap::Action;
-        let mut app = App::new(sample(), Theme::default(), Config::default(), ".".into());
-        app.catalog = CatalogState::Ready;
-
-        let mut seen = vec![app.picker.sort.label()];
-        for _ in 0..3 {
-            apply_action(&mut app, Action::CycleSort);
-            seen.push(app.picker.sort.label());
+        for mode in [keymap::Mode::Insert, keymap::Mode::Normal] {
+            let mut app = ready_app();
+            app.mode = mode;
+            app.picker.selected = 2;
+            let id = app.picker.selected_entry().unwrap().id.clone();
+            for (rank, sort) in SortMode::ALL.into_iter().enumerate() {
+                handle_key(&mut app, key(KeyCode::Char('s'), KeyModifiers::ALT));
+                assert_eq!(app.overlay, Overlay::Sort);
+                handle_key(&mut app, key(KeyCode::Home, KeyModifiers::NONE));
+                for _ in 0..rank {
+                    handle_key(&mut app, key(KeyCode::Down, KeyModifiers::NONE));
+                }
+                handle_key(&mut app, key(KeyCode::Enter, KeyModifiers::NONE));
+                assert_eq!(app.picker.sort, sort);
+                assert_eq!(app.overlay, Overlay::None);
+                assert_eq!(app.mode, mode);
+                assert_eq!(app.picker.selected_entry().unwrap().id, id);
+                apply_action(&mut app, Action::NextGroup);
+                assert_eq!(app.picker.sort, sort);
+                app.picker.select_group_or_all(GroupFilter::All);
+                app.picker.selected = app
+                    .picker
+                    .filtered
+                    .iter()
+                    .position(|&i| app.picker.entries[i].id == id)
+                    .unwrap();
+            }
         }
-        assert_eq!(seen, ["recent", "name", "kind", "recent"]);
+    }
+
+    #[test]
+    fn cancelling_the_sort_menu_keeps_the_sort_query_and_selection() {
+        let mut app = ready_app();
+        app.picker.query = "a".into();
+        app.picker.recompute();
+        let selected = app.picker.selected_index();
+        apply_action(&mut app, keymap::Action::CycleSort);
+        handle_key(&mut app, key(KeyCode::End, KeyModifiers::NONE));
+        handle_key(&mut app, key(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(app.picker.sort, SortMode::Recent);
+        assert_eq!(app.picker.query, "a");
+        assert_eq!(app.picker.selected_index(), selected);
+        apply_action(&mut app, keymap::Action::CycleSort);
+        let _ = rendered(&mut app, 80, 24);
+        app.on_click(Position::new(0, 0));
+        assert_eq!(app.overlay, Overlay::None);
+        assert_eq!(app.picker.sort, SortMode::Recent);
+    }
+
+    #[test]
+    fn a_rebound_sort_action_and_mouse_wheel_keep_search_modal() {
+        let mut app = ready_app();
+        app.cfg.keys.insert(
+            "projects".into(),
+            HashMap::from([("cycle_sort".into(), "alt-z".into())]),
+        );
+        app.keymap = keymap::Keymap::load(&app.cfg);
+        app.picker.query = "a".into();
+        app.picker.recompute();
+        let expected = app.picker.filtered.clone();
+        handle_key(&mut app, key(KeyCode::Char('z'), KeyModifiers::ALT));
+        assert_eq!(app.overlay, Overlay::Sort);
+        handle_key(&mut app, key(KeyCode::Char('k'), KeyModifiers::NONE));
+        assert_eq!(app.sort_menu.selected, 6);
+        handle_key(&mut app, key(KeyCode::Char('j'), KeyModifiers::NONE));
+        assert_eq!(app.sort_menu.selected, 0);
+        let mut surface = surface(&mut app);
+        for kind in [
+            MouseEventKind::ScrollDown,
+            MouseEventKind::ScrollDown,
+            MouseEventKind::ScrollUp,
+        ] {
+            surface
+                .on_event(Event::Mouse(crossterm::event::MouseEvent {
+                    kind,
+                    column: 0,
+                    row: 0,
+                    modifiers: KeyModifiers::NONE,
+                }))
+                .unwrap();
+        }
+        surface
+            .on_event(Event::Key(key(KeyCode::Char('x'), KeyModifiers::NONE)))
+            .unwrap();
+        surface.on_event(Event::Paste("ignored".into())).unwrap();
+        surface
+            .on_event(Event::Key(key(KeyCode::Enter, KeyModifiers::NONE)))
+            .unwrap();
+        assert_eq!(surface.app.picker.sort, SortMode::Name);
+        assert_eq!(surface.app.picker.query, "a");
+        assert_eq!(surface.app.picker.filtered, expected);
+        assert_eq!(surface.app.cfg.projects.sort, "recent");
+    }
+
+    fn provider_entries() -> Vec<Entry> {
+        let repos = [
+            "gitlab.com/team/sub/zeta",
+            "github.com/o/beta",
+            "bitbucket.org/o/alpha",
+            "github.internal/o/gamma",
+            "github.com/o/Alpha",
+            "github.com/O/zed",
+        ];
+        let mut entries =
+            crate::data::load_repos(&repos.map(String::from), &Theme::default(), "/tmp/repos");
+        let mut worktree = entries[0].clone();
+        worktree.kind = Kind::Worktree;
+        worktree.id = "/tmp/unrelated/worktree".into();
+        entries.extend([
+            worktree,
+            entry(Kind::Agent, "live", "agent"),
+            entry(Kind::Workspace, "ws", "workspace"),
+            entry(Kind::Repo, "unknown", "unknown"),
+        ]);
+        entries
+    }
+
+    #[test]
+    fn provider_and_owner_sort_keep_groups_contiguous_and_worktree_identity() {
+        let mut picker = Picker::new(provider_entries(), SortMode::Provider, HashMap::new());
+        let headings = |picker: &Picker| {
+            picker
+                .rows
+                .iter()
+                .filter_map(|row| match row {
+                    sort::Row::Divider(label) => Some(label.clone()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            headings(&picker),
+            [
+                "Agents",
+                "Workspaces",
+                "bitbucket.org",
+                "github.com",
+                "github.internal",
+                "gitlab.com",
+                "Other"
+            ]
+        );
+        assert_eq!(picker.filtered, [7, 8, 2, 4, 1, 5, 3, 0, 6, 9]);
+        picker.set_sort(SortMode::Owner);
+        assert_eq!(
+            headings(&picker),
+            [
+                "Agents",
+                "Workspaces",
+                "bitbucket.org/o",
+                "github.com/O",
+                "github.com/o",
+                "github.internal/o",
+                "gitlab.com/team/sub",
+                "Other"
+            ]
+        );
+        for group in [
+            GroupFilter::Only(Kind::Repo),
+            GroupFilter::Only(Kind::Worktree),
+            GroupFilter::Starred,
+        ] {
+            picker.replace_stars(stars::Stars::memory(&[
+                picker.entries[0].clone(),
+                picker.entries[6].clone(),
+            ]));
+            picker.select_group_or_all(group);
+            assert!(picker.filtered.iter().all(|&i| group.matches(
+                picker.entries[i].kind,
+                picker.is_starred(&picker.entries[i])
+            )));
+            assert!(!headings(&picker)
+                .iter()
+                .any(|label| label == "Agents" || label == "Workspaces"));
+        }
+    }
+
+    #[test]
+    fn descending_and_starred_sorts_keep_ties_stable_and_live_ids_unstarred() {
+        let mut entries = sample();
+        entries.push(entry(Kind::Repo, "other-alpha", "ALPHA"));
+        let mut picker = Picker::new(entries.clone(), SortMode::NameDesc, HashMap::new());
+        assert_eq!(picker.filtered, [0, 3, 2, 1, 4]);
+        picker.replace_stars(stars::Stars::memory(&[
+            entries[0].clone(),
+            entries[2].clone(),
+            entries[1].clone(),
+        ]));
+        picker.set_sort(SortMode::Starred);
+        assert_eq!(picker.filtered, [2, 0, 1, 4, 3]);
+        picker.selected = 1;
+        picker.replace_stars(stars::Stars::memory(&[entries[2].clone()]));
+        assert_eq!(picker.selected_entry().unwrap().id, "gh/zeta");
+        assert_eq!(picker.filtered, [2, 1, 4, 3, 0]);
+    }
+
+    #[test]
+    fn every_sort_uses_fuzzy_order_and_hides_dividers_while_searching() {
+        let mut picker = Picker::new(provider_entries(), SortMode::Recent, HashMap::new());
+        picker.query = "a".into();
+        picker.recompute();
+        let expected = picker.filtered.clone();
+        assert!(!expected.is_empty());
+        for sort in SortMode::ALL {
+            picker.set_sort(sort);
+            assert_eq!(picker.filtered, expected);
+            assert!(picker
+                .rows
+                .iter()
+                .all(|row| matches!(row, sort::Row::Entry(_))));
+        }
+        picker.set_sort(SortMode::Provider);
+        picker.query.clear();
+        picker.recompute();
+        assert!(picker
+            .rows
+            .iter()
+            .any(|row| matches!(row, sort::Row::Divider(_))));
+    }
+
+    #[test]
+    fn grouped_rows_map_clicks_and_scrolling_to_entries_and_skip_dividers() {
+        let mut app = ready_app();
+        app.picker = Picker::new(provider_entries(), SortMode::Provider, HashMap::new());
+        let _ = rendered(&mut app, 60, 9);
+        let first = app.zones.list_area.y + 1;
+        let x = app.zones.list_area.x + 2;
+        assert_eq!(app.entry_at(first), None);
+        assert_eq!(app.entry_at(app.zones.list_area.bottom() - 1), None);
+        app.on_click(Position::new(x, first));
+        assert_eq!(app.picker.selected, 0);
+        app.on_click(Position::new(x, first + 1));
+        assert_eq!(app.picker.selected_entry().unwrap().kind, Kind::Agent);
+        *app.zones.list_state.offset_mut() = 2;
+        assert_eq!(app.entry_at(first), None);
+        app.on_click(Position::new(x, first + 1));
+        assert_eq!(app.picker.selected_entry().unwrap().kind, Kind::Workspace);
+        app.picker.move_sel(1);
+        assert_eq!(
+            app.picker.selected_entry().unwrap().id,
+            "bitbucket.org/o/alpha"
+        );
+        for _ in 0..app.picker.filtered.len() {
+            app.picker.move_sel(1);
+            let _ = rendered(&mut app, 60, 9);
+            let row = app.picker.selected_row().unwrap();
+            let y = first + (row - app.zones.list_state.offset()) as u16;
+            assert_eq!(app.entry_at(y), Some(app.picker.selected));
+        }
+    }
+
+    #[test]
+    fn sort_menu_click_zones_follow_scrolling_and_small_panes() {
+        let mut app = ready_app();
+        app.picker.set_sort(SortMode::Provider);
+        for (width, height) in [(140, 32), (100, 24), (60, 20), (30, 9), (1, 1)] {
+            apply_action(&mut app, keymap::Action::CycleSort);
+            let screen = rendered(&mut app, width, height);
+            assert_eq!(
+                Rect::new(0, 0, width, height).intersection(app.sort_menu.area),
+                app.sort_menu.area
+            );
+            for (zone, rank) in &app.sort_menu.zones {
+                assert_eq!(app.sort_menu.area.intersection(*zone), *zone);
+                assert!(*rank < SortMode::ALL.len());
+            }
+            if width >= 60 {
+                assert!(screen.contains("Sort projects"));
+                assert!(screen.contains("Name Z–A"));
+            }
+        }
+        apply_action(&mut app, keymap::Action::CycleSort);
+        app.sort_menu.selected = SortMode::ALL.len() - 1;
+        let _ = rendered(&mut app, 40, 9);
+        let (zone, _) = app
+            .sort_menu
+            .zones
+            .iter()
+            .find(|(_, rank)| *rank == 6)
+            .unwrap();
+        app.on_click(Position::new(zone.x, zone.y));
+        assert_eq!(app.picker.sort, SortMode::Kind);
+        assert_eq!(app.overlay, Overlay::None);
     }
 
     /// Group cycling wraps in both directions and always lands on a tab that
@@ -3592,6 +3968,7 @@ mod tests {
             Overlay::Changelog,
             Overlay::Settings,
             Overlay::Handoff,
+            Overlay::Sort,
         ] {
             let mut app = app_with_layout();
             app.theme = Theme::from_slots(&[("panel_bg", "#101214")]);
@@ -3617,6 +3994,7 @@ mod tests {
             Overlay::Changelog,
             Overlay::Settings,
             Overlay::Handoff,
+            Overlay::Sort,
         ] {
             let mut app = app_with_layout();
             app.theme = Theme::from_slots(&[("panel_bg", "#101214")]);
@@ -5124,6 +5502,9 @@ mod tests {
 
         let sort = app.picker.sort;
         apply_action(&mut app, keymap::Action::CycleSort);
+        assert_eq!(app.overlay, Overlay::Sort);
+        handle_key(&mut app, key(KeyCode::Down, KeyModifiers::NONE));
+        handle_key(&mut app, key(KeyCode::Enter, KeyModifiers::NONE));
         assert_ne!(app.picker.sort, sort);
 
         apply_action(&mut app, keymap::Action::NextGroup);

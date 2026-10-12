@@ -54,7 +54,7 @@ the same letter as the chord, one keystroke shorter.
 | `ctrl-r` / `ctrl-x` | Update a repo / remove a repo or linked worktree. | |
 | `ctrl-y` / `ctrl-a` / `ctrl-s` | Copy the absolute path / send it to an agent / star the row. | |
 | `alt-p` / `alt-j`, `alt-k` | Toggle / scroll the preview. | `p` |
-| `alt-s` | Cycle the sort order. | |
+| `alt-s` | Open the sort menu. | |
 | `alt-l` / `alt-h` | Clone flow / changelog. | |
 | `alt-,` / `alt-u` | Settings / update Switchboard. | |
 | `tab` / `shift-tab` | Move through All, Agents, Workspaces, Repos, Worktrees, and Starred. | `L` / `H` |
@@ -81,6 +81,16 @@ cancelled. Main and locked worktrees cannot be removed. Running panes and agents
 
 The resting Projects list uses `projects.sort`; a non-empty query switches to fuzzy-score order.
 Successful opens update `${XDG_STATE_HOME:-~/.local/state}/herdr-switchboard/recent.tsv`.
+
+`alt-s` opens the sort menu in either key mode. Use arrows or `j`/`k`, Home/End,
+or the wheel to choose; Enter or a click applies, and Esc or a click outside cancels.
+Recent, Name A–Z/Z–A, Provider, Owner, Starred first, and Kind apply across tabs for
+this session; Settings sets the next launch's default. Name uses the `owner/repo`
+column. Provider and Owner add non-selectable group dividers and order entries A–Z
+inside each group; All keeps Agents and Workspaces in separate groups before the
+repository hosts. Search hides dividers and retains fuzzy order.
+
+Existing `cycle_sort` key overrides still open the menu.
 
 Repo and Worktree stars are local and persistent. A peach `★` marks them in every group, and the
 final `★ Starred` group keeps the same search, sort, and item actions as the ordinary catalogue.

@@ -113,8 +113,63 @@ pub(super) fn draw(f: &mut Frame, app: &mut App) {
         super::Overlay::Help => draw_help(f, app, f.area()),
         super::Overlay::Handoff => draw_handoff(f, app, f.area()),
         super::Overlay::Removal => draw_removal(f, app, f.area()),
+        super::Overlay::Sort => draw_sort(f, app, f.area()),
         super::Overlay::None => {}
     }
+}
+
+fn draw_sort(f: &mut Frame, app: &mut App, area: Rect) {
+    use crate::data::SortMode;
+
+    let popup = crate::tui::centered(area, 44, SortMode::ALL.len() as u16 + 4);
+    app.background.paint(f, popup);
+    let border = app.theme.or("overlay0", Color::DarkGray);
+    let text = app.theme.or("text", Color::Reset);
+    let accent = app.theme.or("accent", Color::Cyan);
+    let block = crate::tui::boxed("Sort projects", app.title_color, border);
+    let (body, footer) = crate::tui::reserve_bar(block.inner(popup), 2);
+    f.render_widget(block, popup);
+    let items: Vec<ListItem> = SortMode::ALL
+        .iter()
+        .map(|sort| {
+            ListItem::new(format!(
+                "{} {}",
+                if *sort == app.picker.sort { "✓" } else { " " },
+                sort.description()
+            ))
+        })
+        .collect();
+    let menu = &mut app.sort_menu;
+    menu.area = popup;
+    menu.list_state.select(Some(menu.selected));
+    f.render_stateful_widget(
+        List::new(items)
+            .style(Style::default().fg(text))
+            .highlight_symbol("▌ ")
+            .highlight_style(Style::default().fg(accent).add_modifier(Modifier::BOLD)),
+        body,
+        &mut menu.list_state,
+    );
+    menu.zones = (0..body.height)
+        .filter_map(|row| {
+            let rank = menu.list_state.offset() + row as usize;
+            (rank < SortMode::ALL.len())
+                .then_some((Rect::new(body.x, body.y + row, body.width, 1), rank))
+        })
+        .collect();
+    let hint = if app.picker.query.is_empty() {
+        "Applies across Projects tabs"
+    } else {
+        "Applies after clearing search"
+    };
+    f.render_widget(
+        Paragraph::new(vec![
+            Line::raw("↑↓/jk choose · Enter apply · Esc cancel"),
+            Line::raw(hint),
+        ])
+        .style(Style::default().fg(border)),
+        footer,
+    );
 }
 
 fn draw_removal(f: &mut Frame, app: &mut App, area: Rect) {
@@ -556,10 +611,19 @@ fn draw_list(
         )))]
     } else {
         picker
-            .filtered
+            .rows
             .iter()
-            .enumerate()
-            .map(|(visible_index, &i)| {
+            .map(|row| {
+                let visible_index = match row {
+                    super::sort::Row::Entry(rank) => *rank,
+                    super::sort::Row::Divider(label) => {
+                        return ListItem::new(Line::from(Span::styled(
+                            format!("── {label} ──"),
+                            Style::default().fg(border),
+                        )))
+                    }
+                };
+                let i = picker.filtered[visible_index];
                 let e = &picker.entries[i];
                 let selected = visible_index == picker.selected;
                 let primary_style = Style::default().fg(if selected { accent } else { text });
@@ -656,10 +720,18 @@ fn draw_list(
         if show_tabs {
             zones.tab_zones.clear();
         }
-        crate::tui::framed(border).title(Span::styled(
+        let block = crate::tui::framed(border).title(Span::styled(
             " Navigator ",
             Style::default().fg(title).add_modifier(Modifier::BOLD),
-        ))
+        ));
+        let sort_text = format!(" sort: {} ", picker.sort.label());
+        if 11 + sort_text.chars().count() as u16 <= area.width.saturating_sub(2) {
+            block.title(
+                Line::from(Span::styled(sort_text, Style::default().fg(border))).right_aligned(),
+            )
+        } else {
+            block
+        }
     };
 
     if let super::CatalogState::Loading | super::CatalogState::Failed(_) = &*catalog {
@@ -707,7 +779,7 @@ fn draw_list(
     // turned back into an entry if we know which row was showing first. It also
     // means the list keeps its scroll position instead of re-deriving it from
     // the top on every frame.
-    let selected = (!picker.filtered.is_empty()).then_some(picker.selected);
+    let selected = picker.selected_row();
     zones.list_state.select(selected);
     zones.list_area = area;
     f.render_stateful_widget(list, area, &mut zones.list_state);
@@ -1086,7 +1158,7 @@ fn draw_help(f: &mut Frame, app: &App, area: Rect) {
     extend(
         &mut right,
         vec![
-            opt(Action::CycleSort, blue, "Cycle sort"),
+            opt(Action::CycleSort, blue, "Choose sort"),
             opt(Action::TogglePreview, mauve, "Toggle preview"),
             opt(Action::PreviewDown, teal, "Scroll preview"),
         ],

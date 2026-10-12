@@ -128,24 +128,34 @@ pub enum SortMode {
     Recent,
     /// Alphabetical by the primary column.
     Name,
+    NameDesc,
+    Provider,
+    Owner,
+    Starred,
     /// Grouped by kind: agents, workspaces, repos, then linked worktrees.
     Kind,
 }
 
 impl SortMode {
+    pub const ALL: [Self; 7] = [
+        Self::Recent,
+        Self::Name,
+        Self::NameDesc,
+        Self::Provider,
+        Self::Owner,
+        Self::Starred,
+        Self::Kind,
+    ];
+
     pub fn parse(s: &str) -> Self {
         match s {
             "name" => SortMode::Name,
+            "name_desc" => SortMode::NameDesc,
+            "provider" => SortMode::Provider,
+            "owner" => SortMode::Owner,
+            "starred" => SortMode::Starred,
             "kind" => SortMode::Kind,
             _ => SortMode::Recent,
-        }
-    }
-
-    pub fn next(self) -> Self {
-        match self {
-            SortMode::Recent => SortMode::Name,
-            SortMode::Name => SortMode::Kind,
-            SortMode::Kind => SortMode::Recent,
         }
     }
 
@@ -153,7 +163,23 @@ impl SortMode {
         match self {
             SortMode::Recent => "recent",
             SortMode::Name => "name",
+            SortMode::NameDesc => "name_desc",
+            SortMode::Provider => "provider",
+            SortMode::Owner => "owner",
+            SortMode::Starred => "starred",
             SortMode::Kind => "kind",
+        }
+    }
+
+    pub fn description(self) -> &'static str {
+        match self {
+            Self::Recent => "Recent",
+            Self::Name => "Name A–Z",
+            Self::NameDesc => "Name Z–A",
+            Self::Provider => "Provider",
+            Self::Owner => "Owner / namespace",
+            Self::Starred => "Starred first",
+            Self::Kind => "Kind",
         }
     }
 }
@@ -204,6 +230,7 @@ impl GroupFilter {
 #[derive(Clone)]
 pub struct Entry {
     pub kind: Kind,
+    pub repository: Option<RepositoryIdentity>,
     /// Target id: terminal id, workspace id, ghq relative path, or worktree path.
     pub id: String,
     /// Absolute directory when one applies (repo path, agent cwd).
@@ -217,6 +244,23 @@ pub struct Entry {
     pub secondary: String,
     /// Plain text used for fuzzy matching.
     pub search: String,
+}
+
+/// ghq identity retained for both a repository and its linked worktrees.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RepositoryIdentity {
+    pub host: String,
+    pub namespace: String,
+}
+
+impl RepositoryIdentity {
+    fn from_relative(relative: &str) -> Self {
+        let (host, rest) = relative.split_once('/').unwrap_or(("", relative));
+        Self {
+            host: host.to_lowercase(),
+            namespace: rest.rsplit_once('/').map_or("", |(owner, _)| owner).into(),
+        }
+    }
 }
 
 pub fn ghq_root(runner: &dyn CommandRunner) -> String {
@@ -270,6 +314,7 @@ pub fn load_agents(runner: &dyn CommandRunner, theme: &Theme) -> Vec<Entry> {
                         icon_color: state_color(theme, status),
                         primary: format!("{base} · {agent}"),
                         secondary: status.to_string(),
+                        repository: None,
                         search: format!("{base} {agent} {status}"),
                     });
                 }
@@ -307,6 +352,7 @@ pub fn load_workspaces(runner: &dyn CommandRunner, theme: &Theme) -> Vec<Entry> 
                         icon_color: theme.or("accent", Color::Cyan),
                         primary: label.clone(),
                         secondary: sec,
+                        repository: None,
                         search: format!("{label} workspace"),
                     });
                 }
@@ -370,6 +416,7 @@ pub fn load_repos(repos: &[String], theme: &Theme, root: &str) -> Vec<Entry> {
         let short = host.split('.').next().unwrap_or(host).to_string();
         entries.push(Entry {
             kind: Kind::Repo,
+            repository: Some(RepositoryIdentity::from_relative(rel)),
             id: rel.clone(),
             dir: Some(format!("{}/{rel}", root.trim_end_matches('/'))),
             label: basename(rel),
@@ -530,6 +577,7 @@ pub fn load_worktrees(
             let label = basename(&record.path);
             entries.push(Entry {
                 kind: Kind::Worktree,
+                repository: Some(RepositoryIdentity::from_relative(rel)),
                 id: record.path.clone(),
                 dir: Some(record.path.clone()),
                 label,
@@ -581,6 +629,30 @@ mod tests {
     const REPOS: &str = "github.com/o/repo-a\nbitbucket.org/o/repo-b\n";
 
     #[test]
+    fn sort_values_round_trip_and_unknown_values_keep_the_default() {
+        for sort in SortMode::ALL {
+            assert_eq!(SortMode::parse(sort.label()), sort);
+        }
+        assert_eq!(SortMode::parse("unknown"), SortMode::Recent);
+    }
+
+    #[test]
+    fn repository_identity_keeps_full_hosts_and_nested_namespaces() {
+        assert_eq!(
+            RepositoryIdentity::from_relative("GitHub.internal/team/sub/repo"),
+            RepositoryIdentity {
+                host: "github.internal".into(),
+                namespace: "team/sub".into(),
+            }
+        );
+        assert_eq!(
+            RepositoryIdentity::from_relative("gitlab.com/repo").namespace,
+            ""
+        );
+        assert_eq!(RepositoryIdentity::from_relative("repo").host, "");
+    }
+
+    #[test]
     fn group_filter_parses_config_and_falls_back_to_all() {
         assert_eq!(GroupFilter::parse("agents"), GroupFilter::Only(Kind::Agent));
         assert_eq!(
@@ -621,6 +693,8 @@ mod tests {
         let e = load_repos(&repos, &Theme::default(), "/root");
         assert_eq!(e.len(), 2);
         assert_eq!(e[0].kind, Kind::Repo);
+        assert_eq!(e[0].repository.as_ref().unwrap().host, "github.com");
+        assert_eq!(e[0].repository.as_ref().unwrap().namespace, "o");
         assert_eq!(e[0].id, "github.com/o/repo-a");
         assert_eq!(e[0].dir.as_deref(), Some("/root/github.com/o/repo-a"));
         assert_eq!(e[0].primary, "o/repo-a");
@@ -672,6 +746,8 @@ mod tests {
         );
         assert_eq!(e.len(), 2);
         assert!(e.iter().all(|entry| entry.kind == Kind::Worktree));
+        assert_eq!(e[0].repository.as_ref().unwrap().host, "github.com");
+        assert_eq!(e[0].repository.as_ref().unwrap().namespace, "o");
         assert_eq!(e[0].dir.as_deref(), linked.to_str());
         assert_eq!(e[0].primary, "o/repo-0");
         assert_eq!(e[0].secondary, "feature/nul-safe");

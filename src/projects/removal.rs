@@ -334,6 +334,7 @@ mod tests {
                 label: "linked tree".into(),
                 primary: "repo".into(),
                 secondary: "feature".into(),
+                repository: None,
                 search: "repo feature worktree".into(),
                 icon: String::new(),
                 icon_color: Color::Reset,

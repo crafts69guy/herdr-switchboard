@@ -16,6 +16,29 @@ Sleep 800ms
 Tab
 Sleep 900ms
 
+# Choose Provider; dividers group repository hosts without selectable headers.
+Type "s"
+Sleep 600ms
+Screenshot docs/media/projects-sort.png
+Down
+Down
+Down
+Enter
+Sleep 1.2s
+Screenshot docs/media/projects-provider.png
+Down
+Sleep 200ms
+Up
+Sleep 200ms
+
+# Return to Recent for the rest of the tour.
+Type "s"
+Up
+Up
+Up
+Enter
+Sleep 400ms
+
 # Every repository row carries its own Inspector: branch, last commit, tree, README.
 Type@700ms "jjjj"
 Sleep 900ms

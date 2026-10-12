@@ -211,6 +211,7 @@ mod tests {
             icon_color: Color::Reset,
             primary: "repo".into(),
             secondary: String::new(),
+            repository: None,
             search: String::new(),
         }
     }

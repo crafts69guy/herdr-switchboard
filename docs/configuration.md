@@ -54,7 +54,7 @@ Switchboard pane, gutter, and nested card with the theme's `panel_bg`. The forme
 | `default_target` | `workspace`, `tab`, `split`, or `pane`. |
 | `default_tab` | `all`, `agents`, `workspaces`, `repos`, `worktrees`, or `starred`. |
 | `include_agents`, `include_workspaces`, `include_worktrees` | Control list sources. |
-| `sort` | `recent`, `name`, or `kind` for an empty query. |
+| `sort` | `recent`, `name`, `name_desc`, `provider`, `owner`, `starred`, or `kind` for an empty query. |
 | `label` | `repo`, `owner-repo`, or `path` for created targets. |
 | `split_direction`, `split_ratio` | Split geometry. |
 | `preview`, `preview_position`, `preview_size` | Preview layout. |

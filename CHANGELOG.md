@@ -7,6 +7,12 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- `alt-s` opens a Projects sort menu with Recent, Name A–Z/Z–A, Provider, Owner,
+  Starred first, and Kind. Provider and Owner show dividers across tabs; searching
+  keeps fuzzy-match order, and changing sort keeps the selected item.
+
 ## [3.3.0] - 2026-10-12
 
 ### Changed

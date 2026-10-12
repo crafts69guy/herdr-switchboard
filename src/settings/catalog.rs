@@ -88,8 +88,16 @@ pub(super) const SETTINGS: &[Setting] = &[
         group: "Sources",
         key: "sort",
         default: "recent",
-        hint: "resting list order (recent/name/kind)",
-        cycle: Cycle::Ring(&["recent", "name", "kind"]),
+        hint: "resting sort; alt-s opens the chooser",
+        cycle: Cycle::Ring(&[
+            "recent",
+            "name",
+            "name_desc",
+            "provider",
+            "owner",
+            "starred",
+            "kind",
+        ]),
     },
     Setting {
         group: "Keys",

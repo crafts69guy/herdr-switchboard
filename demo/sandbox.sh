@@ -129,6 +129,9 @@ repo ada/raytracer "A weekend ray tracer in Rust." \
   src/main.rs src/vec3.rs src/camera.rs Cargo.toml
 commit "$SRC/ada/raytracer" 30 "Add depth of field"
 
+SRC="$DEMO_HOME/src/gitlab.com" repo northwind/ci-templates "Shared CI templates." .gitlab-ci.yml
+SRC="$DEMO_HOME/src/bitbucket.org" repo northwind/legacy-api "A maintained legacy service." src/main.go go.mod
+
 # A linked worktree, so the Worktrees group is not empty. It lives outside the
 # ghq root, the way Herdr places them, or ghq would list it as a repository too.
 in_sandbox git -C "$SRC/northwind/web-dashboard" worktree add --quiet \
@@ -336,6 +339,10 @@ cat >"$config_dir/config.toml" <<'EOF'
 [common]
 update_check = false
 notifications = false
+
+# VHS on macOS does not reliably deliver Option-letter chords; keep a demo alias.
+[keys.projects]
+cycle_sort = "alt-s,s"
 
 [[commands.presets]]
 label = "Run the gateway locally"

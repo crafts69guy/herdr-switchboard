@@ -237,6 +237,7 @@ mod tests {
             icon_color: Color::Reset,
             primary: id.into(),
             secondary: String::new(),
+            repository: None,
             search: id.into(),
         }
     }

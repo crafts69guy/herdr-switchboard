@@ -408,6 +408,7 @@ mod tests {
             icon_color: Color::Reset,
             primary: String::new(),
             secondary: String::new(),
+            repository: None,
             search: String::new(),
         }
     }
@@ -422,6 +423,7 @@ mod tests {
             icon_color: Color::Reset,
             primary: "o/r".into(),
             secondary: "feature/auth".into(),
+            repository: None,
             search: String::new(),
         }
     }
@@ -952,6 +954,7 @@ mod tests {
             icon_color: Color::Reset,
             primary: String::new(),
             secondary: String::new(),
+            repository: None,
             search: String::new(),
         };
         let runner = MockRunner::new();

@@ -188,7 +188,7 @@ Projects at a glance:
 | `ctrl-s` | Star or unstar a repo or worktree. | |
 | `ctrl-r` / `ctrl-x` | Update a repo / remove a repo or linked worktree. | |
 | `tab` / `shift-tab` | Move between All, Agents, Workspaces, Repos, Worktrees, and Starred. | `L` / `H` |
-| `alt-p` / `alt-s` | Toggle the preview / cycle the sort. | `p` |
+| `alt-p` / `alt-s` | Toggle the preview / choose the sort. | `p` |
 | `alt-l` / `alt-h` / `alt-,` | Clone / changelog / settings. | |
 | `?` | The live cheatsheet, drawn from your current bindings. | |
 
@@ -253,7 +253,7 @@ or `alt-,` inside Projects — changes are drafted, validated, and applied witho
 | `common.keymode` | Start in `normal` (default) or `insert` mode. |
 | `common.transparency` | Let the terminal background show through, or fill panels opaquely. |
 | `projects.default_target` | Where `enter` opens a repo: `workspace`, `tab`, `split`, or `pane`. |
-| `projects.default_tab` / `projects.sort` | The starting group, and `recent`, `name`, or `kind` order. |
+| `projects.default_tab` / `projects.sort` | The starting group, and `recent`, `name`, `name_desc`, `provider`, `owner`, `starred`, or `kind` order. |
 | `commands.presets` | Named commands with an origin or fixed cwd. |
 | `usage.providers` | Which AI subscriptions Usage reads, in display order. |
 | `zen.width` / `zen.scrim` / `zen.chrome` | The focused pane's share, dimmed gutters, and optional hidden Herdr chrome. |

@@ -150,6 +150,12 @@ Projects group navigation ends with an always-present Starred view after the sou
 It filters the same catalogue by durable Repo/Worktree identity, then applies the same fuzzy search
 or resting sort as every other group.
 
+Projects' private `sort` child owns the modal sort-menu state and Provider/Owner divider rows.
+`data::RepositoryIdentity` retains the ghq host and namespace for repositories and their linked
+worktrees. The Projects model caches visual Navigator rows alongside the entry-only filtered
+indices; its renderer and mouse hit-testing share that mapping, while selection, actions, and
+counts continue to refer only to entries. Search suppresses dividers and sorts by fuzzy score.
+
 ## Extension rules
 
 - A new terminal mode implements `Surface`; it never calls `ratatui::init`, `event::poll`, or
