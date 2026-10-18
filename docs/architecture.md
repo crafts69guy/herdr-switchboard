@@ -68,8 +68,9 @@ Clone runs `ghq get` through a cancellable, non-interactive Projects effect;
 `bin/get.sh` only launches `--clone` through the picker bootstrap. Completion refreshes the
 catalogue and selects the repository, or returns a typed open outcome when configured.
 Create (`alt-n` in All or Repos) shares Clone's one-line editor and modal rendering. Its private
-`projects/create.rs` effect resolves ghq's current root, exclusively creates `local/<name>`,
-and runs Git initialization on a worker. It refuses existing paths and a symlinked local parent,
+`projects/create.rs` effect resolves ghq's current root, exclusively creates `local/<name>` (or
+a typed relative path under the root), and runs Git initialization on a worker. It refuses existing
+paths, symlinked parents, and parents inside an existing repository,
 keeps failed directories, and returns a workspace-open outcome after terminal restoration.
 Repository/worktree discovery shares a full-path ghq snapshot and derives durable relative IDs
 from all configured roots, preserving the actual checkout paths.

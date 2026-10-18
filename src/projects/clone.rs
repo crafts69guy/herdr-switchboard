@@ -310,9 +310,9 @@ pub(super) fn draw(f: &mut Frame, app: &mut super::App, area: Rect) {
     let destination = if creating {
         app.create_root.as_ref().map(|root| {
             format!(
-                "{}/local/{}",
+                "{}/{}",
                 root.trim_end_matches('/'),
-                super::create::name(&app.clone.input).unwrap_or("<name>")
+                super::create::path(&app.clone.input).unwrap_or_else(|_| "local/<name>".into())
             )
         })
     } else {
@@ -355,7 +355,7 @@ pub(super) fn draw(f: &mut Frame, app: &mut super::App, area: Rect) {
                 .status
                 .or(state.error.as_deref())
                 .unwrap_or(if creating {
-                    "Enter a name. No remote or initial commit is created."
+                    "Enter a name for local/, or a path under ghq root. No remote or initial commit is created."
                 } else {
                     "Uses your configured Git credentials or SSH agent."
                 }),

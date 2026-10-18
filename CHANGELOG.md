@@ -7,6 +7,12 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- The Create form (`alt-n`) also accepts a path relative to ghq root, such as
+  `github.com/me/repo`; a bare name still lands under `local/`. Missing parent directories are
+  created, and paths inside an existing repository or through a symlink are refused.
+
 ## [3.6.0] - 2026-10-12
 
 ### Added

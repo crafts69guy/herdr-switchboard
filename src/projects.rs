@@ -1553,7 +1553,7 @@ impl HostedSurface for ProjectsSurface<'_> {
                     if self.app.clone.cancel.is_none() && self.app.clone.completed.is_none() =>
                 {
                     let input = if creating {
-                        create::name(&self.app.clone.input).map(str::to_owned)
+                        create::path(&self.app.clone.input)
                     } else {
                         clone::reference(&self.app.clone.input)
                     };

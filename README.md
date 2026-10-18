@@ -207,11 +207,13 @@ authentication outside Switchboard before cloning; passwords and tokens embedded
 local paths, and file/branch/PR page links are not accepted. Cancelling can leave a partial
 directory; Switchboard does not delete it automatically.
 
-Press `alt-n` in All or Repos to create a **local repository**. Enter a name; the form shows
-`<ghq root>/local/<name>`. Enter creates a new Git repo and opens a focused Herdr workspace;
+Press `alt-n` in All or Repos to create a **local repository**. Enter a name for
+`<ghq root>/local/<name>`, or a relative path such as `github.com/me/repo` for
+`<ghq root>/github.com/me/repo`; the form shows the resolved destination. Enter creates a new Git repo and opens a focused Herdr workspace;
 Esc returns without creating anything. Git uses your configured initial branch, with no remote,
-initial commit, or template files added by Switchboard. The repo appears under provider `local`
-in Projects on subsequent opens. Existing paths and a symlinked `local` directory are refused.
+initial commit, or template files added by Switchboard. The repo appears under its first path
+component as provider (`local` for a bare name) on subsequent opens. Existing paths, symlinked
+parents, and paths inside an existing repository are refused.
 The ghq Update action is unavailable for local repos; use Git directly after adding a remote.
 If Git initialization fails, the new directory is kept for inspection. If opening the workspace
 fails, the created repo is kept and can be opened again from Projects.

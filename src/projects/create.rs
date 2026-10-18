@@ -7,17 +7,24 @@ use anyhow::{anyhow, ensure, Context, Result};
 
 use crate::runner::CommandRunner;
 
-pub(super) fn name(input: &str) -> Result<&str> {
-    let name = input.trim();
+/// Resolves the form input to a path relative to ghq root: a bare name lands
+/// under `local/`, while `a/b/name` is taken as typed. Every component must be
+/// a plain directory name, so the result can never leave the root.
+pub(super) fn path(input: &str) -> Result<String> {
+    let path = input.trim();
+    let components: Vec<&str> = path.split('/').collect();
     ensure!(
-        !name.is_empty()
-            && !matches!(name, "." | "..")
-            && !input
-                .chars()
-                .any(|c| c == '/' || c == '\\' || c.is_control()),
-        "Enter a repository name without path separators or control characters."
+        !input.chars().any(|c| c == '\\' || c.is_control())
+            && components
+                .iter()
+                .all(|c| !c.is_empty() && !matches!(*c, "." | ".." | ".git")),
+        "Enter a name or a relative path like owner/repo, without '.', '..', or control characters."
     );
-    Ok(name)
+    Ok(if components.len() == 1 {
+        format!("local/{path}")
+    } else {
+        path.to_owned()
+    })
 }
 
 pub(super) fn root(runner: &dyn CommandRunner) -> Result<String> {
@@ -35,27 +42,33 @@ pub(super) fn root(runner: &dyn CommandRunner) -> Result<String> {
 }
 
 pub(super) fn run(runner: &dyn CommandRunner, root: &str, input: &str) -> Result<(String, String)> {
-    let name = name(input)?;
+    let relative = path(input)?;
     let root = Path::new(root);
     ensure!(
         root.is_absolute() && root.is_dir(),
         "ghq root is no longer available."
     );
-    let local = root.join("local");
-    match fs::create_dir(&local) {
-        Ok(()) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-        Err(error) => {
-            return Err(error).context("Could not create the local repository directory.")
+    let (parents, name) = relative.rsplit_once('/').unwrap_or(("", &relative));
+    let mut parent = root.to_path_buf();
+    for component in parents.split('/') {
+        parent.push(component);
+        match fs::create_dir(&parent) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error).context("Could not create a parent directory."),
         }
+        let metadata =
+            fs::symlink_metadata(&parent).context("Could not inspect a parent directory.")?;
+        ensure!(
+            metadata.is_dir() && !metadata.file_type().is_symlink(),
+            "Every parent directory must be a directory, not a symlink."
+        );
+        ensure!(
+            !parent.join(".git").exists(),
+            "That path is inside an existing repository. Choose another path."
+        );
     }
-    let metadata = fs::symlink_metadata(&local)
-        .context("Could not inspect the local repository directory.")?;
-    ensure!(
-        metadata.is_dir() && !metadata.file_type().is_symlink(),
-        "The local repository directory must be a directory, not a symlink."
-    );
-    let path = local.join(name);
+    let path = parent.join(name);
     let path = path
         .to_str()
         .ok_or_else(|| anyhow!("Repository path must be valid UTF-8."))?;
@@ -74,7 +87,7 @@ pub(super) fn run(runner: &dyn CommandRunner, root: &str, input: &str) -> Result
         output.status.success(),
         "Git initialization failed. The created directory was kept; inspect it before retrying."
     );
-    Ok((format!("local/{name}"), path.into()))
+    Ok((relative, path.into()))
 }
 
 #[cfg(test)]
@@ -93,14 +106,18 @@ mod tests {
     }
 
     #[test]
-    fn names_are_single_directory_components_and_keep_unicode_and_spaces() {
+    fn bare_names_land_under_local_and_relative_paths_stay_inside_the_root() {
         for input in [
-            "", " ", ".", "..", "a/b", "a\\b", "../repo", "repo\n", "\trepo", "a\0b",
+            "", " ", ".", "..", ".git", "a\\b", "../repo", "a/../b", "a/./b", "/abs", "a//b", "a/",
+            "a/.git", "repo\n", "\trepo", "a\0b",
         ] {
-            assert!(name(input).is_err(), "{input:?}");
+            assert!(path(input).is_err(), "{input:?}");
         }
         for input in ["my-repo", "repo.v2", "dự án", "-option", "  repo  "] {
-            assert_eq!(name(input).unwrap(), input.trim());
+            assert_eq!(path(input).unwrap(), format!("local/{}", input.trim()));
+        }
+        for input in ["work/repo", "github.com/me/dự án", " local/x "] {
+            assert_eq!(path(input).unwrap(), input.trim());
         }
     }
 
@@ -174,5 +191,23 @@ mod tests {
         assert!(error.contains("directory was kept"));
         assert!(!error.contains("private diagnostic"));
         assert!(dir.join("local/repo").is_dir());
+    }
+
+    #[test]
+    fn relative_paths_create_missing_parents_but_never_nest_or_follow_symlinks() {
+        let dir = scratch("relative");
+        let runner = MockRunner::new();
+        let (id, path) = run(&runner, dir.to_str().unwrap(), "github.com/me/new").unwrap();
+        assert_eq!(id, "github.com/me/new");
+        assert_eq!(Path::new(&path), dir.join("github.com/me/new"));
+        fs::create_dir(dir.join("github.com/me/new/.git")).unwrap();
+        assert!(run(&runner, dir.to_str().unwrap(), "github.com/me/new/sub").is_err());
+        assert!(!dir.join("github.com/me/new/sub").exists());
+        let outside = dir.join("outside");
+        fs::create_dir(&outside).unwrap();
+        symlink(&outside, dir.join("linked")).unwrap();
+        assert!(run(&runner, dir.to_str().unwrap(), "linked/deep/repo").is_err());
+        assert!(!outside.join("deep").exists());
+        assert_eq!(runner.calls().len(), 1);
     }
 }
